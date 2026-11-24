@@ -124,6 +124,10 @@ final class CatSettings {
     var cursorPlay: Bool {
         didSet { UserDefaults.standard.set(cursorPlay, forKey: "CoolCat.CursorPlay") }
     }
+    /// 亲密度解锁的装扮
+    var accessory: CatAccessory {
+        didSet { UserDefaults.standard.set(accessory.rawValue, forKey: "CoolCat.Accessory") }
+    }
     /// 生活陪伴：深夜睡帽、早晨咖啡、低电量/插电、久坐喝水
     var lifeNight: Bool {
         didSet { UserDefaults.standard.set(lifeNight, forKey: "CoolCat.LifeNight") }
@@ -177,6 +181,7 @@ final class CatSettings {
         keyHabitReactions = d.object(forKey: "CoolCat.KeyHabitReactions") as? Bool ?? true
         lifeNight = d.object(forKey: "CoolCat.LifeNight") as? Bool ?? true
         cursorPlay = d.object(forKey: "CoolCat.CursorPlay") as? Bool ?? true
+        accessory = CatAccessory(rawValue: d.string(forKey: "CoolCat.Accessory") ?? "") ?? .none
         lifeMorning = d.object(forKey: "CoolCat.LifeMorning") as? Bool ?? true
         lifeBattery = d.object(forKey: "CoolCat.LifeBattery") as? Bool ?? true
         lifeWorkBreak = d.object(forKey: "CoolCat.LifeWorkBreak") as? Bool ?? true
@@ -269,7 +274,7 @@ struct ScriptedFrameInput {
 }
 
 struct Toast {
-    enum Style { case track, meeting, camera, habit }
+    enum Style { case track, meeting, camera, habit, bond }
     static let duration: CGFloat = 4.5
     let text: String
     let style: Style
@@ -439,6 +444,46 @@ final class CatPhysics {
     /// 已经啃掉几口（0...3）
     private(set) var fishBites = 0
 
+    // 亲密度
+    private(set) var bond = BondLog(today: LifeCompanion.dayKey(Date(), calendar: .current))
+    /// 一起听歌累计秒数，每满 5 分钟记一次亲密度
+    private var musicBondSeconds: CGFloat = 0
+    /// 0..1 光标停在头上时主动蹭（Lv2 起）
+    private(set) var nuzzle: CGFloat = 0
+    private var nuzzleHold: CGFloat = 0
+    private var nuzzleSide: CGFloat = 1
+    /// 小猫送的礼物：推到键盘左上方的桌面上，光标碰一下就收下
+    struct Gift {
+        enum Kind: CaseIterable { case mouseToy, yarn, flower, feather }
+        let kind: Kind
+        var age: CGFloat = 0
+        /// 非 nil = 已收下（收下后淡出的秒数）
+        var acceptedAge: CGFloat?
+    }
+    private(set) var gift: Gift?
+    static let giftRest = CGPoint(x: 96, y: 226)
+    static let giftLifetime: CGFloat = 40
+    /// 礼物离开爪子、滑到桌面停下的位置
+    var giftPoint: CGPoint? {
+        guard let g = gift else { return nil }
+        let from = CGPoint(x: CatPhysics.seatAnchor.x + bodyShiftX.value - 24, y: 196)
+        let t = min(1, g.age / 0.7)
+        let e = 1 - pow(1 - t, 3)
+        // 推出去时贴着桌面滑，末尾轻轻一顿
+        return CGPoint(x: from.x + (CatPhysics.giftRest.x - from.x) * e,
+                       y: from.y + (CatPhysics.giftRest.y - from.y) * e - sin(t * .pi) * 10)
+    }
+    /// 推礼物的那只爪子：0..1
+    var giftPush: CGFloat {
+        guard let g = gift, g.acceptedAge == nil else { return 0 }
+        if g.age < 0.7 { return sin(min(1, g.age / 0.7) * .pi * 0.5) }
+        return max(0, 1 - (g.age - 0.7) / 0.35)
+    }
+    private var giftCheckCooldown: CGFloat = 20
+    /// 预览/调试：直接设置亲密度
+    var debugBond: BondLog?
+    var bondForDisplay: BondLog { debugBond ?? bond }
+
     // 生活陪伴
     enum HeldProp { case coffee, milk, water }
     /// 0..1 戴睡帽（深夜）
@@ -542,7 +587,7 @@ final class CatPhysics {
         if case .waiting = claudeStatus { return petHeadIntensity > 0.45 }
         if let age = feedAge, age > 0.9 { return true }       // 吧唧吧唧啃，眯眼享受
         return petHeadIntensity > 0.45 || musicVibe > 0.6 || celebration > 0.35 || groomTimer > 0.3
-            || peaceTimer > 0.3 || overlay.eyeClosure > 0.6
+            || peaceTimer > 0.3 || overlay.eyeClosure > 0.6 || nuzzle > 0.5
     }
 
     var isBlissfulSquint: Bool {
@@ -642,6 +687,7 @@ final class CatPhysics {
             isCurrentlyPetting = true
             totalPetSessions += 1
             UserDefaults.standard.set(totalPetSessions, forKey: "CoolCat.PetCount")
+            addBond(.pet)
         }
 
         // Gentle nuzzle toward cursor
@@ -674,6 +720,7 @@ final class CatPhysics {
         if !sameKind { claudeStatusAge = 0 }
         switch status {
         case .done:
+            addBond(.claude)
             celebration = 1
             bodySquash.velocity -= 2.6
             headOffsetY.velocity -= 140
@@ -691,6 +738,7 @@ final class CatPhysics {
     private func reactToPlay(_ event: PlayEvent) {
         switch event {
         case .caught(let streak):
+            addBond(.catchToy, bonus: streak >= 3 ? 2 : 0)
             guard let target = play.swat?.target else { return }
             sparkles.append(PurrSparkle(position: target, velocity: CGPoint(x: 0, y: -30), isSleepZ: false))
             if streak >= 3 {
@@ -700,6 +748,88 @@ final class CatPhysics {
             }
         case .missed:
             earTwitch.velocity += 4
+        }
+    }
+
+    // MARK: - Bond
+
+    private static var todayKey: String { LifeCompanion.dayKey(Date(), calendar: .current) }
+
+    /// 记一次互动；升级时撒花、提示、自动换上新解锁的装扮
+    private func addBond(_ source: BondSource, bonus: Int = 0) {
+        guard debugBond == nil else { return }
+        let gain = bond.record(source, today: Self.todayKey, bonus: bonus)
+        guard let up = gain.levelUp else { return }
+        var text = "💞 亲密度升级：Lv\(up.level) \(up.title)"
+        if let unlock = up.unlock {
+            text += " · 解锁\(unlock.title)"
+            CatSettings.shared.accessory = unlock
+        }
+        toast = Toast(text: text, style: .bond)
+        celebration = 1
+        spawnConfetti()
+        spawnHeart()
+    }
+
+    /// 今天第一次有人理它：打招呼
+    private func greetIfFirstVisit() {
+        bond.roll(to: Self.todayKey)
+        guard !bond.hasVisitedToday, debugBond == nil else { return }
+        let firstEver = bond.points == 0
+        let days = bond.daysKnown()
+        addBond(.visit)
+        // 升级提示优先，不覆盖
+        if case .bond = toast?.style, toast?.age ?? 99 < 0.1 { return }
+        toast = Toast(text: firstEver ? "喵～ 初次见面，请多关照" : "喵～ 你来啦（认识第 \(days) 天）", style: .bond)
+        spawnHeart()
+        headOffsetY.velocity -= 90
+    }
+
+    /// 送礼物：Lv3 起每天一次，挑小猫闲着、你也没在忙的时候
+    private func considerGift(dt: CGFloat, idleSeconds: CFTimeInterval, free: Bool) {
+        if var g = gift {
+            g.age += dt
+            if let a = g.acceptedAge {
+                g.acceptedAge = a + dt
+                gift = a + dt > 0.6 ? nil : g
+            } else {
+                gift = g.age > CatPhysics.giftLifetime ? nil : g
+            }
+            return
+        }
+        giftCheckCooldown -= dt
+        guard giftCheckCooldown <= 0 else { return }
+        giftCheckCooldown = 15
+        let b = bondForDisplay
+        guard b.level.level >= 3, !b.hasGiftedToday || debugBond != nil, free,
+              idleSeconds > 8, idleSeconds < 40, Double.random(in: 0...1) < 0.35 else { return }
+        offerGift()
+    }
+
+    /// 直接送一个礼物（菜单演示/预览也用）
+    func offerGift(kind: Gift.Kind? = nil) {
+        guard gift == nil else { return }
+        gift = Gift(kind: kind ?? Gift.Kind.allCases.randomElement() ?? .mouseToy)
+        if debugBond == nil { bond.markGiftOffered(today: Self.todayKey) }
+        sleepiness = 0
+        toast = Toast(text: "🎁 小猫叼来一个礼物，用光标碰碰它", style: .bond)
+    }
+
+    /// 光标碰到礼物：收下
+    private func acceptGiftIfTouched(cursor: CGPoint?) {
+        guard let c = cursor, let p = giftPoint, var g = gift, g.acceptedAge == nil, g.age > 0.7,
+              hypot(c.x - p.x, c.y - p.y) < 22 else { return }
+        g.acceptedAge = 0
+        gift = g
+        addBond(.gift)
+        toast = Toast(text: "💝 收到啦！小猫超得意", style: .bond)
+        celebration = max(celebration, 0.7)
+        spawnHeart()
+        for _ in 0..<6 {
+            sparkles.append(PurrSparkle(
+                position: p, velocity: CGPoint(x: CGFloat.random(in: -50...50), y: CGFloat.random(in: -70 ... -30)),
+                lifetime: 1.0, isSleepZ: false, noteGlyph: "♥", noteHue: 0.96, gravity: 120
+            ))
         }
     }
 
@@ -754,6 +884,7 @@ final class CatPhysics {
                 feedAge = nil
                 feedLog.recordMeal()
                 toast = Toast(text: "嗝～ 今天第 \(feedLog.count) 条小鱼干", style: .habit)
+                addBond(.feed)
             } else {
                 feedAge = age
             }
@@ -1250,6 +1381,38 @@ final class CatPhysics {
         playStalk = play.stalk
         playWiggle = play.wiggle
 
+        // 2l. 亲密度：打招呼、一起听歌、蹭光标、送礼物
+        if scripted == nil && idleSeconds < 1 { greetIfFirstVisit() }
+        if isListening && headphonesOn.value > 0.5 && !isAudioQuiet {
+            musicBondSeconds += dt
+            if musicBondSeconds >= 300 { musicBondSeconds = 0; addBond(.music) }
+        }
+        let bondLevel = bondForDisplay.level.level
+        var onHead = false
+        if let c = cursorCanvasNow, CatRenderer.hitTest(point: c, physics: self, showPermissionPill: false) == .head {
+            onHead = true
+            nuzzleSide = c.x < CatPhysics.seatAnchor.x + bodyShiftX.value ? -1 : 1
+        }
+        // 光标停在头上不动（不是在摸）超过 0.8 秒：主动蹭过去
+        let nuzzleOK = bondLevel >= 2 && onHead && cursorSpeed < 40 && now - lastPetTime > 0.5
+            && sleepiness < 0.5 && feedAge == nil && danceAmount < 0.3 && !typingRecent
+        nuzzleHold = nuzzleOK ? nuzzleHold + dt : 0
+        let nuzzleTarget: CGFloat = nuzzleHold > 0.8 ? 1 : 0
+        nuzzle += (nuzzleTarget - nuzzle) * min(1, dt * (nuzzleTarget > nuzzle ? 3 : 5))
+        if nuzzle > 0.6 {
+            petSparkleCooldown -= dt
+            if petSparkleCooldown <= 0 {
+                petSparkleCooldown = 0.7
+                spawnHeart()
+            }
+        }
+        // 不复用 playAvailable：关掉逗猫也照样会送礼物
+        let giftFree = !typingRecent && danceAmount < 0.3 && heldProp == nil && feedAge == nil && feedRefuseAge == nil
+            && sleepiness < 0.2 && !claudeStatus.isActive && playStalk < 0.1 && play.swat == nil
+            && shushTimer == 0 && groomTimer == 0 && peaceTimer == 0
+        considerGift(dt: dt, idleSeconds: idleSeconds, free: giftFree)
+        acceptGiftIfTouched(cursor: cursorCanvasNow)
+
         // 2f. 键盘习惯：计时衰减 + 定期采样 KPM 判断破纪录
         sweatTimer = max(0, sweatTimer - dt)
         peaceTimer = max(0, peaceTimer - dt)
@@ -1443,6 +1606,13 @@ final class CatPhysics {
                     rightPawTyping = false
                 }
             }
+        } else if giftPush > 0.02, let g = giftPoint {
+            // 送礼物：左爪把礼物推到桌面上
+            let w = giftPush
+            let rest = leftPaw.target
+            leftPaw.target = CGPoint(x: rest.x + (g.x + 8 - rest.x) * w, y: rest.y + (g.y - 4 - rest.y) * w)
+            leftPawOnMouse = false
+            leftPawTyping = false
         } else {
             // 舞步 / 空闲动作的爪子（打字中的爪子不抢）
             // 按权重从默认位置拉过去：开始跳舞、换舞步时爪子平滑过渡，不会"嗖"地跳过去
@@ -1512,6 +1682,7 @@ final class CatPhysics {
         headOffsetY.target += overlay.headOffsetY
         headOffsetY.target += tiredness * 3.5 // 没精神：脑袋往下耷拉
         headOffsetY.target += 10 * playStalk
+        headOffsetY.target -= 3 * nuzzle // 蹭：脑袋往上顶
         if let age = feedAge, age > 0.5, age < 3.6 { headOffsetY.target += 4 } // 低头啃
         if claudeWaiting && !typingNow {
             // 着急地小跳
@@ -1523,6 +1694,7 @@ final class CatPhysics {
             + overlay.earFold
             + tiredness * 0.3 // 没精神：耳朵耷拉
             - 0.22 * playStalk // 盯上：耳朵朝前
+            + 0.5 * nuzzle     // 蹭的时候耳朵放松
         earTwitch.target = 0
 
         // 跳舞时弹簧更硬，才跟得上 2Hz 左右的节拍
@@ -1627,6 +1799,8 @@ final class CatPhysics {
             headTilt.target += overlay.headTilt
             // 洗脸时脑袋歪向爪子一侧，跟着蹭
             if groomTimer > 0 { headTilt.target += 0.16 + sin(time * 7) * 0.04 }
+            // 蹭光标：脑袋歪向光标一侧，来回蹭
+            headTilt.target += nuzzle * nuzzleSide * (0.07 + sin(time * 3.2) * 0.045)
         }
         headTilt.step(dt: dt, stiffness: 130 + groove * 150, damping: 16 + groove * 4)
 

@@ -587,6 +587,12 @@ func renderCapPreviewSheet(to path: String) {
 }
 
 // 逗猫 & 喂食预览：4 皮肤 x 5 个瞬间
+if let idx = CommandLine.arguments.firstIndex(of: "--render-bond-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderBondPreviewSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
 if let idx = CommandLine.arguments.firstIndex(of: "--render-play-preview"),
    idx + 1 < CommandLine.arguments.count {
     renderPlayPreviewSheet(to: CommandLine.arguments[idx + 1])
@@ -679,6 +685,87 @@ func renderPlayPreviewSheet(to path: String) {
             ctx.restoreGState()
         }
     }
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+    } catch {
+        FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
+    }
+}
+
+/// 亲密度预览：四件装扮 + 送礼物 + 蹭光标
+func renderBondPreviewSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme, settings.accessory)
+    defer { (settings.coatTheme, settings.eyeTheme, settings.accessory) = saved }
+    let coats: [(CatCoatTheme, EyeColorTheme)] = [
+        (.classicBlack, .neonChartreuse), (.siamese, .siameseBlue),
+        (.shorthair, .referenceHazel), (.orangeWhite, .warmAmber)
+    ]
+    // 预览用独立的存储，别动真实的亲密度
+    let suite = "coolcat.preview.bond"
+    guard let store = UserDefaults(suiteName: suite) else { return }
+    store.removePersistentDomain(forName: suite)
+    store.set(900, forKey: "CoolCat.Bond.Points")
+    let bond = BondLog(store: store, today: "2026-11-24")
+    let headPoint = CGPoint(x: 200, y: 104)
+    let step: (CatPhysics) -> Void = { $0.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+    // (名称, 装扮, 光标位置, 准备)
+    let scenes: [(String, CatAccessory, CGPoint?, (CatPhysics) -> Void)] = [
+        ("Lv2 🔔 铃铛项圈", .bell, nil, { p in for _ in 0..<30 { step(p) } }),
+        ("Lv3 🧣 毛线围巾", .scarf, nil, { p in for _ in 0..<30 { step(p) } }),
+        ("Lv4 🎀 蝴蝶结", .bow, nil, { p in for _ in 0..<30 { step(p) } }),
+        ("Lv5 🕶️ 墨镜", .shades, nil, { p in for _ in 0..<30 { step(p) } }),
+        ("送礼物：推到桌上", .scarf, nil, { p in
+            p.offerGift(kind: [.mouseToy, .yarn, .flower, .feather][Int(p.time * 10) % 4])
+            for _ in 0..<Int(0.45 * 60) { step(p) }
+        }),
+        ("礼物放好了", .bell, nil, { p in
+            p.offerGift(kind: .feather)
+            for _ in 0..<Int(2.5 * 60) { step(p) }
+        }),
+        ("光标停在头上：蹭蹭", .bow, headPoint, { p in
+            p.debugCursorCanvas = headPoint
+            for _ in 0..<Int(2.2 * 60) { step(p) }
+        })
+    ]
+    let cellW = 360, cellH = 320, scale = 2
+    let cols = scenes.count, rows = coats.count
+    guard let ctx = CGContext(
+        data: nil, width: cellW * cols * scale, height: cellH * rows * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(cellH * rows * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.66, green: 0.70, blue: 0.68, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: cellW * cols, height: cellH * rows))
+    for (row, coat) in coats.enumerated() {
+        settings.coatTheme = coat.0
+        settings.eyeTheme = coat.1
+        for (col, scene) in scenes.enumerated() {
+            settings.accessory = scene.1
+            let physics = CatPhysics()
+            physics.debugBond = bond
+            for _ in 0..<30 { step(physics) }
+            scene.3(physics)
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(col * cellW), y: CGFloat(row * cellH))
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.25).cgColor)
+            ctx.stroke(CGRect(x: 0.5, y: 0.5, width: CGFloat(cellW) - 1, height: CGFloat(cellH) - 1))
+            CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: false)
+            if let c = scene.2 { drawMacCursor(in: ctx, at: c, clicking: false) }
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            NSAttributedString(string: scene.0, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.white
+            ]).draw(at: CGPoint(x: 10, y: 296))
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
+    }
+    store.removePersistentDomain(forName: suite)
     guard let image = ctx.makeImage(),
           let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
     do {

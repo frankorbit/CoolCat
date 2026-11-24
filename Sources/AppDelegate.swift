@@ -384,6 +384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         playItem.state = settings.cursorPlay ? .on : .off
         menu.addItem(playItem)
 
+        menu.addItem(buildBondMenuItem())
         menu.addItem(buildLifeMenuItem())
 
         let idleItem = NSMenuItem(title: "空闲时的小动作（打哈欠 / 伸懒腰 / 踩奶 / 慢眨眼……）", action: #selector(toggleIdleAnimations), keyEquivalent: "")
@@ -719,6 +720,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let parent = NSMenuItem(title: "生活陪伴 🌙", action: nil, keyEquivalent: "")
         parent.submenu = sub
         return parent
+    }
+
+    /// 猫咪档案：亲密度等级、相处统计、装扮
+    private func buildBondMenuItem() -> NSMenuItem {
+        let physics = overlayWindow.catView.physics
+        let bond = physics.bond
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        func info(_ title: String) {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            sub.addItem(item)
+        }
+        let level = bond.level
+        if let next = bond.nextLevel {
+            info("💞 Lv\(level.level) \(level.title) · \(bond.points) / \(next.threshold)（下一级：\(next.title)）")
+        } else {
+            info("💞 Lv\(level.level) \(level.title) · \(bond.points) 分（满级啦）")
+        }
+        info("认识第 \(bond.daysKnown()) 天 · 摸摸 \(bond.pets) 次 · 抓到 \(bond.catches) 次 · 小鱼干 \(bond.fish) 条")
+        info("今天 +\(bond.todayBySource.values.reduce(0, +)) · 摸摸、逗猫、喂鱼、听歌、陪 Claude 干活都会加")
+        if level.level >= 2 { info("🫶 光标停在它头上不动，它会主动蹭你") }
+        if level.level >= 3 { info("🎁 每天会送你一次小礼物（用光标碰一下收下）") }
+        sub.addItem(.separator())
+        info("装扮")
+        for accessory in CatAccessory.allCases {
+            let unlocked = bond.isUnlocked(accessory)
+            var title = "    " + accessory.title
+            if !unlocked, let need = BondLog.levels.first(where: { $0.unlock == accessory }) {
+                title += "（🔒 Lv\(need.level) \(need.title)解锁）"
+            }
+            let item = NSMenuItem(title: title, action: #selector(chooseAccessory(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = accessory.rawValue
+            item.isEnabled = unlocked
+            item.state = CatSettings.shared.accessory == accessory ? .on : .off
+            sub.addItem(item)
+        }
+        let parent = NSMenuItem(title: "猫咪档案 💞（Lv\(level.level) \(level.title)）", action: nil, keyEquivalent: "")
+        parent.submenu = sub
+        return parent
+    }
+
+    @objc private func chooseAccessory(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let accessory = CatAccessory(rawValue: raw) else { return }
+        CatSettings.shared.accessory = accessory
     }
 
     @objc private func toggleLifeNight() { CatSettings.shared.lifeNight.toggle() }

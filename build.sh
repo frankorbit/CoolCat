@@ -99,6 +99,8 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/LifeCompanion.swift"
     "$ROOT/Sources/CatProps.swift"
     "$ROOT/Sources/CatPlay.swift"
+    "$ROOT/Sources/CatBond.swift"
+    "$ROOT/Sources/CatAccessories.swift"
     "$ROOT/Sources/CatRenderer.swift"
     "$ROOT/Sources/CoatPatterns.swift"
     "$ROOT/Sources/OverlayWindow.swift"

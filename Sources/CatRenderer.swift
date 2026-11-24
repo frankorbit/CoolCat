@@ -133,6 +133,9 @@ enum CatRenderer {
             coat: coat
         )
 
+        // 5b. 亲密度装扮：项圈 / 围巾（下巴下面，压在前爪下）
+        drawNeckAccessory(in: ctx, center: headCenter, physics: physics)
+
         // 6. Hind Foot (3rd simultaneous key easter egg!)
         if physics.hindFootActive.value > 0.03 {
             drawHindFoot(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
@@ -146,6 +149,10 @@ enum CatRenderer {
             drawHeadphones(in: ctx, center: headCenter, physics: physics, coat: coat, eyeTheme: settings.eyeTheme, layer: .front)
         }
 
+        // 7b2. 亲密度装扮：墨镜 / 蝴蝶结
+        drawShades(in: ctx, center: headCenter, physics: physics)
+        drawBow(in: ctx, center: headCenter, physics: physics)
+
         // 7c. 头上的小配件：KPM 皇冠、狂删冒汗
         if physics.crownPop.value > 0.02 || physics.sweatTimer > 0 {
             drawHeadAccessories(in: ctx, center: headCenter, physics: physics)
@@ -154,6 +161,9 @@ enum CatRenderer {
         if physics.crownPop.value < 0.3 {
             drawNightCap(in: ctx, center: headCenter, physics: physics)
         }
+
+        // 7e. 小猫送的礼物（在桌面上，被前爪推出来）
+        drawGift(in: ctx, physics: physics)
 
         // 8. Front Arms / Paws (over torso & keyboard/mouse with crisp separation outlines / Siamese chocolate socks!)
         drawFrontPaws(in: ctx, seatX: seatX, seatY: seatY, breath: breath, physics: physics, coat: coat)
@@ -210,6 +220,7 @@ enum CatRenderer {
             case .track: accent = settings.eyeTheme.primaryColor
             case .meeting: accent = NSColor(calibratedRed: 0.96, green: 0.36, blue: 0.36, alpha: 1)
             case .camera, .habit: accent = NSColor(calibratedRed: 1.0, green: 0.82, blue: 0.35, alpha: 1)
+            case .bond: accent = NSColor(calibratedRed: 0.96, green: 0.48, blue: 0.65, alpha: 1)
             }
             drawToastBubble(in: ctx, text: toast.text, age: toast.age, headCenter: headCenter,
                             accent: accent, raised: claudeVisible)
