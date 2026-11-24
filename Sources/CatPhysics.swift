@@ -1,6 +1,10 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import os
+
+/// 跳舞锁拍诊断：只含相位误差、BPM、舞步等统计量，标为 public 便于 `log show` 查看
+private let danceLog = Logger(subsystem: "ai.today.coolcat", category: "dance")
 
 // MARK: - Themes & Settings
 
@@ -357,9 +361,13 @@ final class CatPhysics {
 
     // 音频频谱
     private(set) var audio = AudioSpectrumSnapshot()
+    /// 真实流逝时间（不被 1/25 秒钳制），节拍时钟和延迟队列用它
+    private var audioClock: CGFloat = 0
     /// 按输出延迟回放用的快照历史（time, snapshot）
     private var audioHistory: [(time: CGFloat, snapshot: AudioSpectrumSnapshot)] = []
     private var lastAudioBeatSerial = 0
+    /// 相位估计出现大跳变的起始时刻（用于迟滞）
+    private var phaseJumpSince: CGFloat?
     /// 刚检测到真实鼓点的冲击（1 → 0）
     private(set) var beatKick: CGFloat = 0
     private var lastLiveBeatTime: CGFloat = -10
@@ -374,6 +382,10 @@ final class CatPhysics {
     private(set) var musicArousal: CGFloat = 0.6
     /// 预览/调试：强制能量感
     var debugArousal: CGFloat?
+    /// 0..1 节奏强度（鼓点网格有多清晰），强时多点头、不出舒缓摇晃
+    private(set) var musicRhythm: CGFloat = 0.5
+    /// 预览/调试：强制节奏强度
+    var debugRhythm: CGFloat?
     /// 播放器此刻没出声（未防抖）：模拟节拍模式下用它让柱子立刻停下
     var outputSilentHint = false
     /// 安静持续的时间；超过 0.4 秒视为"没声音了"：柱子归零、停止跳舞和点头
@@ -664,6 +676,8 @@ final class CatPhysics {
 
     /// 舞步相位提前量（秒），抵消跳舞时弹簧的跟随延迟；由端到端测量标定
     static let danceSpringLead: CGFloat = 0.05
+    /// 头部转动/俯仰弹簧更"肉"，比身体多滞后约 0.1 拍，再额外提前一点（由逐通道实测标定）
+    static let danceHeadExtraLead: CGFloat = 0.05
 
     // MARK: - Audio Spectrum
 
@@ -677,36 +691,74 @@ final class CatPhysics {
             audioHistory.removeAll()
             return
         }
-        audioHistory.append((time, snapshot))
+        audioHistory.append((audioClock, snapshot))
         let delay = CGFloat(max(0, min(2.5, snapshot.outputLatency)))
         // 取"延迟之前"最新的一份；队列只保留到这之前的最后一份
         var delayed = audioHistory[0].snapshot
         var keepFrom = 0
-        for (i, entry) in audioHistory.enumerated() where entry.time <= time - delay {
+        for (i, entry) in audioHistory.enumerated() where entry.time <= audioClock - delay {
             delayed = entry.snapshot
             keepFrom = i
         }
         if keepFrom > 0 { audioHistory.removeFirst(keepFrom) }
         audio = delayed
 
+        // 1) 速度：平滑跟随分析器（分析器侧已做连续性先验 + 迟滞，不会在 2:3 间来回跳）
+        if let bpm = delayed.bpm {
+            beatsPerMinute += (bpm - beatsPerMinute) * 0.05
+            beatsPerMinute = max(60, min(200, beatsPerMinute))
+        }
+        // 2) 相位：每帧向梳状相位估计平滑靠拢，靠拢速度随置信度。
+        //    梳状估计综合了最近 ~4 秒所有起音，强拍主导，单个切分/十六分音符起音拽不动它
+        if let since = delayed.secondsSinceBeat, delayed.beatConfidence > 0.15 {
+            let target = CGFloat(since) * beatsPerMinute / 60                  // 拍内进度 0..1
+            let beats = beatPhase / (2 * .pi)
+            var error = target - (beats - beats.rounded(.down))
+            if error > 0.5 { error -= 1 } else if error < -0.5 { error += 1 }
+            // 大跳变（超过 1/4 拍，多半是估计短暂落到了反拍）要持续 1.2 秒才跟；小偏差立即平滑修正
+            var follow = true
+            if abs(error) > 0.25 {
+                if phaseJumpSince == nil { phaseJumpSince = time }
+                follow = time - (phaseJumpSince ?? time) > 1.2
+            } else {
+                phaseJumpSince = nil
+            }
+            if follow {
+                let gain = 0.06 * min(1, delayed.beatConfidence / 0.5)
+                beatPhase += error * gain * 2 * .pi
+            }
+            lastLiveBeatTime = time
+        }
+        // 3) 单个起音只用来闪一下（墙、舞步重音），并统计它是否落在猫的拍子网格上（诊断用）
         guard delayed.beatSerial != lastAudioBeatSerial else { return }
         lastAudioBeatSerial = delayed.beatSerial
-        beatKick = 1
-        lastLiveBeatTime = time
-        // PLL 式校正：每个鼓点只修正 30% 的相位误差，切分音/误检不会让舞步抽动。
-        // 鼓点被认出来时其实已经过去了 analysisDelay，所以"此刻应处的相位"是整拍再往后挪这么多
         let beats = beatPhase / (2 * .pi)
         let lagBeats = CGFloat(delayed.analysisDelay) * beatsPerMinute / 60
-        let error = ((beats - lagBeats).rounded() + lagBeats) - beats
-        // 二阶 PLL：相位修正 30%；持续的同向误差说明速度不对，再顺带微调 BPM（每拍误差 1 拍 ≈ 速度差 100%）
-        // 只用接近整拍的检测校正：半拍处的八分音符起音（贝斯线、反拍镲）不该把相位拽过去
-        if abs(error) < 0.3 {
-            beatPhase += error * 0.3 * 2 * .pi
-            beatsPerMinute += error * beatsPerMinute * 0.08
-        }
-        // 分析器给出的 BPM 作为慢速参考，防止上面的微调长期漂移
-        if let bpm = delayed.bpm { beatsPerMinute += (bpm - beatsPerMinute) * 0.1 }
-        beatsPerMinute = max(60, min(200, beatsPerMinute))
+        let gridError = ((beats - lagBeats).rounded() + lagBeats) - beats
+        recordLockSample(error: gridError)
+        // 只有落在拍上的起音才给重音；反拍/切分起音不让猫在两拍之间多做一下
+        if abs(gridError) < 0.15 { beatKick = max(beatKick, 1 - abs(gridError) / 0.15) }
+    }
+
+    // MARK: - Beat Lock Diagnostics
+
+    private var lockErrors: [CGFloat] = []
+    private var lockWindowStart: CGFloat = 0
+
+    /// 每 5 秒汇总一次：收到多少鼓点、多少落在猫的整拍附近（|误差| < 0.1 拍）、平均误差毫秒数
+    private func recordLockSample(error: CGFloat) {
+        lockErrors.append(error)
+        guard time - lockWindowStart >= 5 else { return }
+        defer { lockErrors.removeAll(); lockWindowStart = time }
+        let onGrid = lockErrors.filter { abs($0) < 0.3 }
+        let locked = onGrid.filter { abs($0) < 0.1 }.count
+        let msPerBeat = 60_000 / max(1, beatsPerMinute)
+        let meanMs = onGrid.isEmpty ? 0 : onGrid.map { abs($0) }.reduce(0, +) / CGFloat(onGrid.count) * msPerBeat
+        let signedMs = onGrid.isEmpty ? 0 : onGrid.reduce(0, +) / CGFloat(onGrid.count) * msPerBeat
+        let line = String(format: "lock 5s: beats=%d onGrid=%d locked=%d mean|err|=%.0fms bias=%+.0fms bpm=%.1f move=%@ arousal=%.2f rhythm=%.2f dance=%.2f",
+                          lockErrors.count, onGrid.count, locked, meanMs, signedMs, beatsPerMinute,
+                          currentDanceMove?.rawValue ?? "-", musicArousal, musicRhythm, danceAmount)
+        danceLog.notice("\(line, privacy: .public)")
     }
 
     // MARK: - Debug / Preview
@@ -732,7 +784,8 @@ final class CatPhysics {
     func showTrack(title: String, artist: String?) {
         var hash: UInt64 = 1469598103934665603
         for b in title.utf8 { hash = (hash ^ UInt64(b)) &* 1099511628211 }
-        beatsPerMinute = 92 + CGFloat(hash % 37) // 92...128
+        // 有真实音频时以分析结果为准，别用歌名哈希覆盖（会让刚锁好的拍子跑掉几秒）
+        if !(audio.isLive && isBeatLocked) { beatsPerMinute = 92 + CGFloat(hash % 37) } // 92...128
         guard CatSettings.shared.showTrackBubble else { return }
         let text = artist.map { "\(title) - \($0)" } ?? title
         toast = Toast(text: "♪ " + text, style: .track)
@@ -770,6 +823,9 @@ final class CatPhysics {
 
     func step(dt rawDt: CGFloat, windowFrameInScreen: CGRect, scripted: ScriptedFrameInput? = nil) {
         let dt = min(rawDt, 1.0 / 25.0)
+        // 节拍和输出延迟队列用真实流逝时间：卡顿时不丢相位（只防极端长卡顿）
+        let clockDt = min(rawDt, 0.5)
+        audioClock += clockDt
         time += dt
 
         let engine = InputEngine.shared
@@ -857,7 +913,7 @@ final class CatPhysics {
         // 只有听歌才跟拍子动；开会只戴耳麦不摇头
         let music = wantMusic ? max(0, min(1, headphonesOn.value)) : 0
         if wantMusic {
-            beatPhase += dt * beatsPerMinute / 60 * 2 * .pi
+            beatPhase += clockDt * beatsPerMinute / 60 * 2 * .pi
             // 2.5s 没碰键鼠就闭眼陶醉；一动就睁眼。捕猎/摸头时让位给原有表情
             let idleForVibe = now - max(curLastKeyTime, curLastMouseMove) > 2.5
             let vibeTarget: CGFloat = (idleForVibe && hunt < 0.2) ? 1 : 0
@@ -879,6 +935,9 @@ final class CatPhysics {
         musicEnergy += ((liveAudio ? audio.level : (isAudioQuiet ? 0 : 0.6)) - musicEnergy) * min(1, dt * 4)
         let arousalTarget = debugArousal ?? (liveAudio ? audio.arousal : 0.6)
         musicArousal += (arousalTarget - musicArousal) * min(1, dt / 3)
+        let rhythmTarget = debugRhythm ?? (liveAudio ? audio.rhythmStrength : 0.6)
+        // 分析器侧已平滑 2 秒，这里只再平滑 1 秒：强节奏歌开头几秒就能认出来
+        musicRhythm += (rhythmTarget - musicRhythm) * min(1, dt / 1)
         if spectrumVisibility.value > 0.01 || spectrumVisibility.target > 0 {
             for i in 0..<spectrum.count {
                 let target: CGFloat
@@ -909,8 +968,9 @@ final class CatPhysics {
             let seatX = CatPhysics.seatAnchor.x + bodyShiftX.value
             // 弹簧追目标有几十毫秒滞后，姿态按"提前一点"的相位算，动作才落在拍点上
             let lead = CatPhysics.danceSpringLead * beatsPerMinute / 60 * 2 * .pi
-            frameOverlay = dance.pose(beatPhase: beatPhase + lead, energy: musicEnergy, kick: beatKick, seatX: seatX,
-                                      arousal: musicArousal)
+            let headLead = CatPhysics.danceHeadExtraLead * beatsPerMinute / 60 * 2 * .pi
+            frameOverlay = dance.pose(beatPhase: beatPhase + lead, headLead: headLead, energy: musicEnergy,
+                                      kick: beatKick, seatX: seatX, arousal: musicArousal, rhythm: musicRhythm)
                 .scaled(by: danceAmount)
             currentDanceMove = dance.move
         } else {
@@ -1077,7 +1137,8 @@ final class CatPhysics {
             } else {
                 // 听歌时空闲的爪子跟着拍子轻敲桌面
                 rightPaw.target = CGPoint(x: CatPhysics.rightPawRest.x,
-                                          y: CatPhysics.rightPawRest.y - beatPulse * 3.5 * music * (isAudioQuiet ? 0 : 1))
+                                          y: CatPhysics.rightPawRest.y
+                                            - (1 - cos(beatPhase)) / 2 * 3.5 * music * (isAudioQuiet ? 0 : 1))
             }
             rightPawTyping = false
         }
@@ -1097,14 +1158,21 @@ final class CatPhysics {
             rightPawTyping = false
         } else {
             // 舞步 / 空闲动作的爪子（打字中的爪子不抢）
+            // 按权重从默认位置拉过去：开始跳舞、换舞步时爪子平滑过渡，不会"嗖"地跳过去
             if let paw = overlay.rightPaw, rightKey == nil {
-                rightPaw.target = paw
-                rightPawTyping = false
+                let w = max(0, min(1, overlay.rightPawWeight))
+                rightPaw.target = CGPoint(x: rightPaw.target.x + (paw.x - rightPaw.target.x) * w,
+                                          y: rightPaw.target.y + (paw.y - rightPaw.target.y) * w)
+                if w > 0.5 { rightPawTyping = false }
             }
             if let paw = overlay.leftPaw, leftKey == nil {
-                leftPaw.target = paw
-                leftPawOnMouse = false
-                leftPawTyping = false
+                let w = max(0, min(1, overlay.leftPawWeight))
+                leftPaw.target = CGPoint(x: leftPaw.target.x + (paw.x - leftPaw.target.x) * w,
+                                         y: leftPaw.target.y + (paw.y - leftPaw.target.y) * w)
+                if w > 0.5 {
+                    leftPawOnMouse = false
+                    leftPawTyping = false
+                }
             }
         }
 

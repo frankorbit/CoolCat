@@ -29,9 +29,15 @@ struct AudioSpectrumSnapshot {
     var outputLatency: CFTimeInterval = 0
     /// 检测延迟：鼓点要进入分析窗口才认得出来，报告时实际已过去约半个窗口 + 半个 hop
     var analysisDelay: CFTimeInterval = 0
+    /// 梳状相位估计：此刻距离"最近一个拍点"过去了多少秒（已扣除分析延迟），nil = 还没有可靠估计
+    var secondsSinceBeat: CFTimeInterval?
+    /// 0..1 拍点相位的置信度（强拍对齐得越干净越高）
+    var beatConfidence: CGFloat = 0
     /// 0..1 歌曲的"能量感"：慢、稀疏、节奏模糊 → 0（舒缓）；快、密集、节奏清晰 → 1（激烈）。
     /// 和响度无关（响度是自适应归一化的，安静的歌也会被拉满），约 4 秒平滑
     var arousal: CGFloat = 0.6
+    /// 0..1 节奏强度：鼓点网格有多清晰（梳状对比度 + 周期强度）。强 → 多点头、不出舒缓摇晃
+    var rhythmStrength: CGFloat = 0.5
 }
 
 // MARK: - DSP（纯逻辑，可离线测试）
@@ -75,16 +81,33 @@ final class SpectrumDSP {
     private var prevLogPower: [Float] = []
     /// 起音强度包络（每个 hop 一个值），约 6 秒，用于中位数阈值和速度自相关
     private var onsetEnvelope: [Float] = []
+    /// 只含低频（<200Hz，底鼓/低音鼓）的起音包络：用来判断"鼓点有多强"，钢琴、吉他再规整也不算
+    private var lowOnsetEnvelope: [Float] = []
+    /// 选中速度的拍长（hop），给低频梳状对比度用
+    private var lastChosenLag: Double?
+    private var lastLowContrast: Float = 0
+    /// 4–12kHz 的起音包络（镲片、军鼓的噪声）：有它才说明是"鼓组"，而不是规整弹奏的钢琴
+    private var highOnsetEnvelope: [Float] = []
+    private var highRange: (lo: Int, hi: Int) = (1, 2)
+    private var prevHighLog: [Float] = []
+    private var lastHighContrast: Float = 0
     private let envelopeLength: Int
     private let medianWindow: Int                          // ~0.5 秒
     private var hopsSinceTempo = 0
     private var lastBeatTime: Double = -10
     private var pendingTempo: Float?
+    /// 新速度需要连续多少次估计（每次约 0.5 秒）一致才切换
+    private var pendingCount = 0
+    /// 梳状相位：最近一个拍点在多少秒前 + 置信度
+    private var combPhase: (secondsSinceBeat: Double, confidence: Float)?
     /// 近 6 秒的鼓点时刻（算起音密度）
     private var recentBeatTimes: [Double] = []
     /// 最近一次速度估计的周期强度（自相关得分）
     private var pulseClarity: Float = 0
+    /// 选中速度的梳状对比度：真正的鼓点网格通常 > 1.8，铺底音色的缓慢起伏只有 1.2~1.5
+    private var lastCombContrast: Float = 0
     private var arousal: Float = 0.5
+    private var rhythmStrength: Float = 0.5
     private(set) var beatSerial = 0
     private(set) var bpm: Float?
     /// 已处理的样本总数，作为音频时钟
@@ -96,7 +119,7 @@ final class SpectrumDSP {
         fftSize = 1 << exponent
         hopSize = fftSize / 2
         let hopSeconds = Double(fftSize / 2) / sampleRate
-        envelopeLength = Int(6.0 / hopSeconds)
+        envelopeLength = Int(8.0 / hopSeconds)
         medianWindow = max(8, Int(0.5 / hopSeconds))
         log2n = vDSP_Length(exponent)
         guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
@@ -129,6 +152,8 @@ final class SpectrumDSP {
         onsetRange = (max(1, Int(30 / binHz)), min(fftSize / 2, max(3, Int(2000 / binHz))))
         lowSplit = max(onsetRange.lo + 1, Int(200 / binHz))
         prevLogPower = [Float](repeating: -10, count: fftSize / 2)
+        highRange = (min(fftSize / 2 - 2, Int(4000 / binHz)), min(fftSize / 2, max(Int(4000 / binHz) + 2, Int(min(12000, sampleRate / 2 - binHz) / binHz))))
+        prevHighLog = [Float](repeating: -10, count: fftSize / 2)
     }
 
     deinit {
@@ -163,6 +188,11 @@ final class SpectrumDSP {
         return beat
     }
 
+    /// 诊断：节奏强度的原始分量（低频/高频/整体梳状对比度、周期强度），用来按真实歌曲标定阈值
+    var rhythmFeatures: String {
+        String(format: "low=%.2f high=%.2f comb=%.2f clarity=%.2f", lastLowContrast, lastHighContrast, lastCombContrast, pulseClarity)
+    }
+
     func snapshot() -> AudioSpectrumSnapshot {
         var snap = AudioSpectrumSnapshot()
         snap.bands = smoothed.map { CGFloat($0) }
@@ -171,8 +201,13 @@ final class SpectrumDSP {
         snap.beatSerial = beatSerial
         snap.bpm = bpm.map { CGFloat($0) }
         // 由离线测试标定：鼓点进入窗口最新的部分就会被看到，再加局部最大判定的一个 hop
-        snap.analysisDelay = (Double(fftSize) * 0.5 + Double(hopSize) * 0.5) / sampleRate
+        snap.analysisDelay = Double(fftSize) / sampleRate
         snap.arousal = CGFloat(arousal)
+        snap.rhythmStrength = CGFloat(rhythmStrength)
+        if let phase = combPhase {
+            snap.secondsSinceBeat = phase.secondsSinceBeat
+            snap.beatConfidence = CGFloat(phase.confidence)
+        }
         snap.isLive = true
         return snap
     }
@@ -264,7 +299,18 @@ final class SpectrumDSP {
         let onset = silence ? 0 : lowFlux / lowBins + 0.4 * midFlux / midBins
         onsetEnvelope.append(onset)
         if onsetEnvelope.count > envelopeLength { onsetEnvelope.removeFirst(onsetEnvelope.count - envelopeLength) }
+        lowOnsetEnvelope.append(silence ? 0 : lowFlux / lowBins)
+        if lowOnsetEnvelope.count > envelopeLength { lowOnsetEnvelope.removeFirst(lowOnsetEnvelope.count - envelopeLength) }
+        var highFlux: Float = 0
+        for bin in highRange.lo..<highRange.hi {
+            let lp = log10(power[bin] + floorPower)
+            highFlux += max(0, lp - prevHighLog[bin])
+            prevHighLog[bin] = lp
+        }
+        highOnsetEnvelope.append(silence ? 0 : highFlux / Float(max(1, highRange.hi - highRange.lo)))
+        if highOnsetEnvelope.count > envelopeLength { highOnsetEnvelope.removeFirst(highOnsetEnvelope.count - envelopeLength) }
 
+        updateCombPhase(hopSeconds: Double(hopSeconds))
         hopsSinceTempo += 1
         if hopsSinceTempo >= medianWindow {
             hopsSinceTempo = 0
@@ -293,89 +339,191 @@ final class SpectrumDSP {
         return true
     }
 
+    /// 梳状相位估计：以当前拍长为齿距，在最近约 4 秒的起音包络上找"齿尖总能量"最大的对齐位置。
+    /// 强拍能量占主导，零碎的十六分音符/切分起音对结果影响很小——比"每个起音都去拽相位"稳得多。
+    /// 越近的拍权重越高（0.85^k），这样换段落时相位能跟上
+    private func updateCombPhase(hopSeconds: Double) {
+        guard let tempo = bpm else { combPhase = nil; return }
+        let period = 60.0 / Double(tempo) / hopSeconds          // 拍长（hop，带小数）
+        let n = onsetEnvelope.count
+        let beatsBack = Int(6.0 * Double(tempo) / 60.0)        // 约 6 秒
+        guard period >= 4, n > Int(period * Double(beatsBack + 1)) + 2 else { combPhase = nil; return }
+        let offsets = Int(period.rounded(.up))
+        var scores = [Float](repeating: 0, count: offsets)
+        for o in 0..<offsets {
+            var sum: Float = 0, weight: Float = 1
+            for k in 0..<beatsBack {
+                let idx = n - 1 - o - Int((Double(k) * period).rounded())
+                if idx < 0 { break }
+                sum += onsetEnvelope[idx] * weight
+                weight *= 0.9
+            }
+            scores[o] = sum
+        }
+        guard let best = scores.indices.max(by: { scores[$0] < scores[$1] }) else { return }
+        let mean = scores.reduce(0, +) / Float(scores.count)
+        guard mean > 1e-9 else { combPhase = nil; return }
+        // 抛物线插值到亚 hop 精度（环形）
+        let l = scores[(best - 1 + offsets) % offsets], m = scores[best], r = scores[(best + 1) % offsets]
+        let denom = l - 2 * m + r
+        let frac = abs(denom) > 1e-9 ? max(-0.5, min(0.5, 0.5 * (l - r) / denom)) : 0
+        // 包络第 n-1 项对应的鼓点，实际发生在约 (fft - hop)/2 之前（窗口里最新的那一段被看到）
+        let hopsAgo = Double(best) + Double(frac)
+        let envelopeLag = (Double(fftSize) - Double(hopSize)) * 0.5 / sampleRate
+        var since = hopsAgo * hopSeconds + envelopeLag
+        let beatSeconds = 60.0 / Double(tempo)
+        since = since.truncatingRemainder(dividingBy: beatSeconds)
+        // 置信度：最佳对齐比平均高出多少（1.0 = 高出一倍）
+        let confidence = max(0, min(1, (m / mean - 1) / 1.0))
+        combPhase = (since, confidence)
+    }
+
     /// 速度 50%、起音密度 30%、节奏清晰度 20% 合成能量感，时间常数约 4 秒
     private func updateArousal(now: Double, hopSeconds: Double) {
         recentBeatTimes.removeAll { now - $0 > 6 }
         // 周期性很弱 = 没有明确节拍（氛围、自由节奏的弹唱）：速度不可信，整体按舒缓处理
-        let rhythmic = pulseClarity >= 0.15
+        let rhythmic = pulseClarity >= 0.15 && lastCombContrast >= 1.7
         let tempo = rhythmic ? (bpm.map { max(0, min(1, ($0 - 65) / 60)) } ?? 0.5) : 0
         let density = max(0, min(1, (Float(recentBeatTimes.count) / 6 - 0.8) / 2.2))
         let clarity = max(0, min(1, (pulseClarity - 0.08) / 0.3))
         var raw = 0.5 * tempo + 0.3 * density + 0.2 * clarity
         if !rhythmic { raw = min(raw, 0.3) }
+        // 节奏强度 = 有底鼓网格 × 有镲片/军鼓的高频瞬态网格（缺一个都不算"鼓组"），约 2 秒平滑
+        // 只看低频（鼓）网格：底鼓清晰 → 强；只有钢琴/吉他规整地弹 → 弱
+        let kickF = max(0, min(1, (lastLowContrast - 1.6) / 1.2))
+        let kitF = max(0, min(1, (lastHighContrast - 1.3) / 0.8))
+        let drumF = kickF * kitF
+        let strengthRaw = rhythmic ? 0.75 * drumF + 0.25 * clarity * drumF : 0
+        rhythmStrength += (strengthRaw - rhythmStrength) * Float(min(1, hopSeconds / 2))
         arousal += (raw - arousal) * Float(min(1, hopSeconds / 4))
     }
 
-    /// 起音包络的自相关找速度：看整体周期性，漏掉几拍也不影响。
-    /// 乘一个以 120 BPM 为中心的对数高斯先验（专业节拍跟踪的常用做法）避免倍频/半频误判，
-    /// 再用抛物线插值把 hop 量化误差（~2%）消掉
+    /// 选速度分两步：
+    /// 1. 起音包络的自相关**只负责提名**：取前 3 个周期峰，再加上它们的 ×2、÷2、×1.5、÷1.5（最常见的误判关系）
+    /// 2. 每个候选用**梳状对比度**打分（按这个拍长对齐时，齿尖处起音比平均强多少）× 以 120 BPM 为中心的先验。
+    ///    真正的拍同时对齐底鼓和军鼓，对比度最高；快一倍会混进较弱的八分音符，2:3 会一半落在反拍，慢一半只采到一半的重音
     private func estimateTempo(hopSeconds: Double) {
         let n = onsetEnvelope.count
         guard n >= Int(4.0 / hopSeconds) else { return }
         let mean = onsetEnvelope.reduce(0, +) / Float(n)
         let centered = onsetEnvelope.map { $0 - mean }
-        let minLag = max(2, Int((60.0 / 165.0) / hopSeconds))
-        let maxLag = min(n / 2, Int((60.0 / 70.0) / hopSeconds) + 1)
-        guard maxLag > minLag + 2 else { return }
-        var scores = [Float](repeating: 0, count: maxLag + 2)
         var energy: Float = 0
         vDSP_svesq(centered, 1, &energy, vDSP_Length(n))
         guard energy > 1e-9 else { return }
+
+        func tempoOf(lag: Double) -> Double { 60.0 / (lag * hopSeconds) }
+        let minLag = max(2, Int((60.0 / 190.0) / hopSeconds))
+        let maxLag = min(n / 3, Int((60.0 / 55.0) / hopSeconds) + 1)
+        guard maxLag > minLag + 2 else { return }
+        var acf = [Float](repeating: 0, count: maxLag + 2)
         for lag in (minLag - 1)...(maxLag + 1) {
             var dot: Float = 0
             centered.withUnsafeBufferPointer { buf in
                 guard let base = buf.baseAddress else { return }
                 vDSP_dotpr(base, 1, base + lag, 1, &dot, vDSP_Length(n - lag))
             }
-            let bpmAtLag = 60.0 / (Double(lag) * hopSeconds)
-            let octaves = log2(bpmAtLag / 120.0)
-            let prior = Float(exp(-0.5 * (octaves / 0.9) * (octaves / 0.9)))
-            scores[lag] = dot / energy * prior
+            acf[lag] = dot / energy
         }
-        var best = minLag
-        for lag in minLag...maxLag where scores[lag] > scores[best] { best = lag }
-        // 倍频判定：周期信号在两倍拍长处的自相关同样强，不能直接比。改用"梳状"比较：
-        // 以两倍拍长为周期，看起音在"强位置"和隔半个周期的位置上谁更强。
-        // 一样强 → 每拍都有重音，快速度就是拍；半周期处明显更弱（八分音符贝斯填在拍间）→ 慢速度才是拍
-        let slowLag = best * 2
-        let slowBPM = 60.0 / (Double(slowLag) * hopSeconds)
-        if slowBPM >= 70, n >= slowLag * 3 {
-            var comb = [Float](repeating: 0, count: slowLag)
-            for (i, value) in onsetEnvelope.enumerated() { comb[i % slowLag] += max(0, value) }
-            // 每个相位附近 ±1 hop 合并，容忍量化抖动
-            func strength(_ phase: Int) -> Float {
-                (-1...1).reduce(0) { $0 + comb[(phase + $1 + slowLag) % slowLag] }
-            }
-            let strongPhase = (0..<slowLag).max { strength($0) < strength($1) } ?? 0
-            let on = strength(strongPhase)
-            let off = strength((strongPhase + best) % slowLag)
-            if on > 0, off < on * 0.55 {
-                applyTempoEstimate(Float(slowBPM))
-                return
-            }
+        // 自相关的局部峰（抛物线插值到小数 lag）
+        var peaks: [(lag: Double, score: Float)] = []
+        for lag in minLag...maxLag where acf[lag] > acf[lag - 1] && acf[lag] >= acf[lag + 1] && acf[lag] > 0 {
+            let l = acf[lag - 1], m = acf[lag], r = acf[lag + 1]
+            let denom = l - 2 * m + r
+            let offset = abs(denom) > 1e-9 ? Double(max(-0.5, min(0.5, 0.5 * (l - r) / denom))) : 0
+            peaks.append((Double(lag) + offset, m))
         }
-        pulseClarity = scores[best]
+        peaks.sort { $0.score > $1.score }
+        guard let strongest = peaks.first else { pulseClarity = 0; return }
+        pulseClarity = strongest.score
         // 周期性太弱（散拍、纯人声）就不给速度
-        guard scores[best] > 0.08 else { return }
-        let left = scores[best - 1], mid = scores[best], right = scores[best + 1]
-        let denom = left - 2 * mid + right
-        let offset = abs(denom) > 1e-9 ? 0.5 * (left - right) / denom : 0
-        let lag = Double(best) + Double(max(-0.5, min(0.5, offset)))
-        applyTempoEstimate(Float(60.0 / (lag * hopSeconds)))
+        guard strongest.score > 0.08 else { return }
+
+        var candidates: [Double] = []
+        for peak in peaks.prefix(3) {
+            for ratio in [1.0, 2.0, 0.5, 1.5, 1.0 / 1.5] {
+                let lag = peak.lag * ratio
+                let tempo = tempoOf(lag: lag)
+                guard tempo >= 60, tempo <= 180,
+                      !candidates.contains(where: { abs($0 - lag) / lag < 0.03 }) else { continue }
+                candidates.append(lag)
+            }
+        }
+        let warm = Double(n) * hopSeconds >= 7.5
+        var best: (lag: Double, score: Double)?
+        for lag in candidates {
+            guard let contrast = combContrast(period: lag) else { continue }
+            let tempo = tempoOf(lag: lag)
+            let octaves = log2(tempo / 120.0)
+            var score = Double(contrast) * exp(-0.5 * (octaves / 0.9) * (octaves / 0.9))
+            // 很弱的连续性偏好，且热身期（前 ~8 秒）不启用，避免把开头的误判粘住
+            if warm, let current = bpm {
+                let drift = log2(tempo / Double(current))
+                score *= 0.9 + 0.1 * exp(-0.5 * (drift / 0.05) * (drift / 0.05))
+            }
+            if best == nil || score > best!.score { best = (lag, score) }
+        }
+        guard let chosen = best else { return }
+        lastCombContrast = combContrast(period: chosen.lag) ?? 0
+        lastChosenLag = chosen.lag
+        lastLowContrast = combContrast(period: chosen.lag, envelope: lowOnsetEnvelope) ?? 0
+        // 镲片常打在八分、十六分音符上：拍长、1/2、1/4 都试，取最强
+        lastHighContrast = [1.0, 0.5, 0.25].compactMap { ratio -> Float? in
+            let period = chosen.lag * ratio
+            return period >= 2 ? combContrast(period: period, envelope: highOnsetEnvelope) : nil
+        }.max() ?? 0
+        applyTempoEstimate(Float(tempoOf(lag: chosen.lag)))
+    }
+
+    /// 以 period（hop，可带小数）为齿距，在最近约 8 秒包络上找最佳对齐，返回"齿尖平均强度 / 整体平均"
+    private func combContrast(period: Double, envelope: [Float]? = nil) -> Float? {
+        let onsetEnvelope = envelope ?? self.onsetEnvelope
+        let hopSeconds = Double(hopSize) / sampleRate
+        let n = onsetEnvelope.count
+        let window = min(n, Int(8.0 / hopSeconds))
+        let teeth = Int(Double(window - 1) / period)
+        guard teeth >= 3 else { return nil }
+        let base = n - window
+        var overall: Float = 0
+        for i in base..<n { overall += max(0, onsetEnvelope[i]) }
+        overall /= Float(window)
+        guard overall > 1e-9 else { return nil }
+        var bestMean: Float = 0
+        for o in 0..<Int(period.rounded(.up)) {
+            var sum: Float = 0
+            for k in 0..<teeth {
+                let idx = n - 1 - o - Int((Double(k) * period).rounded())
+                if idx < base { break }
+                // 齿尖 ±1 hop 取最大，容忍量化抖动
+                let lo = max(base, idx - 1), hi = min(n - 1, idx + 1)
+                var peak: Float = 0
+                for j in lo...hi { peak = max(peak, onsetEnvelope[j]) }
+                sum += peak
+            }
+            bestMean = max(bestMean, sum / Float(teeth))
+        }
+        return bestMean / overall
     }
 
     private func applyTempoEstimate(_ estimate: Float) {
         // 迟滞：新估计和当前差 4% 以上时，要连续两次一致才切换（防止在倍频间来回跳）
+        // 迟滞：新估计和当前差 4% 以上时，要连续 3 次（约 1.5 秒）一致才切换，防止在 2:3、1:2 间来回跳
         if let current = bpm, abs(estimate - current) / current > 0.04 {
             if let pending = pendingTempo, abs(estimate - pending) / pending < 0.04 {
-                bpm = estimate
-                pendingTempo = nil
+                pendingCount += 1
+                pendingTempo = pending + (estimate - pending) * 0.5
+                if pendingCount >= 3 {
+                    bpm = pendingTempo
+                    pendingTempo = nil
+                    pendingCount = 0
+                }
             } else {
                 pendingTempo = estimate
+                pendingCount = 1
             }
         } else if let current = bpm {
             bpm = current + (estimate - current) * 0.3
             pendingTempo = nil
+            pendingCount = 0
         } else {
             bpm = estimate
         }
@@ -801,9 +949,11 @@ final class AudioSpectrumAnalyzer {
         if hadBeat { statsBeats += 1 }
         if statsSeconds >= 5 {
             let bpmText = dsp.bpm.map { String(format: "%.1f", $0) } ?? "-"
-            let line = String(format: "stats 5s: sr=%.0f peak=%.3f beats=%d bpm=%@ level=%.2f silent=%@",
-                              format.mSampleRate, statsPeak, statsBeats, bpmText,
-                              Double(dsp.snapshot().level), reportedSilence ? "yes" : "no")
+            let snapNow = dsp.snapshot()
+            let line = String(format: "stats 5s: sr=%.0f peak=%.3f beats=%d bpm=%@ level=%.2f rhythm=%.2f arousal=%.2f %@ silent=%@",
+                              format.mSampleRate, statsPeak, statsBeats, bpmText, Double(snapNow.level),
+                              Double(snapNow.rhythmStrength), Double(snapNow.arousal), dsp.rhythmFeatures,
+                              reportedSilence ? "yes" : "no")
             audioLog.notice("\(line, privacy: .public)")
             statsSeconds = 0
             statsBeats = 0
