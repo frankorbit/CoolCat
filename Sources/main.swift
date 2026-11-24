@@ -1,6 +1,24 @@
 import Foundation
 import AppKit
 
+// Claude Code hook 中继：必须最先处理，读完 stdin 立即退出，不启动任何 UI
+if CommandLine.arguments.contains(ClaudeHookRelay.argument) {
+    ClaudeHookRelay.run()
+}
+
+// 命令行安装/卸载 Claude Code hook（和菜单里的按钮走同一套逻辑，方便脚本化）
+if CommandLine.arguments.contains("--install-claude-hooks") || CommandLine.arguments.contains("--uninstall-claude-hooks") {
+    let installing = CommandLine.arguments.contains("--install-claude-hooks")
+    do {
+        if installing { try ClaudeHookInstaller.install() } else { try ClaudeHookInstaller.uninstall() }
+        print(installing ? "已连接 Claude Code：\(ClaudeHookInstaller.hookCommand)" : "已移除 KuroCat 的 Claude Code hook")
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
+        exit(1)
+    }
+}
+
 // Support headless multi-pose preview rendering for visual verification
 if let idx = CommandLine.arguments.firstIndex(of: "--render-preview"),
    idx + 1 < CommandLine.arguments.count {
@@ -31,6 +49,328 @@ if let idx = CommandLine.arguments.firstIndex(of: "--render-showcase-video"),
     let outDir = CommandLine.arguments[idx + 2]
     renderCustomShowcaseVideo(bgPath: bgPath, outDir: outDir)
     exit(0)
+}
+
+// 听歌戴耳机多皮肤预览：4 皮肤 x 3 姿态（陶醉正脸 / 左转 / 右转打字）
+if let idx = CommandLine.arguments.firstIndex(of: "--render-music-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderMusicPreviewSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
+func renderMusicPreviewSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme, settings.keyboardTheme)
+    defer { (settings.coatTheme, settings.eyeTheme, settings.keyboardTheme) = saved }
+
+    let coats: [(CatCoatTheme, EyeColorTheme)] = [
+        (.classicBlack, .neonChartreuse), (.siamese, .siameseBlue),
+        (.shorthair, .referenceHazel), (.orangeWhite, .warmAmber)
+    ]
+    let poses: [(String, (CatPhysics) -> Void)] = [
+        ("陶醉正脸", { p in
+            p.setListening(true, musicApp: true)
+            p.showTrack(title: "猫咪狂想曲", artist: "KuroCat")
+            for _ in 0..<160 { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+            p.headYaw.value = 0; p.headPitch.value = 0.1; p.headTilt.value = 0.06
+        }),
+        ("左转看鼠标", { p in
+            p.setListening(true, musicApp: true)
+            for _ in 0..<90 { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 0)) }
+            p.leftPaw.x.value = CatPhysics.mouseBaseCenter.x + 2
+            p.leftPaw.y.value = CatPhysics.mouseBaseCenter.y - 3
+            p.headYaw.value = -0.85; p.headPitch.value = -0.4; p.headTilt.value = -0.1
+            p.eyeGaze.x.value = -0.7; p.eyeGaze.y.value = -0.4
+        }),
+        ("右转打字", { p in
+            p.setListening(true, musicApp: false)
+            for _ in 0..<90 { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 0)) }
+            let ptL = KeyboardLayout.canvasPoint(for: .o)
+            let ptR = KeyboardLayout.canvasPoint(for: .f)
+            p.leftPaw.x.value = ptL.x; p.leftPaw.y.value = ptL.y
+            p.rightPaw.x.value = ptR.x; p.rightPaw.y.value = ptR.y
+            p.headYaw.value = 0.8; p.headPitch.value = 0.6; p.headTilt.value = 0.09
+            p.eyeGaze.x.value = 0.65; p.eyeGaze.y.value = 0.6
+        })
+    ]
+
+    let cellW = 360, cellH = 320, scale = 2
+    let cols = poses.count, rows = coats.count
+    guard let ctx = CGContext(
+        data: nil, width: cellW * cols * scale, height: cellH * rows * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(cellH * rows * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.66, green: 0.70, blue: 0.68, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: cellW * cols, height: cellH * rows))
+
+    for (row, coat) in coats.enumerated() {
+        settings.coatTheme = coat.0
+        settings.eyeTheme = coat.1
+        for (col, pose) in poses.enumerated() {
+            let physics = CatPhysics()
+            pose.1(physics)
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(col * cellW), y: CGFloat(row * cellH))
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.25).cgColor)
+            ctx.stroke(CGRect(x: 0.5, y: 0.5, width: CGFloat(cellW) - 1, height: CGFloat(cellH) - 1))
+            CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: false)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            NSAttributedString(string: pose.0, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.white
+            ]).draw(at: CGPoint(x: 10, y: 296))
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
+    }
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+    } catch {
+        FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
+    }
+}
+
+// Claude Code 联动预览：4 皮肤 x 3 状态（思考中 / 等你批准 / 搞定）
+if let idx = CommandLine.arguments.firstIndex(of: "--render-claude-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderClaudePreviewSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
+func renderClaudePreviewSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme)
+    defer { (settings.coatTheme, settings.eyeTheme) = saved }
+    let coats: [(CatCoatTheme, EyeColorTheme)] = [
+        (.classicBlack, .neonChartreuse), (.siamese, .siameseBlue),
+        (.shorthair, .referenceHazel), (.orangeWhite, .warmAmber)
+    ]
+    let states: [(String, ClaudeStatus, Int)] = [
+        ("思考中（写代码）", .working(tool: "Edit", sessions: 2), 60),
+        ("等你批准", .waiting(.permission), 50),
+        ("搞定！", .done, 24),
+        ("5 个会话同时在忙", .working(tool: nil, sessions: 5), 60)
+    ]
+    let cellW = 360, cellH = 320, scale = 2
+    let cols = states.count, rows = coats.count
+    guard let ctx = CGContext(
+        data: nil, width: cellW * cols * scale, height: cellH * rows * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(cellH * rows * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.66, green: 0.70, blue: 0.68, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: cellW * cols, height: cellH * rows))
+
+    for (row, coat) in coats.enumerated() {
+        settings.coatTheme = coat.0
+        settings.eyeTheme = coat.1
+        for (col, state) in states.enumerated() {
+            let physics = CatPhysics()
+            // 先空跑 2 秒让"用户闲置"成立，再切状态并推进若干帧
+            for _ in 0..<120 { physics.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+            physics.updateClaude(state.1)
+            switch state.1 {
+            case .working:
+                physics.claudeLines = [
+                    ClaudeSessionLine(project: "Faceplant", detail: "写代码", kind: .working, elapsed: 134),
+                    ClaudeSessionLine(project: "KuroCat", detail: "跑命令", kind: .working, elapsed: 35)
+                ]
+            case .waiting:
+                physics.claudeLines = [
+                    ClaudeSessionLine(project: "KuroCat", detail: "等你批准", kind: .waiting, elapsed: nil),
+                    ClaudeSessionLine(project: "Faceplant", detail: "读代码", kind: .working, elapsed: 252)
+                ]
+            case .done:
+                physics.claudeLines = [ClaudeSessionLine(project: "Faceplant", detail: "搞定", kind: .done, elapsed: nil)]
+            default:
+                break
+            }
+            if case .working(_, let n) = state.1, n == 5 {
+                physics.claudeLines = [
+                    ClaudeSessionLine(project: "Faceplant", detail: "写代码", kind: .working, elapsed: 412),
+                    ClaudeSessionLine(project: "KuroCat", detail: "跑命令", kind: .working, elapsed: 95),
+                    ClaudeSessionLine(project: "api-server", detail: "翻文件", kind: .working, elapsed: 40),
+                    ClaudeSessionLine(project: "infra", detail: "思考中", kind: .working, elapsed: 12),
+                    ClaudeSessionLine(project: "docs", detail: "上网查", kind: .working, elapsed: 5)
+                ]
+            }
+            for _ in 0..<state.2 { physics.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(col * cellW), y: CGFloat(row * cellH))
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.25).cgColor)
+            ctx.stroke(CGRect(x: 0.5, y: 0.5, width: CGFloat(cellW) - 1, height: CGFloat(cellH) - 1))
+            CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: false)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            NSAttributedString(string: state.0, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.white
+            ]).draw(at: CGPoint(x: 10, y: 296))
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
+    }
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+    } catch {
+        FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
+    }
+}
+
+// 会议模式预览：4 皮肤 x 3 状态（戴耳麦 / 嘘 / 洗脸）
+if let idx = CommandLine.arguments.firstIndex(of: "--render-meeting-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderMeetingPreviewSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
+func renderMeetingPreviewSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme, settings.meetingMode, settings.keyboardNoiseReminder)
+    defer { (settings.coatTheme, settings.eyeTheme, settings.meetingMode, settings.keyboardNoiseReminder) = saved }
+    settings.meetingMode = true
+    settings.keyboardNoiseReminder = true
+    let coats: [(CatCoatTheme, EyeColorTheme)] = [
+        (.classicBlack, .neonChartreuse), (.siamese, .siameseBlue),
+        (.shorthair, .referenceHazel), (.orangeWhite, .warmAmber)
+    ]
+    let poses: [(String, (CatPhysics) -> Void)] = [
+        ("开麦戴耳麦", { p in
+            p.setMeeting(mic: true, micApp: "腾讯会议", camera: false)
+            for _ in 0..<60 { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+        }),
+        ("打字太吵：嘘", { p in
+            p.setMeeting(mic: true, micApp: nil, camera: false)
+            for _ in 0..<40 { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+            for k in [PhysicalKey.j, .k, .l, .f, .d, .s, .a, .j, .k, .l] { p.triggerKeyDown(k) }
+            for _ in 0..<45 { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+        }),
+        ("开摄像头：洗脸", { p in
+            p.setMeeting(mic: false, micApp: nil, camera: true)
+            for _ in 0..<70 { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+        })
+    ]
+    let cellW = 360, cellH = 320, scale = 2
+    let cols = poses.count, rows = coats.count
+    guard let ctx = CGContext(
+        data: nil, width: cellW * cols * scale, height: cellH * rows * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(cellH * rows * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.66, green: 0.70, blue: 0.68, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: cellW * cols, height: cellH * rows))
+    for (row, coat) in coats.enumerated() {
+        settings.coatTheme = coat.0
+        settings.eyeTheme = coat.1
+        for (col, pose) in poses.enumerated() {
+            let physics = CatPhysics()
+            pose.1(physics)
+            physics.floatingKeycaps.removeAll()
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(col * cellW), y: CGFloat(row * cellH))
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.25).cgColor)
+            ctx.stroke(CGRect(x: 0.5, y: 0.5, width: CGFloat(cellW) - 1, height: CGFloat(cellH) - 1))
+            CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: false)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            NSAttributedString(string: pose.0, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.white
+            ]).draw(at: CGPoint(x: 10, y: 296))
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
+    }
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+    } catch {
+        FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
+    }
+}
+
+// 键盘习惯预览：4 皮肤 x 4 反应（狂删冒汗 / ⌘S 盖章 / 截图比耶 / KPM 皇冠）
+if let idx = CommandLine.arguments.firstIndex(of: "--render-habits-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderHabitsPreviewSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
+func renderHabitsPreviewSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme, settings.keyHabitReactions)
+    defer { (settings.coatTheme, settings.eyeTheme, settings.keyHabitReactions) = saved }
+    settings.keyHabitReactions = true
+    let coats: [(CatCoatTheme, EyeColorTheme)] = [
+        (.classicBlack, .neonChartreuse), (.siamese, .siameseBlue),
+        (.shorthair, .referenceHazel), (.orangeWhite, .warmAmber)
+    ]
+    let poses: [(String, KeyHabitEvent, Int)] = [
+        ("狂按退格：冒汗", .backspaceStorm, 40),
+        ("⌘S：盖章", .save, 12),
+        ("截图：比耶", .screenshot, 30),
+        ("KPM 破纪录：皇冠", .newKPMRecord(312), 40)
+    ]
+    let cellW = 360, cellH = 320, scale = 2
+    let cols = poses.count, rows = coats.count
+    guard let ctx = CGContext(
+        data: nil, width: cellW * cols * scale, height: cellH * rows * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(cellH * rows * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.66, green: 0.70, blue: 0.68, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: cellW * cols, height: cellH * rows))
+    for (row, coat) in coats.enumerated() {
+        settings.coatTheme = coat.0
+        settings.eyeTheme = coat.1
+        for (col, pose) in poses.enumerated() {
+            let physics = CatPhysics()
+            for _ in 0..<60 { physics.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+            if case .newKPMRecord = pose.1 { physics.react(to: .recordBurstStarted) }
+            physics.react(to: pose.1)
+            for _ in 0..<pose.2 { physics.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(col * cellW), y: CGFloat(row * cellH))
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.25).cgColor)
+            ctx.stroke(CGRect(x: 0.5, y: 0.5, width: CGFloat(cellW) - 1, height: CGFloat(cellH) - 1))
+            CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: false)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            NSAttributedString(string: pose.0, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.white
+            ]).draw(at: CGPoint(x: 10, y: 296))
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
+    }
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+    } catch {
+        FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
+    }
+}
+
+/// 预览用：键鼠长时间无操作的脚本输入
+private func idleInput(now: CFTimeInterval) -> ScriptedFrameInput {
+    ScriptedFrameInput(
+        now: now, activeKeys: [], orderedKeys: [], mouseScreenPos: .zero, mouseVelocity: .zero,
+        leftMouseDown: false, rightMouseDown: false,
+        lastMouseMoveTime: 0, lastMouseClickTime: 0, lastKeyActivityTime: 0
+    )
 }
 
 func renderPreviewSheet(to path: String, forceSiamese: Bool = false) {

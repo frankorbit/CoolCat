@@ -89,6 +89,10 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/KeyMap.swift"
     "$ROOT/Sources/InputEngine.swift"
     "$ROOT/Sources/CatPhysics.swift"
+    "$ROOT/Sources/MusicMonitor.swift"
+    "$ROOT/Sources/ClaudeBridge.swift"
+    "$ROOT/Sources/MeetingMonitor.swift"
+    "$ROOT/Sources/KeyHabits.swift"
     "$ROOT/Sources/CatRenderer.swift"
     "$ROOT/Sources/CoatPatterns.swift"
     "$ROOT/Sources/OverlayWindow.swift"
@@ -103,6 +107,8 @@ COMMON_FLAGS=(
     -framework CoreGraphics
     -framework QuartzCore
     -framework IOKit
+    -framework CoreAudio
+    -framework CoreMediaIO
     -framework ApplicationServices
 )
 

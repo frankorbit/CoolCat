@@ -88,6 +88,34 @@ final class CatSettings {
     var eyeTheme: EyeColorTheme {
         didSet { UserDefaults.standard.set(eyeTheme.rawValue, forKey: "KuroCat.EyeTheme") }
     }
+    /// 听歌时戴耳机 + 跟节拍摇头
+    var musicHeadphones: Bool {
+        didSet { UserDefaults.standard.set(musicHeadphones, forKey: "KuroCat.MusicHeadphones") }
+    }
+    /// 非音乐 App（浏览器视频、游戏等）出声时也戴耳机
+    var headphonesForAnyAudio: Bool {
+        didSet { UserDefaults.standard.set(headphonesForAnyAudio, forKey: "KuroCat.HeadphonesForAnyAudio") }
+    }
+    /// 切歌时头顶冒出歌名气泡
+    var showTrackBubble: Bool {
+        didSet { UserDefaults.standard.set(showTrackBubble, forKey: "KuroCat.ShowTrackBubble") }
+    }
+    /// 键盘习惯小反应：⌫ 冒汗 / ⌘S 盖章 / 截图比耶 / KPM 破纪录戴皇冠
+    var keyHabitReactions: Bool {
+        didSet { UserDefaults.standard.set(keyHabitReactions, forKey: "KuroCat.KeyHabitReactions") }
+    }
+    /// 开会时戴耳麦、开摄像头时整理仪容
+    var meetingMode: Bool {
+        didSet { UserDefaults.standard.set(meetingMode, forKey: "KuroCat.MeetingMode") }
+    }
+    /// 开麦时打字太猛，小猫"嘘"你
+    var keyboardNoiseReminder: Bool {
+        didSet { UserDefaults.standard.set(keyboardNoiseReminder, forKey: "KuroCat.KeyboardNoiseReminder") }
+    }
+    /// 是否展示 Claude Code 状态（hook 装没装由 ClaudeHookInstaller 判断）
+    var claudeIntegration: Bool {
+        didSet { UserDefaults.standard.set(claudeIntegration, forKey: "KuroCat.ClaudeIntegration") }
+    }
 
     private init() {
         let d = UserDefaults.standard
@@ -104,6 +132,13 @@ final class CatSettings {
         keyboardTheme = KeyboardTheme(rawValue: d.string(forKey: "KuroCat.KeyboardTheme") ?? "") ?? .classicMilk
         let savedEye = d.string(forKey: "KuroCat.EyeTheme") ?? ""
         eyeTheme = EyeColorTheme.saved(savedEye)
+        musicHeadphones = d.object(forKey: "KuroCat.MusicHeadphones") as? Bool ?? true
+        headphonesForAnyAudio = d.object(forKey: "KuroCat.HeadphonesForAnyAudio") as? Bool ?? true
+        showTrackBubble = d.object(forKey: "KuroCat.ShowTrackBubble") as? Bool ?? true
+        claudeIntegration = d.object(forKey: "KuroCat.ClaudeIntegration") as? Bool ?? true
+        meetingMode = d.object(forKey: "KuroCat.MeetingMode") as? Bool ?? true
+        keyHabitReactions = d.object(forKey: "KuroCat.KeyHabitReactions") as? Bool ?? true
+        keyboardNoiseReminder = d.object(forKey: "KuroCat.KeyboardNoiseReminder") as? Bool ?? true
     }
 }
 
@@ -164,8 +199,14 @@ struct PurrSparkle {
     var position: CGPoint
     var velocity: CGPoint
     var age: CGFloat = 0
-    let lifetime: CGFloat = 0.9
+    var lifetime: CGFloat = 0.9
     let isSleepZ: Bool
+    /// 非 nil 时绘制为音符（♪ ♫ ♬），颜色取 noteHue
+    var noteGlyph: String? = nil
+    var noteHue: CGFloat = 0
+    /// 彩带等需要下落的粒子
+    var gravity: CGFloat = 0
+    var spin: CGFloat = 0
 }
 
 struct ScriptedFrameInput {
@@ -179,6 +220,14 @@ struct ScriptedFrameInput {
     var lastMouseMoveTime: CFTimeInterval
     var lastMouseClickTime: CFTimeInterval
     var lastKeyActivityTime: CFTimeInterval
+}
+
+struct Toast {
+    enum Style { case track, meeting, camera, habit }
+    static let duration: CGFloat = 4.5
+    let text: String
+    let style: Style
+    var age: CGFloat = 0
 }
 
 // MARK: - Cat Physics & Procedural Animation State
@@ -248,6 +297,74 @@ final class CatPhysics {
     private var petCursorCanvasPos: CGPoint = .zero
     private var petSparkleCooldown: CGFloat = 0
 
+    // Music / headphones state
+    /// 0 = 没戴耳机, 1 = 戴好；弹簧带一点过冲，戴上时会"啪"地弹一下
+    var headphonesOn = Spring1D(0)
+    /// 是否在听歌（由 MusicMonitor 驱动）
+    var isListening = false
+    /// true = 音乐播放器；false = 其他声音（只戴耳机，不冒音符）
+    var isListeningToMusicApp = false
+    /// 节拍相位（弧度，每拍 2π）
+    private(set) var beatPhase: CGFloat = 0
+    private(set) var beatsPerMinute: CGFloat = 108
+    /// 0..1 闭眼陶醉程度：听歌且一段时间没操作时上升
+    private(set) var musicVibe: CGFloat = 0
+    private var lastNoteBeat = -1
+    /// 头顶的提示气泡（歌名 / 会议提醒）
+    private(set) var toast: Toast?
+
+    /// 每拍开头的冲击包络（0..1），用于点头、爪子打拍子
+    var beatPulse: CGFloat {
+        let local = beatPhase.truncatingRemainder(dividingBy: 2 * .pi) / (2 * .pi)
+        return pow(max(0, 1 - local * 2.2), 2)
+    }
+
+    // 键盘习惯
+    private var habits = KeyHabitDetector()
+    private var kpmSampleCooldown: CGFloat = 0
+    /// > 0 时额头冒汗（狂按退格）
+    private(set) var sweatTimer: CGFloat = 0
+    static let sweatDuration: CGFloat = 2.8
+    /// 非 nil 时在画"已保存"印章，值为已显示秒数
+    private(set) var saveStampAge: CGFloat?
+    static let saveStampDuration: CGFloat = 1.4
+    /// > 0 时比耶（截图）
+    private(set) var peaceTimer: CGFloat = 0
+    static let peaceDuration: CGFloat = 2.2
+    /// 截图闪光，0..1 衰减
+    private(set) var cameraFlash: CGFloat = 0
+    /// > 0 时头戴皇冠（KPM 破纪录）；crownPop 为戴上时的弹跳
+    private(set) var crownTimer: CGFloat = 0
+    var crownPop = Spring1D(0)
+
+    // 会议模式
+    private(set) var micActive = false
+    private(set) var cameraActive = false
+    /// 0..1 耳麦麦克风杆从下往上转到嘴边
+    var boomMic = Spring1D(0)
+    /// > 0 时爪子捂嘴"嘘"
+    private(set) var shushTimer: CGFloat = 0
+    private var shushCooldownUntil: CFTimeInterval = 0
+    private var meetingKeyTimes: [CFTimeInterval] = []
+    private var groomSparkleCooldown: CGFloat = 0
+    /// > 0 时在整理仪容（舔爪子洗脸）
+    private(set) var groomTimer: CGFloat = 0
+    static let groomDuration: CGFloat = 3.2
+
+    // Claude Code 联动状态
+    private(set) var claudeStatus: ClaudeStatus = .idle
+    /// 最近一次非 idle 的状态：气泡淡出过程中继续显示它的文字
+    private(set) var claudeBubbleStatus: ClaudeStatus = .idle
+    /// 逐会话明细（项目名 / 动作 / 耗时）。只在非空时更新，气泡淡出时保留最后一份文字
+    var claudeLines: [ClaudeSessionLine] = [] {
+        didSet { if claudeLines.isEmpty && claudeStatus.isActive == false { claudeLines = oldValue } }
+    }
+    /// 0..1 气泡显隐（弹簧，弹出时有一点过冲）
+    var claudeBubble = Spring1D(0)
+    private(set) var claudeStatusAge: CGFloat = 0
+    /// 1 → 0：任务完成后的庆祝余韵（闭眼笑）
+    private(set) var celebration: CGFloat = 0
+
     // Sleepy idle state
     private(set) var sleepiness: CGFloat = 0 // 0 = awake, 1 = napping
     private var sleepZCooldown: CGFloat = 0
@@ -266,7 +383,9 @@ final class CatPhysics {
 
     /// True when eyes should draw the signature glowing lime horizontal closed-eye lines
     var isHappyClosedEyes: Bool {
-        petHeadIntensity > 0.45
+        if case .waiting = claudeStatus { return petHeadIntensity > 0.45 }
+        return petHeadIntensity > 0.45 || musicVibe > 0.6 || celebration > 0.35 || groomTimer > 0.3
+            || peaceTimer > 0.3
     }
 
     var isBlissfulSquint: Bool {
@@ -307,6 +426,10 @@ final class CatPhysics {
 
         // Wake up immediately
         sleepiness = 0
+        checkKeyboardNoise(now: now)
+        if let habit = habits.keyDown(key, held: InputEngine.shared.activeKeys.union([key]), now: now) {
+            react(to: habit)
+        }
 
         // Spawn floating keycap badge
         if CatSettings.shared.showKeyBadges {
@@ -368,6 +491,120 @@ final class CatPhysics {
         let dx = (canvasPoint.x - CatPhysics.seatAnchor.x) / 60.0
         headTilt.target = max(-0.18, min(0.18, dx * 0.16))
         headOffsetY.velocity += 18
+    }
+
+    // MARK: - Claude Code Hooks
+
+    func updateClaude(_ status: ClaudeStatus) {
+        guard status != claudeStatus else { return }
+        // working 内部换工具不算"新状态"，不重置气泡动画
+        let sameKind: Bool = {
+            switch (status, claudeStatus) {
+            case (.working, .working), (.waiting, .waiting): return true
+            default: return false
+            }
+        }()
+        claudeStatus = status
+        if status.isActive {
+            claudeBubbleStatus = status
+            sleepiness = 0
+        }
+        if !sameKind { claudeStatusAge = 0 }
+        switch status {
+        case .done:
+            celebration = 1
+            bodySquash.velocity -= 2.6
+            headOffsetY.velocity -= 140
+            spawnConfetti()
+        case .waiting:
+            earTwitch.velocity += 7
+            pupilScale.target = 1.22
+        default:
+            break
+        }
+    }
+
+    // MARK: - Key Habit Reactions
+
+    func react(to habit: KeyHabitEvent) {
+        guard CatSettings.shared.keyHabitReactions else { return }
+        sleepiness = 0
+        switch habit {
+        case .backspaceStorm:
+            sweatTimer = CatPhysics.sweatDuration
+            earTwitch.velocity -= 5
+        case .save:
+            saveStampAge = 0
+            headOffsetY.velocity += 70 // 认真点个头
+        case .screenshot:
+            peaceTimer = CatPhysics.peaceDuration
+            cameraFlash = 1
+            toast = Toast(text: "📸 咔嚓！", style: .habit)
+        case .recordBurstStarted:
+            crownTimer = 30
+            crownPop.value = 0
+            crownPop.velocity = 0
+        case .newKPMRecord(let kpm):
+            crownTimer = max(crownTimer, 12)
+            toast = Toast(text: "👑 新纪录 \(kpm) KPM！", style: .habit)
+        }
+    }
+
+    // MARK: - Meeting Hooks
+
+    func setMeeting(mic: Bool, micApp: String?, camera: Bool) {
+        let micTurnedOn = mic && !micActive
+        let cameraTurnedOn = camera && !cameraActive
+        micActive = mic
+        cameraActive = camera
+        if !mic { meetingKeyTimes.removeAll() }
+        guard CatSettings.shared.meetingMode else { return }
+        if cameraTurnedOn {
+            // 镜头一开先洗把脸，洗完再"营业"
+            groomTimer = CatPhysics.groomDuration
+            sleepiness = 0
+        } else if micTurnedOn {
+            toast = Toast(text: "🎙 " + (micApp.map { "\($0) 开麦中" } ?? "麦克风开着"), style: .meeting)
+        }
+    }
+
+    /// 开麦时 2.5s 内连按 9 下以上就提醒一次键盘声，90s 冷却
+    private func checkKeyboardNoise(now: CFTimeInterval) {
+        let settings = CatSettings.shared
+        guard micActive, settings.meetingMode, settings.keyboardNoiseReminder else { return }
+        meetingKeyTimes.append(now)
+        meetingKeyTimes.removeAll { now - $0 > 2.5 }
+        guard meetingKeyTimes.count >= 9, now >= shushCooldownUntil else { return }
+        meetingKeyTimes.removeAll()
+        shushCooldownUntil = now + 90
+        shushTimer = 2.4
+        toast = Toast(text: "🤫 开着麦呢，键盘声有点大", style: .meeting)
+    }
+
+    /// 嘴巴在画布上的位置（跟随头部的位移/转动），用于捂嘴、洗脸
+    var mouthCanvasPoint: CGPoint {
+        CGPoint(
+            x: CatPhysics.seatAnchor.x + bodyShiftX.value + bodyTilt.value * 36 + headYaw.value * 9,
+            y: 126 + headOffsetY.value + headPitch.value * 4.8 + 15
+        )
+    }
+
+    // MARK: - Music Hooks
+
+    func setListening(_ listening: Bool, musicApp: Bool) {
+        isListening = listening
+        isListeningToMusicApp = listening && musicApp
+        if listening { sleepiness = 0 }
+    }
+
+    /// 切歌：弹歌名气泡，并按歌名哈希出一个稳定的 BPM，不同的歌点头速度不同
+    func showTrack(title: String, artist: String?) {
+        var hash: UInt64 = 1469598103934665603
+        for b in title.utf8 { hash = (hash ^ UInt64(b)) &* 1099511628211 }
+        beatsPerMinute = 92 + CGFloat(hash % 37) // 92...128
+        guard CatSettings.shared.showTrackBubble else { return }
+        let text = artist.map { "\(title) - \($0)" } ?? title
+        toast = Toast(text: "♪ " + text, style: .track)
     }
 
     private func spawnFloatingKeycap(label: String, near pt: CGPoint, now: CFTimeInterval) {
@@ -445,7 +682,9 @@ final class CatPhysics {
         // 2. Sleepy idle detection
         let lastAnyActivity = max(curLastKeyTime, max(curLastMouseMove, lastPetTime))
         let idleSeconds = lastAnyActivity > 0 ? (now - lastAnyActivity) : 0
-        if activeKeys.isEmpty && idleSeconds > 45 {
+        let vibingToMusic = isListening && headphonesOn.value > 0.5
+        // Claude 在干活时小猫陪着盯，不睡
+        if activeKeys.isEmpty && idleSeconds > 45 && !vibingToMusic && !claudeStatus.isActive {
             let targetSleep = min(1.0, CGFloat((idleSeconds - 45) / 35.0))
             sleepiness += (targetSleep - sleepiness) * dt * 1.5
             if sleepiness > 0.8 {
@@ -476,6 +715,81 @@ final class CatPhysics {
         }
         huntIntensity.step(dt: dt, stiffness: 85, damping: 16)
         let hunt = max(0, min(1, huntIntensity.value))
+
+        // 2c. 听歌：戴/摘耳机、节拍、陶醉闭眼、音符粒子
+        let wantMusic = isListening && CatSettings.shared.musicHeadphones
+        let wantHeadset = micActive && CatSettings.shared.meetingMode
+        headphonesOn.target = (wantMusic || wantHeadset) ? 1 : 0
+        headphonesOn.step(dt: dt, stiffness: 170, damping: 13)
+        boomMic.target = wantHeadset ? 1 : 0
+        boomMic.step(dt: dt, stiffness: 150, damping: 14)
+        // 只有听歌才跟拍子动；开会只戴耳麦不摇头
+        let music = wantMusic ? max(0, min(1, headphonesOn.value)) : 0
+        if wantMusic {
+            beatPhase += dt * beatsPerMinute / 60 * 2 * .pi
+            // 2.5s 没碰键鼠就闭眼陶醉；一动就睁眼。捕猎/摸头时让位给原有表情
+            let idleForVibe = now - max(curLastKeyTime, curLastMouseMove) > 2.5
+            let vibeTarget: CGFloat = (idleForVibe && hunt < 0.2) ? 1 : 0
+            musicVibe += (vibeTarget - musicVibe) * min(1, dt * (vibeTarget > musicVibe ? 1.2 : 6))
+            spawnMusicNotesIfNeeded()
+        } else {
+            musicVibe = max(0, musicVibe - dt * 4)
+            lastNoteBeat = -1
+        }
+        // 2f. 键盘习惯：计时衰减 + 定期采样 KPM 判断破纪录
+        sweatTimer = max(0, sweatTimer - dt)
+        peaceTimer = max(0, peaceTimer - dt)
+        cameraFlash = max(0, cameraFlash - dt * 3.2)
+        crownTimer = max(0, crownTimer - dt)
+        if let age = saveStampAge {
+            saveStampAge = age + dt > CatPhysics.saveStampDuration ? nil : age + dt
+        }
+        crownPop.target = crownTimer > 0 ? 1 : 0
+        crownPop.step(dt: dt, stiffness: 210, damping: 12)
+        if scripted == nil {
+            kpmSampleCooldown -= dt
+            if kpmSampleCooldown <= 0 {
+                kpmSampleCooldown = 0.25
+                if let habit = habits.sampleKPM(engine.currentKPM) { react(to: habit) }
+            }
+        }
+
+        // 2e. 会议：嘘 / 洗脸计时
+        shushTimer = max(0, shushTimer - dt)
+        if groomTimer > 0 {
+            groomTimer -= dt
+            // 洗脸冒小星星：黑猫的爪子和脸同色，靠粒子让动作看得出来
+            groomSparkleCooldown -= dt
+            if groomSparkleCooldown <= 0 {
+                groomSparkleCooldown = 0.3
+                let m = mouthCanvasPoint
+                sparkles.append(PurrSparkle(
+                    position: CGPoint(x: m.x + 22 + CGFloat.random(in: -10...14), y: m.y - 18 + CGFloat.random(in: -10...8)),
+                    velocity: CGPoint(x: CGFloat.random(in: -8...12), y: -22),
+                    isSleepZ: false
+                ))
+            }
+            if groomTimer <= 0 {
+                groomTimer = 0
+                toast = Toast(text: "✨ 洗好脸了，营业中", style: .camera)
+            }
+        }
+
+        // 2d. Claude Code：气泡显隐、庆祝衰减
+        claudeStatusAge += dt
+        claudeBubble.target = claudeStatus.isActive ? 1 : 0
+        claudeBubble.step(dt: dt, stiffness: 240, damping: 15)
+        celebration = max(0, celebration - dt / 2.4)
+        var claudeWaiting = false
+        if case .waiting = claudeStatus { claudeWaiting = true }
+        var claudeWorking = false
+        if case .working = claudeStatus { claudeWorking = true }
+        let userIdleForClaude = now - max(curLastKeyTime, curLastMouseMove) > 2.0
+
+        if var current = toast {
+            current.age += dt
+            toast = current.age > Toast.duration ? nil : current
+        }
 
         // 3. Determine limb targets (Left Paw, Right Paw, 3rd-Key Hind Foot!)
         let tapHoldWindow: CFTimeInterval = 0.14
@@ -560,7 +874,29 @@ final class CatPhysics {
             rightPaw.target = KeyboardLayout.canvasPoint(for: rk)
             rightPawTyping = true
         } else {
-            rightPaw.target = CatPhysics.rightPawRest
+            if claudeWaiting {
+                // Claude 等你批准：举起爪子在头边挥手
+                rightPaw.target = CGPoint(x: CatPhysics.rightPawRest.x + 36 + sin(time * 9) * 5,
+                                          y: 146 + sin(time * 9 + 1.2) * 6)
+            } else {
+                // 听歌时空闲的爪子跟着拍子轻敲桌面
+                rightPaw.target = CGPoint(x: CatPhysics.rightPawRest.x, y: CatPhysics.rightPawRest.y - beatPulse * 3.5 * music)
+            }
+            rightPawTyping = false
+        }
+
+        // 会议动作优先级最高：捂嘴 > 洗脸 > 比耶（短暂打断打字爪）
+        if shushTimer > 0 {
+            let m = mouthCanvasPoint
+            rightPaw.target = CGPoint(x: m.x + 3, y: m.y - 4)
+            rightPawTyping = false
+        } else if groomTimer > 0 {
+            let m = mouthCanvasPoint
+            rightPaw.target = CGPoint(x: m.x + 20 + sin(time * 7) * 4, y: m.y - 10 + cos(time * 7) * 5)
+            rightPawTyping = false
+        } else if peaceTimer > 0 {
+            // 截图比耶：举爪停在脸旁边
+            rightPaw.target = CGPoint(x: CatPhysics.rightPawRest.x + 32, y: 140)
             rightPawTyping = false
         }
 
@@ -598,7 +934,16 @@ final class CatPhysics {
         bodySquash.target = 1.0 - hunt * 0.11
 
         headOffsetY.target = (leftPawTyping || rightPawTyping) ? 3.5 : (sleepiness * 5.0 + hunt * 10.5)
+        // 听歌点头：每拍向下顿一下（打字时幅度减半，保证不影响看键盘）
+        let typingNow = leftPawTyping || rightPawTyping
+        headOffsetY.target += beatPulse * music * (typingNow ? 1.6 : 3.4) * (1 - hunt)
+        if claudeWaiting && !typingNow {
+            // 着急地小跳
+            headOffsetY.target -= abs(sin(time * 6)) * 4.5
+        }
         earFold.target = max(petHeadIntensity * 0.7, petBodyIntensity * 0.45) + sleepiness * 0.25 - hunt * 0.18
+            - (claudeWaiting ? 0.2 : 0)
+            + (sweatTimer > 0 ? 0.4 : 0) // 冒汗时耳朵往后背
         earTwitch.target = 0
 
         bodyShiftX.step(dt: dt, stiffness: 140, damping: 18)
@@ -626,8 +971,8 @@ final class CatPhysics {
         let cursorNX = curMag > 0.001 ? (curDx / curMag) * clampedCur : 0
         let cursorNY = curMag > 0.001 ? (curDy / curMag) * clampedCur : 0
 
-        let lookTargetX: CGFloat
-        let lookTargetY: CGFloat
+        var lookTargetX: CGFloat
+        var lookTargetY: CGFloat
         if typingRecently && !mouseMovedRecently, let keyPt = lastTypedPoint {
             let kdx = max(-0.85, min(0.85, (keyPt.x - eyeOriginCanvas.x) / 95.0))
             let kdy = max(-0.3, min(0.92, (keyPt.y - eyeOriginCanvas.y) / 125.0))
@@ -641,6 +986,23 @@ final class CatPhysics {
         } else {
             lookTargetX = cursorNX
             lookTargetY = cursorNY
+        }
+
+        // Claude 联动的视线：等你时盯着你（正前方），干活时抬头看右上角的思考气泡
+        if shushTimer > 0 {
+            // 嘘的时候盯着你
+            lookTargetX = 0
+            lookTargetY = 0.05
+        } else if hunt < 0.3 && userIdleForClaude {
+            if claudeWaiting {
+                lookTargetX = 0
+                lookTargetY = 0.05
+            } else if claudeWorking {
+                // 偶尔低头看一眼键盘，像在等结果
+                let glance = sin(time * 0.7) > 0.75
+                lookTargetX = glance ? 0.1 : 0.42
+                lookTargetY = glance ? 0.5 : -0.62
+            }
         }
 
         // Head turns smoothly in 2.5D (yaw & pitch) — locks on faster during hunting mode!
@@ -659,6 +1021,10 @@ final class CatPhysics {
         // Subtle natural head roll coupled to head turning (curious tilt / locked-on hunt!)
         if now - lastPetTime > 0.28 {
             headTilt.target = bodyTilt.target * 0.45 + headYaw.value * (0.11 + hunt * 0.05) - headYaw.value * headPitch.value * 0.04
+            // 两拍一个来回的左右摇摆
+            headTilt.target += sin(beatPhase * 0.5) * 0.075 * music * (1 - hunt)
+            // 洗脸时脑袋歪向爪子一侧，跟着蹭
+            if groomTimer > 0 { headTilt.target += 0.16 + sin(time * 7) * 0.04 }
         }
         headTilt.step(dt: dt, stiffness: 130, damping: 16)
 
@@ -669,6 +1035,8 @@ final class CatPhysics {
         // Pupil dilation
         if hindFootActive.value > 0.3 {
             pupilScale.target = 1.24
+        } else if claudeWaiting {
+            pupilScale.target = 1.22
         } else if now - curLastKeyTime > 0.45 && now - curLastMouseClick > 0.45 {
             pupilScale.target = 1.0
         }
@@ -695,7 +1063,10 @@ final class CatPhysics {
         let kpmBoost = min(2.4, CGFloat(engine.currentKPM) / 160.0)
         let petBoost = max(petHeadIntensity, petBodyIntensity) * 1.4
         let huntBoost = hunt * 2.8
-        let tailSpeed: CGFloat = 1.85 + kpmBoost + petBoost + huntBoost - sleepiness * 1.1
+        var tailSpeed: CGFloat = 1.85 + kpmBoost + petBoost + huntBoost - sleepiness * 1.1 + celebration * 3.5
+        // 听歌时尾巴摆动速度向节拍靠拢（每拍半个周期）
+        let beatTailSpeed = beatsPerMinute / 60 * .pi
+        tailSpeed += (beatTailSpeed - tailSpeed) * music * 0.7
         tailPhase += dt * tailSpeed
 
         // 8. Update per-keycap glows
@@ -730,9 +1101,59 @@ final class CatPhysics {
             sparkles[i].age += dt
             sparkles[i].position.x += sparkles[i].velocity.x * dt
             sparkles[i].position.y += sparkles[i].velocity.y * dt
+            sparkles[i].velocity.y += sparkles[i].gravity * dt
+            if sparkles[i].noteGlyph != nil && sparkles[i].gravity == 0 {
+                // 音符左右飘
+                sparkles[i].position.x += sin(sparkles[i].age * 5 + sparkles[i].noteHue * 6) * 14 * dt
+            }
             if sparkles[i].age >= sparkles[i].lifetime {
                 sparkles.remove(at: i)
             }
         }
+    }
+
+    // MARK: - Music Notes
+
+    /// 每两拍从耳机罩附近冒一个音符；只有音乐播放器才冒（视频/游戏只戴耳机）
+    private func spawnMusicNotesIfNeeded() {
+        guard isListeningToMusicApp, headphonesOn.value > 0.8 else { return }
+        let beatIndex = Int(beatPhase / (2 * .pi))
+        guard beatIndex != lastNoteBeat, beatIndex % 2 == 0 else { return }
+        lastNoteBeat = beatIndex
+        let glyphs = ["♪", "♫", "♬", "♩"]
+        let fromLeft = (beatIndex / 2) % 2 == 0
+        let headX = CatPhysics.seatAnchor.x + bodyShiftX.value
+        sparkles.append(PurrSparkle(
+            position: CGPoint(x: headX + (fromLeft ? -50 : 42), y: 112 + headOffsetY.value),
+            velocity: CGPoint(x: fromLeft ? -9 : 9, y: -30),
+            lifetime: 1.8,
+            isSleepZ: false,
+            noteGlyph: glyphs[Int.random(in: 0..<glyphs.count)],
+            noteHue: CGFloat.random(in: 0...1)
+        ))
+        if sparkles.count > 24 { sparkles.removeFirst(sparkles.count - 24) }
+    }
+
+    // MARK: - Confetti
+
+    /// 任务完成：从头顶炸出一把彩带
+    private func spawnConfetti() {
+        let glyphs = ["●", "■", "▲", "✦", "♥"]
+        let headX = CatPhysics.seatAnchor.x + bodyShiftX.value
+        for _ in 0..<22 {
+            let angle = CGFloat.random(in: (-CGFloat.pi * 0.92)...(-CGFloat.pi * 0.08))
+            let speed = CGFloat.random(in: 90...170)
+            sparkles.append(PurrSparkle(
+                position: CGPoint(x: headX + CGFloat.random(in: -12...12), y: 78),
+                velocity: CGPoint(x: cos(angle) * speed, y: sin(angle) * speed),
+                lifetime: CGFloat.random(in: 1.3...2.0),
+                isSleepZ: false,
+                noteGlyph: glyphs[Int.random(in: 0..<glyphs.count)],
+                noteHue: CGFloat.random(in: 0...1),
+                gravity: 210,
+                spin: CGFloat.random(in: -8...8)
+            ))
+        }
+        if sparkles.count > 48 { sparkles.removeFirst(sparkles.count - 48) }
     }
 }

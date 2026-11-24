@@ -111,6 +111,12 @@ enum CatRenderer {
         )
         drawEarsLayer(in: ctx, center: headCenter, physics: physics, coat: coat)
 
+        // 4b. 转头时远侧耳机罩被脑袋挡住，先画在头后面
+        let headphones = max(0, physics.headphonesOn.value)
+        if headphones > 0.01 {
+            drawHeadphones(in: ctx, center: headCenter, physics: physics, coat: coat, eyeTheme: settings.eyeTheme, layer: .back)
+        }
+
         // 5. Unified C1-Continuous Head + Neck + Pear Torso Silhouette + Siamese 2.5D Face Mask
         drawUnifiedSilhouette(
             in: ctx,
@@ -130,8 +136,43 @@ enum CatRenderer {
         // 7. 2.5D Turning Head Features: Luminous Eyes & Whiskers
         drawHeadFeatures(in: ctx, center: headCenter, physics: physics, eyeTheme: settings.eyeTheme, coat: coat)
 
+        // 7b. 头梁 + 近侧耳机罩盖在头上
+        if headphones > 0.01 {
+            drawHeadphones(in: ctx, center: headCenter, physics: physics, coat: coat, eyeTheme: settings.eyeTheme, layer: .front)
+        }
+
+        // 7c. 头上的小配件：KPM 皇冠、狂删冒汗
+        if physics.crownPop.value > 0.02 || physics.sweatTimer > 0 {
+            drawHeadAccessories(in: ctx, center: headCenter, physics: physics)
+        }
+
         // 8. Front Arms / Paws (over torso & keyboard/mouse with crisp separation outlines / Siamese chocolate socks!)
         drawFrontPaws(in: ctx, seatX: seatX, seatY: seatY, breath: breath, physics: physics, coat: coat)
+
+        // 8b. 嘘：嘴边冒一个"嘘~"（黑猫捂嘴时爪子和脸同色，需要文字点题）
+        if physics.shushTimer > 0 {
+            let m = physics.mouthCanvasPoint
+            let a = min(1, physics.shushTimer / 0.4) * min(1, (2.4 - physics.shushTimer) / 0.2)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 9.5, weight: .bold),
+                .foregroundColor: NSColor(calibratedWhite: 1, alpha: 1)
+            ]
+            let str = NSAttributedString(string: "嘘~", attributes: attrs)
+            let size = str.size()
+            // 小深色胶囊垫底：黑猫/浅色猫上都清晰，小字号描边会糊
+            let pill = CGRect(x: m.x + 16, y: m.y - 7 + sin(physics.time * 5) * 1.5,
+                              width: size.width + 8, height: size.height + 2)
+            ctx.saveGState()
+            ctx.setAlpha(max(0, a))
+            ctx.setFillColor(NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.13, alpha: 0.88).cgColor)
+            ctx.addPath(CGPath(roundedRect: pill, cornerWidth: pill.height / 2, cornerHeight: pill.height / 2, transform: nil))
+            ctx.fillPath()
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            str.draw(at: CGPoint(x: pill.minX + 4, y: pill.minY + 1))
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
 
         // 8. Floating Mechanical Keycap Badges (keyboard + mouse clicks)
         if !physics.floatingKeycaps.isEmpty {
@@ -140,6 +181,36 @@ enum CatRenderer {
 
         // 9. Subtle Petting Sparkles / Sleep Z
         drawSparkles(in: ctx, physics: physics, eyeTheme: settings.eyeTheme)
+
+        // 9b. Claude Code 状态气泡（右上角）
+        let claudeVisible = physics.claudeBubble.value > 0.02
+        if claudeVisible {
+            drawClaudeBubble(in: ctx, physics: physics, headCenter: headCenter)
+        }
+
+        // 9c. 歌名 / 会议提醒气泡（和 Claude 气泡同时出现时挪到最上面）
+        if let toast = physics.toast {
+            let accent: NSColor
+            switch toast.style {
+            case .track: accent = settings.eyeTheme.primaryColor
+            case .meeting: accent = NSColor(calibratedRed: 0.96, green: 0.36, blue: 0.36, alpha: 1)
+            case .camera, .habit: accent = NSColor(calibratedRed: 1.0, green: 0.82, blue: 0.35, alpha: 1)
+            }
+            drawToastBubble(in: ctx, text: toast.text, age: toast.age, headCenter: headCenter,
+                            accent: accent, raised: claudeVisible)
+        }
+
+        // 9d. ⌘S 印章、截图比耶手势、闪光灯
+        if let age = physics.saveStampAge {
+            drawSaveStamp(in: ctx, age: age)
+        }
+        if physics.peaceTimer > 0 {
+            drawPeaceSign(in: ctx, physics: physics)
+        }
+        if physics.cameraFlash > 0.01 {
+            drawRadialGlow(in: ctx, center: CGPoint(x: seatX, y: 160), radius: 175,
+                           color: NSColor(calibratedWhite: 1, alpha: physics.cameraFlash * 0.8))
+        }
 
         // 10. Optional non-intrusive Permission Pill if global monitoring not yet granted
         if showPermissionPill {
@@ -1388,8 +1459,35 @@ enum CatRenderer {
             let p = sp.age / sp.lifetime
             let alpha = sin(min(1.0, p) * .pi)
             ctx.saveGState()
-            ctx.setAlpha(alpha * 0.85)
-            if sp.isSleepZ {
+            ctx.setAlpha(alpha * (sp.noteGlyph == nil ? 0.85 : 1.0))
+            if let glyph = sp.noteGlyph, sp.gravity > 0 {
+                // 彩带：小号、旋转、高饱和
+                ctx.translateBy(x: sp.position.x, y: sp.position.y)
+                ctx.rotate(by: sp.spin * sp.age)
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 7.5, weight: .black),
+                    .foregroundColor: NSColor(calibratedHue: sp.noteHue, saturation: 0.75, brightness: 0.98, alpha: 1)
+                ]
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+                NSAttributedString(string: glyph, attributes: attrs).draw(at: CGPoint(x: -3, y: -5))
+                NSGraphicsContext.restoreGraphicsState()
+            } else if let glyph = sp.noteGlyph {
+                let color = NSColor(calibratedHue: sp.noteHue, saturation: 0.62, brightness: 0.98, alpha: 1)
+                let shadow = NSShadow()
+                shadow.shadowColor = NSColor(calibratedWhite: 0, alpha: 0.35)
+                shadow.shadowBlurRadius = 1.5
+                shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 15 + p * 4, weight: .heavy),
+                    .foregroundColor: color,
+                    .shadow: shadow
+                ]
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+                NSAttributedString(string: glyph, attributes: attrs).draw(at: sp.position)
+                NSGraphicsContext.restoreGraphicsState()
+            } else if sp.isSleepZ {
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: 11 + p * 3, weight: .bold),
                     .foregroundColor: eyeTheme.primaryColor
@@ -1415,6 +1513,561 @@ enum CatRenderer {
             }
             ctx.restoreGState()
         }
+    }
+
+    // MARK: - Music Headphones 🎧
+
+    enum HeadphoneLayer { case back, front }
+
+    private struct HeadphonePalette {
+        let shell: NSColor
+        let shellShade: NSColor
+        let cushion: NSColor
+        let accent: NSColor
+    }
+
+    /// 按皮肤挑撞色：黑猫配奶白、暹罗配樱花粉、美短配薄荷、橘白配藏青
+    private static func headphonePalette(_ coat: CatCoatTheme, eyeTheme: EyeColorTheme) -> HeadphonePalette {
+        switch coat {
+        case .classicBlack:
+            return HeadphonePalette(shell: rgb(0xF4F1EA), shellShade: rgb(0xCFCAC0), cushion: rgb(0x3A3A40), accent: eyeTheme.primaryColor)
+        case .siamese:
+            return HeadphonePalette(shell: rgb(0xF6B8C4), shellShade: rgb(0xD98A9C), cushion: rgb(0x4A3630), accent: rgb(0xFFF4E8))
+        case .shorthair:
+            return HeadphonePalette(shell: rgb(0x9ED9C6), shellShade: rgb(0x6FB39E), cushion: rgb(0x3B4743), accent: rgb(0xFFF8E6))
+        case .orangeWhite:
+            return HeadphonePalette(shell: rgb(0x34466B), shellShade: rgb(0x223050), cushion: rgb(0x1C2234), accent: rgb(0xF6B04A))
+        }
+    }
+
+    /// 头戴式耳机：头梁是投影到 2.5D 头部椭球上的一段弧，耳罩贴在两颊外侧。
+    /// headphonesOn < 1 时从头顶往下"戴上"（弹簧过冲 → 啪嗒一下）。
+    private static func drawHeadphones(
+        in ctx: CGContext,
+        center: CGPoint,
+        physics: CatPhysics,
+        coat: CatCoatTheme,
+        eyeTheme: EyeColorTheme,
+        layer: HeadphoneLayer
+    ) {
+        let on = physics.headphonesOn.value
+        let alpha = max(0, min(1, on * 1.6))
+        let drop = (1 - on) * -46 // 未戴好时悬在头顶上方
+
+        ctx.saveGState()
+        ctx.translateBy(x: center.x, y: center.y + drop)
+        ctx.rotate(by: physics.headTilt.value)
+        ctx.setAlpha(alpha)
+
+        let yawRad = physics.headYaw.value * 0.50
+        let pitchRad = physics.headPitch.value * 0.36
+        let pal = headphonePalette(coat, eyeTheme: eyeTheme)
+
+        func proj(_ x: CGFloat, _ y: CGFloat, _ z: CGFloat) -> (pt: CGPoint, z: CGFloat) {
+            projectHead3D(x: x, y: y, z: z, yawRad: yawRad, pitchRad: pitchRad)
+        }
+
+        // 头梁：x/y 平面上的半椭圆，略靠后（z=-4）；顶点 y=-30.5 压在头顶轮廓上，转头时不露缝
+        if layer == .front {
+            let band = CGMutablePath()
+            let steps = 18
+            for i in 0...steps {
+                let theta = CGFloat.pi * CGFloat(i) / CGFloat(steps)
+                let pt = proj(-cos(theta) * 41.5, -9 - sin(theta) * 21.5, -4).pt
+                if i == 0 { band.move(to: pt) } else { band.addLine(to: pt) }
+            }
+            ctx.setLineCap(.round)
+            ctx.setLineJoin(.round)
+            ctx.setStrokeColor(pal.shellShade.cgColor)
+            ctx.setLineWidth(6.2)
+            ctx.addPath(band)
+            ctx.strokePath()
+            ctx.setStrokeColor(pal.shell.cgColor)
+            ctx.setLineWidth(4.4)
+            ctx.addPath(band)
+            ctx.strokePath()
+            // 头梁高光
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.45).cgColor)
+            ctx.setLineWidth(1.1)
+            ctx.saveGState()
+            ctx.translateBy(x: 0, y: -1.2)
+            ctx.addPath(band)
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
+
+        for sign: CGFloat in [-1, 1] {
+            let cup = proj(sign * 42.5, -1.5, 0)
+            // 耳罩朝外的法线 (sign,0,0) 经 yaw 后的 z 分量 > 0 表示朝向观众
+            let normalZ = -sign * sin(yawRad)
+            let isFar = cup.z < -6 || normalZ < -0.28
+            guard (layer == .back) == isFar else { continue }
+
+            let faceOpen = max(0, normalZ) // 0 = 侧面看，1 = 正对外壳
+            let w: CGFloat = 12.5 + faceOpen * 9
+            let h: CGFloat = 25
+            // 耳罩偏向头外侧，正对时向外再挪一点露出外壳
+            let cx = cup.pt.x + sign * (2.5 + faceOpen * 3)
+            let cy = cup.pt.y
+
+            // 连接头梁的小滑块
+            let slider = proj(sign * 41.5, -11.5, -4).pt
+            ctx.setStrokeColor(pal.shellShade.cgColor)
+            ctx.setLineWidth(3.2)
+            ctx.setLineCap(.round)
+            ctx.move(to: slider)
+            ctx.addLine(to: CGPoint(x: cx, y: cy - h * 0.42))
+            ctx.strokePath()
+
+            // 内侧海绵垫（靠头的一侧）
+            let cushionRect = CGRect(x: cx - w * 0.5 - sign * 2.2, y: cy - h * 0.5 + 1, width: w, height: h - 2)
+            ctx.setFillColor(pal.cushion.cgColor)
+            ctx.fillEllipse(in: cushionRect)
+
+            // 外壳
+            let shellRect = CGRect(x: cx - w * 0.5 + sign * 1.2, y: cy - h * 0.5, width: w, height: h)
+            let shellPath = CGPath(roundedRect: shellRect, cornerWidth: w * 0.48, cornerHeight: h * 0.42, transform: nil)
+            ctx.setFillColor(pal.shell.cgColor)
+            ctx.addPath(shellPath)
+            ctx.fillPath()
+            ctx.setStrokeColor(pal.shellShade.cgColor)
+            ctx.setLineWidth(1.1)
+            ctx.addPath(shellPath)
+            ctx.strokePath()
+
+            // 外壳上的彩色圆标（跟着节拍微微闪烁）
+            let pulse = physics.beatPulse * (physics.isListeningToMusicApp ? 1 : 0)
+            let dotR: CGFloat = 3.2 + faceOpen * 2.2 + pulse * 0.8
+            let dot = CGRect(x: shellRect.midX - dotR, y: shellRect.midY - dotR, width: dotR * 2, height: dotR * 2)
+            ctx.setFillColor(pal.accent.withAlphaComponent(0.85 + pulse * 0.15).cgColor)
+            ctx.fillEllipse(in: dot)
+
+            // 外壳高光
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.5).cgColor)
+            ctx.setLineWidth(1.2)
+            ctx.addArc(center: CGPoint(x: shellRect.midX, y: shellRect.midY),
+                       radius: min(w, h) * 0.34,
+                       startAngle: .pi * 1.1, endAngle: .pi * 1.45, clockwise: false)
+            ctx.strokePath()
+
+            // 开麦指示灯：耳罩顶上一颗呼吸的红灯
+            let boom = max(0, min(1, physics.boomMic.value))
+            if boom > 0.05 && sign < 0 {
+                let blink = 0.55 + 0.45 * abs(sin(physics.time * 3))
+                ctx.setFillColor(NSColor(calibratedRed: 1, green: 0.27, blue: 0.27, alpha: boom * blink).cgColor)
+                ctx.fillEllipse(in: CGRect(x: shellRect.midX - 1.8, y: shellRect.minY + 2, width: 3.6, height: 3.6))
+            }
+        }
+
+        // 麦克风杆：固定从左耳罩伸出，弹簧从下垂位置转到嘴边
+        let boom = max(0, physics.boomMic.value)
+        if layer == .front && boom > 0.02 {
+            let root = proj(-43, 3, 3).pt
+            let restTip = proj(-46, 30, 2).pt
+            let liveTip = proj(-10, 14.5, 30).pt
+            let tip = CGPoint(x: restTip.x + (liveTip.x - restTip.x) * boom, y: restTip.y + (liveTip.y - restTip.y) * boom)
+            let ctrl = CGPoint(x: (root.x + tip.x) * 0.5 - 4, y: max(root.y, tip.y) + 8 * boom)
+            ctx.setLineCap(.round)
+            ctx.setStrokeColor(pal.shellShade.cgColor)
+            ctx.setLineWidth(2.6)
+            ctx.move(to: root)
+            ctx.addQuadCurve(to: tip, control: ctrl)
+            ctx.strokePath()
+            ctx.setStrokeColor(pal.shell.cgColor)
+            ctx.setLineWidth(1.2)
+            ctx.move(to: root)
+            ctx.addQuadCurve(to: tip, control: ctrl)
+            ctx.strokePath()
+            // 防喷海绵
+            ctx.setFillColor(pal.cushion.cgColor)
+            ctx.fillEllipse(in: CGRect(x: tip.x - 4.2, y: tip.y - 3.4, width: 8.4, height: 6.8))
+            ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.22).cgColor)
+            ctx.fillEllipse(in: CGRect(x: tip.x - 2.6, y: tip.y - 2.6, width: 3, height: 2.2))
+        }
+
+        ctx.restoreGState()
+    }
+
+    private static func drawToastBubble(in ctx: CGContext, text: String, age: CGFloat, headCenter: CGPoint,
+                                        accent: NSColor, raised: Bool) {
+        // 0.25s 淡入上浮，最后 0.6s 淡出
+        let fadeIn = min(1, age / 0.25)
+        let fadeOut = max(0, min(1, (Toast.duration - age) / 0.6))
+        let alpha = fadeIn * fadeOut
+        guard alpha > 0.01 else { return }
+
+        var display = text
+        if display.count > 26 { display = String(display.prefix(25)) + "…" }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
+            .foregroundColor: NSColor(calibratedWhite: 0.97, alpha: 1)
+        ]
+        let str = NSAttributedString(string: display, attributes: attrs)
+        let size = str.size()
+        let w = size.width + 18
+        let h: CGFloat = 20
+        // Claude 气泡占右上角时，提示气泡挪到左上角
+        let x = raised ? 4 : max(4, min(CatPhysics.canvasSize.width - w - 4, headCenter.x - w * 0.5))
+        let y = raised ? 4 : max(4, headCenter.y - 98 + (1 - fadeIn) * 6)
+        let rect = CGRect(x: x, y: y, width: w, height: h)
+
+        ctx.saveGState()
+        ctx.setAlpha(alpha)
+        let path = CGPath(roundedRect: rect, cornerWidth: 10, cornerHeight: 10, transform: nil)
+        ctx.setFillColor(NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.13, alpha: 0.88).cgColor)
+        ctx.addPath(path)
+        ctx.fillPath()
+        ctx.setStrokeColor(accent.withAlphaComponent(0.9).cgColor)
+        ctx.setLineWidth(1.1)
+        ctx.addPath(path)
+        ctx.strokePath()
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        str.draw(at: CGPoint(x: rect.minX + 9, y: rect.midY - size.height * 0.5 - 0.5))
+        NSGraphicsContext.restoreGraphicsState()
+        ctx.restoreGState()
+    }
+
+    // MARK: - Key Habit Accessories
+
+    /// 皇冠和汗滴都画在头部局部坐标里，跟随 2.5D 转头/歪头
+    private static func drawHeadAccessories(in ctx: CGContext, center: CGPoint, physics: CatPhysics) {
+        ctx.saveGState()
+        ctx.translateBy(x: center.x, y: center.y)
+        ctx.rotate(by: physics.headTilt.value)
+        let yawRad = physics.headYaw.value * 0.50
+        let pitchRad = physics.headPitch.value * 0.36
+
+        // 皇冠：戴上时从上方弹下来，略微歪戴
+        let pop = physics.crownPop.value
+        if pop > 0.02 {
+            let base = projectHead3D(x: 0, y: -31, z: 4, yawRad: yawRad, pitchRad: pitchRad).pt
+            ctx.saveGState()
+            ctx.translateBy(x: base.x + 3, y: base.y - (1 - min(1, pop)) * 22)
+            ctx.rotate(by: 0.14)
+            let s = max(0, pop) * 1.25
+            ctx.scaleBy(x: s, y: s)
+            ctx.setAlpha(min(1, pop * 1.5))
+
+            let crown = CGMutablePath()
+            crown.move(to: CGPoint(x: -13, y: 0))
+            crown.addLine(to: CGPoint(x: -14, y: -13))
+            crown.addLine(to: CGPoint(x: -7, y: -6))
+            crown.addLine(to: CGPoint(x: 0, y: -16))
+            crown.addLine(to: CGPoint(x: 7, y: -6))
+            crown.addLine(to: CGPoint(x: 14, y: -13))
+            crown.addLine(to: CGPoint(x: 13, y: 0))
+            crown.closeSubpath()
+            ctx.saveGState()
+            ctx.addPath(crown)
+            ctx.clip()
+            let gold = [rgb(0xFFE27A).cgColor, rgb(0xF2A900).cgColor] as CFArray
+            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: gold, locations: [0, 1]) {
+                ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: -16), end: CGPoint(x: 0, y: 0), options: [])
+            }
+            ctx.restoreGState()
+            ctx.setStrokeColor(rgb(0xB57800).cgColor)
+            ctx.setLineWidth(1)
+            ctx.setLineJoin(.round)
+            ctx.addPath(crown)
+            ctx.strokePath()
+            // 宝石
+            ctx.setFillColor(rgb(0xE5484D).cgColor)
+            ctx.fillEllipse(in: CGRect(x: -2.2, y: -5.5, width: 4.4, height: 4.4))
+            ctx.setFillColor(rgb(0x4C8DF6).cgColor)
+            ctx.fillEllipse(in: CGRect(x: -9.5, y: -4.5, width: 3.2, height: 3.2))
+            ctx.fillEllipse(in: CGRect(x: 6.3, y: -4.5, width: 3.2, height: 3.2))
+            // 闪光
+            let glint = max(0, sin(physics.time * 3.1))
+            if glint > 0.6 {
+                ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: (glint - 0.6) * 2.5).cgColor)
+                let star = CGMutablePath()
+                let c = CGPoint(x: 9, y: -11), r: CGFloat = 3.5
+                star.move(to: CGPoint(x: c.x, y: c.y - r))
+                star.addQuadCurve(to: CGPoint(x: c.x + r, y: c.y), control: c)
+                star.addQuadCurve(to: CGPoint(x: c.x, y: c.y + r), control: c)
+                star.addQuadCurve(to: CGPoint(x: c.x - r, y: c.y), control: c)
+                star.addQuadCurve(to: CGPoint(x: c.x, y: c.y - r), control: c)
+                ctx.addPath(star)
+                ctx.fillPath()
+            }
+            ctx.restoreGState()
+        }
+
+        // 汗滴：两侧太阳穴各一滴，往下滑，循环两次
+        if physics.sweatTimer > 0 {
+            let progress = 1 - physics.sweatTimer / CatPhysics.sweatDuration
+            let fade = min(1, physics.sweatTimer / 0.4) * min(1, progress * 6)
+            for (i, side) in [CGFloat(1), -1].enumerated() {
+                let phase = (progress * 2 + CGFloat(i) * 0.45).truncatingRemainder(dividingBy: 1)
+                // 太阳穴、头轮廓边上（漫画式汗滴），远离眼睛免得像眼泪
+                let p = projectHead3D(x: side * 37, y: -22 + phase * 9, z: 0, yawRad: yawRad, pitchRad: pitchRad)
+                guard p.z > -8 else { continue }
+                let size: CGFloat = i == 0 ? 1.55 : 1.05
+                ctx.saveGState()
+                ctx.translateBy(x: p.pt.x, y: p.pt.y)
+                ctx.scaleBy(x: size, y: size)
+                ctx.setAlpha(fade * (1 - phase * 0.4))
+                let drop = CGMutablePath()
+                drop.move(to: CGPoint(x: 0, y: -6))
+                drop.addQuadCurve(to: CGPoint(x: 3.6, y: 1.5), control: CGPoint(x: 3.2, y: -2.5))
+                drop.addArc(center: CGPoint(x: 0, y: 1.5), radius: 3.6, startAngle: 0, endAngle: .pi, clockwise: false)
+                drop.addQuadCurve(to: CGPoint(x: 0, y: -6), control: CGPoint(x: -3.2, y: -2.5))
+                ctx.setFillColor(rgb(0x8FD3FF).cgColor)
+                ctx.addPath(drop)
+                ctx.fillPath()
+                ctx.setStrokeColor(rgb(0x3E9BD6).cgColor)
+                ctx.setLineWidth(0.8)
+                ctx.addPath(drop)
+                ctx.strokePath()
+                ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.8).cgColor)
+                ctx.fillEllipse(in: CGRect(x: -1.8, y: -0.5, width: 1.6, height: 2.2))
+                ctx.restoreGState()
+            }
+        }
+        ctx.restoreGState()
+    }
+
+    /// ⌘S："已保存"印章从上方砸下来，停留后淡出
+    private static func drawSaveStamp(in ctx: CGContext, age: CGFloat) {
+        let slam = min(1, age / 0.12)
+        let scale = 1.8 - 0.8 * slam
+        let fadeOut = max(0, min(1, (CatPhysics.saveStampDuration - age) / 0.35))
+        let alpha = slam * fadeOut
+        guard alpha > 0.01 else { return }
+        let red = NSColor(calibratedRed: 0.86, green: 0.18, blue: 0.20, alpha: 1)
+
+        ctx.saveGState()
+        ctx.translateBy(x: 92, y: 198)
+        ctx.rotate(by: -0.2)
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.setAlpha(alpha)
+        let rect = CGRect(x: -25, y: -12, width: 50, height: 24)
+        let path = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
+        ctx.setFillColor(NSColor(calibratedRed: 1, green: 0.97, blue: 0.93, alpha: 0.88).cgColor)
+        ctx.addPath(path)
+        ctx.fillPath()
+        ctx.setStrokeColor(red.cgColor)
+        ctx.setLineWidth(2)
+        ctx.addPath(path)
+        ctx.strokePath()
+        ctx.setLineWidth(0.8)
+        ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 2.5, dy: 2.5), cornerWidth: 2.5, cornerHeight: 2.5, transform: nil))
+        ctx.strokePath()
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .black),
+            .foregroundColor: red
+        ]
+        let str = NSAttributedString(string: "已保存", attributes: attrs)
+        let size = str.size()
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        str.draw(at: CGPoint(x: -size.width / 2, y: -size.height / 2))
+        NSGraphicsContext.restoreGraphicsState()
+        ctx.restoreGState()
+    }
+
+    /// 截图：举起的爪子上方比个 ✌
+    private static func drawPeaceSign(in ctx: CGContext, physics: CatPhysics) {
+        let paw = physics.rightPaw.point
+        let t = physics.peaceTimer
+        let alpha = min(1, (CatPhysics.peaceDuration - t) / 0.2) * min(1, t / 0.3)
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 17)]
+        ctx.saveGState()
+        ctx.setAlpha(max(0, alpha))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        NSAttributedString(string: "✌️", attributes: attrs)
+            .draw(at: CGPoint(x: paw.x - 4, y: paw.y - 30 + sin(physics.time * 8) * 1.5))
+        NSGraphicsContext.restoreGraphicsState()
+        ctx.restoreGState()
+    }
+
+    // MARK: - Claude Code Status Bubble
+
+    private static let claudeOrange = NSColor(calibratedRed: 0.851, green: 0.467, blue: 0.341, alpha: 1) // #D97757
+    private static let waitingAmber = NSColor(calibratedRed: 0.98, green: 0.69, blue: 0.20, alpha: 1)
+    private static let doneGreen = NSColor(calibratedRed: 0.40, green: 0.80, blue: 0.50, alpha: 1)
+
+    /// 头右上方的状态气泡：干活 = 思考云 + 转圈星号；等你 = 抖动的对话框；完成 = 绿色对话框。
+    private static func drawClaudeBubble(in ctx: CGContext, physics: CatPhysics, headCenter: CGPoint) {
+        let status = physics.claudeBubbleStatus
+        guard status != .idle else { return }
+        let t = physics.time
+        // 和终端里的 spinner 同款字形，来回循环；多行时错开相位
+        let frames = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"]
+
+        let accent: NSColor
+        var isThought = false
+        switch status {
+        case .working: accent = claudeOrange; isThought = true
+        case .waiting: accent = waitingAmber
+        case .done: accent = doneGreen
+        case .idle: return
+        }
+
+        // 每个会话一行：「✻ Faceplant · 写代码 · 2m」。没有明细时（预览/旧数据）退回单行聚合文案
+        var lines = physics.claudeLines
+        if lines.isEmpty {
+            switch status {
+            case .working(let tool, _):
+                lines = [ClaudeSessionLine(project: "", detail: ClaudeActivityTracker.label(forTool: tool), kind: .working, elapsed: nil)]
+            case .waiting(let kind):
+                lines = [ClaudeSessionLine(project: "", detail: kind == .permission ? "等你批准" : "等你回复", kind: .waiting, elapsed: nil)]
+            case .done, .idle:
+                lines = [ClaudeSessionLine(project: "", detail: "搞定！", kind: .done, elapsed: nil)]
+            }
+        }
+        // 最多 3 行；超出时前 2 行照常显示（等你的会话已排在最前），第 3 行列出其余项目名
+        let maxRows = 3
+        var hidden: [ClaudeSessionLine] = []
+        if lines.count > maxRows {
+            hidden = Array(lines.dropFirst(maxRows - 1))
+            lines = Array(lines.prefix(maxRows - 1))
+        }
+
+        // 行内容只随 spinner 帧（9fps）、等待闪烁档位和明细变化，按 key 缓存，避免 60fps 下每帧重建富文本
+        let frameIndex = Int(t * 9) % frames.count
+        let waitStep = Int(abs(sin(t * 4)) * 6)
+        let cacheKey = ClaudeBubbleCacheKey(lines: lines, hidden: hidden, frameIndex: frameIndex, waitStep: waitStep)
+        let rendered: [NSAttributedString]
+        let textW: CGFloat
+        if let cached = claudeBubbleCache, cached.key == cacheKey {
+            rendered = cached.rows
+            textW = cached.width
+        } else {
+            let rows = buildClaudeRows(lines: lines, hidden: hidden, frameIndex: frameIndex, waitStep: waitStep, frames: frames)
+            rendered = rows
+            textW = rows.map { $0.size().width }.max() ?? 40
+            claudeBubbleCache = (cacheKey, rows, textW)
+        }
+
+        let rowH: CGFloat = 14
+        let padX: CGFloat = 9
+        let padY: CGFloat = 4
+        let w = max(66, ceil(textW) + padX * 2)
+        let h = CGFloat(rendered.count) * rowH + padY * 2
+        drawClaudeBubbleShell(in: ctx, physics: physics, headCenter: headCenter, status: status, accent: accent,
+                              isThought: isThought, rendered: rendered, w: w, h: h, rowH: rowH, padX: padX, padY: padY)
+    }
+
+    private struct ClaudeBubbleCacheKey: Equatable {
+        let lines: [ClaudeSessionLine]
+        let hidden: [ClaudeSessionLine]
+        let frameIndex: Int
+        let waitStep: Int
+    }
+
+    private static var claudeBubbleCache: (key: ClaudeBubbleCacheKey, rows: [NSAttributedString], width: CGFloat)?
+
+    private static func buildClaudeRows(lines: [ClaudeSessionLine], hidden: [ClaudeSessionLine],
+                                        frameIndex: Int, waitStep: Int, frames: [String]) -> [NSAttributedString] {
+        let boldFont = NSFont.systemFont(ofSize: 10, weight: .bold)
+        let regularFont = NSFont.systemFont(ofSize: 10, weight: .medium)
+        let dim = NSColor(calibratedWhite: 0.78, alpha: 1)
+        let white = NSColor(calibratedWhite: 0.97, alpha: 1)
+        var rendered: [NSAttributedString] = []
+        for (i, line) in lines.enumerated() {
+            let row = NSMutableAttributedString()
+            let glyph: String
+            let glyphColor: NSColor
+            switch line.kind {
+            case .working:
+                glyph = frames[(frameIndex + i * 3) % frames.count]
+                glyphColor = claudeOrange
+            case .waiting:
+                // 等待行的叹号闪烁
+                glyph = "‼"
+                glyphColor = waitingAmber.withAlphaComponent(0.5 + 0.5 * CGFloat(waitStep) / 6)
+            case .done:
+                glyph = "✓"
+                glyphColor = doneGreen
+            }
+            row.append(NSAttributedString(string: glyph + " ", attributes: [.font: boldFont, .foregroundColor: glyphColor]))
+            if !line.project.isEmpty {
+                var name = line.project
+                if name.count > 14 { name = String(name.prefix(13)) + "…" }
+                row.append(NSAttributedString(string: name, attributes: [.font: boldFont, .foregroundColor: white]))
+                row.append(NSAttributedString(string: " · ", attributes: [.font: regularFont, .foregroundColor: dim]))
+            }
+            let detailColor = line.kind == .working ? dim : (line.kind == .waiting ? waitingAmber : doneGreen)
+            row.append(NSAttributedString(string: line.detail, attributes: [.font: line.project.isEmpty ? boldFont : regularFont, .foregroundColor: line.project.isEmpty ? white : detailColor]))
+            if let elapsed = line.elapsed {
+                row.append(NSAttributedString(string: " · " + ClaudeActivityTracker.formatElapsed(elapsed),
+                                              attributes: [.font: regularFont, .foregroundColor: dim]))
+            }
+            rendered.append(row)
+        }
+        if !hidden.isEmpty {
+            var names = hidden.map(\.project).joined(separator: "、")
+            if names.count > 22 { names = String(names.prefix(21)) + "…" }
+            let row = NSMutableAttributedString(string: "+\(hidden.count) ", attributes: [.font: boldFont, .foregroundColor: claudeOrange])
+            row.append(NSAttributedString(string: names, attributes: [.font: regularFont, .foregroundColor: dim]))
+            rendered.append(row)
+        }
+        return rendered
+    }
+
+    private static func drawClaudeBubbleShell(in ctx: CGContext, physics: CatPhysics, headCenter: CGPoint,
+                                              status: ClaudeStatus, accent: NSColor, isThought: Bool,
+                                              rendered: [NSAttributedString], w: CGFloat, h: CGFloat,
+                                              rowH: CGFloat, padX: CGFloat, padY: CGFloat) {
+        let t = physics.time
+        let pop = max(0, physics.claudeBubble.value)
+        // 气泡尾巴指向头顶右侧；多行时向上长，靠右但不出画布
+        let anchor = CGPoint(x: headCenter.x + 30, y: headCenter.y - 48)
+        let rect = CGRect(x: max(4, min(CatPhysics.canvasSize.width - w - 4, anchor.x - 16)),
+                          y: max(2, anchor.y - 19 - h), width: w, height: h)
+
+        ctx.saveGState()
+        ctx.setAlpha(min(1, pop * 1.4))
+        // 以尾巴为锚点做弹出缩放；等你时周期性抖动
+        ctx.translateBy(x: anchor.x, y: anchor.y)
+        ctx.scaleBy(x: pop, y: pop)
+        if case .waiting = status {
+            let shake = sin(t * 26) * 0.05 * max(0, sin(t * 2.4))
+            ctx.rotate(by: shake)
+        }
+        ctx.translateBy(x: -anchor.x, y: -anchor.y)
+
+        let fill = NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.13, alpha: 0.9)
+        ctx.setFillColor(fill.cgColor)
+        if isThought {
+            // 思考云下方的两个小圆点
+            ctx.fillEllipse(in: CGRect(x: anchor.x - 2.5, y: anchor.y - 3, width: 5, height: 5))
+            ctx.fillEllipse(in: CGRect(x: anchor.x + 1, y: anchor.y - 13, width: 8, height: 8))
+        } else {
+            let tail = CGMutablePath()
+            tail.move(to: CGPoint(x: anchor.x - 4, y: rect.maxY - 1))
+            tail.addLine(to: CGPoint(x: anchor.x, y: anchor.y - 4))
+            tail.addLine(to: CGPoint(x: anchor.x + 8, y: rect.maxY - 1))
+            tail.closeSubpath()
+            ctx.addPath(tail)
+            ctx.fillPath()
+        }
+
+        let path = CGPath(roundedRect: rect, cornerWidth: min(10.5, h / 2), cornerHeight: min(10.5, h / 2), transform: nil)
+        ctx.setFillColor(fill.cgColor)
+        ctx.addPath(path)
+        ctx.fillPath()
+        var stroke = accent
+        if case .waiting = status {
+            // 边框呼吸闪烁，提醒感更强
+            stroke = accent.withAlphaComponent(0.55 + 0.45 * abs(sin(t * 4)))
+        }
+        ctx.setStrokeColor(stroke.cgColor)
+        ctx.setLineWidth(1.4)
+        ctx.addPath(path)
+        ctx.strokePath()
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        for (i, row) in rendered.enumerated() {
+            let size = row.size()
+            row.draw(at: CGPoint(x: rect.minX + padX, y: rect.minY + padY + CGFloat(i) * rowH + (rowH - size.height) * 0.5))
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        ctx.restoreGState()
     }
 
     // MARK: - Non-Intrusive Permission Pill

@@ -1,11 +1,13 @@
 import Foundation
 import AppKit
+import IOKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var overlayWindow: OverlayWindow!
     private var renderTimer: Timer?
     private var lastFrameTime: CFTimeInterval = CACurrentMediaTime()
+    private var lastClaudeLinesUpdate: CFTimeInterval = 0
     private var isPetVisible = true
     private var availableUpdateVersion: String?
     private var availableUpdateURL: URL?
@@ -39,14 +41,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.onKeyDown = { [weak self] key in
             DispatchQueue.main.async {
                 self?.overlayWindow.catView.physics.triggerKeyDown(key)
+                // 只认在终端/IDE 里、且没按修饰键的按键：在 Slack 里按回车、⌘1 切标签、⌘⇧3 截图都不算回应 Claude
+                guard Self.frontmostIsClaudeHost(), !Self.commandModifierHeld() else { return }
+                let now = CACurrentMediaTime()
+                let tracker = ClaudeActivityTracker.shared
+                switch key {
+                case .arrowUp, .arrowDown:
+                    // 用方向键挑选项后再回车，就不知道选的是"是"还是"否"了
+                    tracker.noteSelectionNavigation(at: now)
+                case .enter, .k1, .k2:
+                    tracker.acknowledgeWaiting(userActionAt: now, response: .approve)
+                case .escape, .k3:
+                    tracker.acknowledgeWaiting(userActionAt: now, response: .reject)
+                    // IDE 里 Esc 常用来关补全/退插入模式，只在终端和 Claude App 里当作打断
+                    if key == .escape && Self.frontmostIsTerminal() { tracker.userPressedEscape(at: now) }
+                default:
+                    break
+                }
             }
         }
         engine.onMouseClick = { [weak self] button, isDown in
             DispatchQueue.main.async {
                 self?.overlayWindow.catView.physics.triggerMouseClick(button: button, isDown: isDown)
+                // 只有能"点按钮批准"的宿主（Claude App、VS Code 类编辑器的 Claude 面板）才把点击当作回应
+                if isDown && button == 0 && Self.frontmostHasClickablePrompt() {
+                    ClaudeActivityTracker.shared.acknowledgeWaiting(userActionAt: CACurrentMediaTime(), response: .approve)
+                }
             }
         }
         engine.start()
+        // 系统只有在 App 申请过一次后，才会把它列进「输入监控」；首次启动主动申请（只弹系统框，不跳设置）
+        if !engine.hasInputMonitoringPermission && !UserDefaults.standard.bool(forKey: "KuroCat.DidRequestInputMonitoring") {
+            UserDefaults.standard.set(true, forKey: "KuroCat.DidRequestInputMonitoring")
+            CGRequestListenEventAccess()
+            IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+        }
+
+        // 听歌检测 -> 戴耳机 / 歌名气泡
+        let music = MusicMonitor.shared
+        music.onActivityChange = { [weak self] activity in
+            self?.applyAudioActivity(activity)
+        }
+        music.onTrackChange = { [weak self] track in
+            self?.overlayWindow.catView.physics.showTrack(title: track.title, artist: track.artist)
+        }
+        music.start()
+
+        // Claude Code hook 事件 -> 小猫状态；App 换了位置就顺手把 hook 路径修好
+        ClaudeActivityTracker.shared.start()
+        ClaudeHookInstaller.repairIfOutdated()
+
+        // 麦克风/摄像头占用 -> 耳麦、嘘、洗脸
+        let meeting = MeetingMonitor.shared
+        meeting.onChange = { [weak self] state in
+            self?.overlayWindow.catView.physics.setMeeting(mic: state.micActive, micApp: state.micApp, camera: state.cameraActive)
+        }
+        meeting.start()
 
         setupStatusItem()
         if isAutoStartEnabled() {
@@ -67,6 +117,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderTimer?.invalidate()
         InputEngine.shared.flushStats()
         InputEngine.shared.stop()
+        MusicMonitor.shared.stop()
+        ClaudeActivityTracker.shared.stop()
+        MeetingMonitor.shared.stop()
+    }
+
+    private func applyAudioActivity(_ activity: AudioActivity) {
+        let physics = overlayWindow.catView.physics
+        switch activity {
+        case .silent:
+            physics.setListening(false, musicApp: false)
+        case .music:
+            physics.setListening(true, musicApp: true)
+        case .otherAudio:
+            physics.setListening(CatSettings.shared.headphonesForAnyAudio, musicApp: false)
+        }
     }
 
     // MARK: - One KuroCat at a time (newest copy wins)
@@ -153,6 +218,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.lastFrameTime = now
 
             let view = self.overlayWindow.catView
+            if CatSettings.shared.claudeIntegration {
+                let tracker = ClaudeActivityTracker.shared
+                view.physics.updateClaude(tracker.status(now: now))
+                // 明细每秒刷新 4 次就够（耗时按秒显示），不必每帧排序拼字符串
+                if now - self.lastClaudeLinesUpdate >= 0.25 {
+                    self.lastClaudeLinesUpdate = now
+                    view.physics.claudeLines = tracker.lines(now: now)
+                }
+            } else {
+                view.physics.updateClaude(.idle)
+            }
             view.physics.step(dt: dt, windowFrameInScreen: self.overlayWindow.frame)
             view.updateHoverAndClickThrough()
             view.needsDisplay = true
@@ -255,6 +331,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         petItem.target = self
         petItem.state = settings.petInteraction ? .on : .off
         menu.addItem(petItem)
+
+        let habitItem = NSMenuItem(title: "键盘习惯小反应（⌫冒汗 / ⌘S盖章 / 截图比耶 / KPM皇冠）", action: #selector(toggleKeyHabits), keyEquivalent: "")
+        habitItem.target = self
+        habitItem.state = settings.keyHabitReactions ? .on : .off
+        menu.addItem(habitItem)
+
+        let musicMenu = NSMenu()
+        let headphonesItem = NSMenuItem(title: "听歌时戴耳机摇头 🎧", action: #selector(toggleMusicHeadphones), keyEquivalent: "")
+        headphonesItem.target = self
+        headphonesItem.state = settings.musicHeadphones ? .on : .off
+        musicMenu.addItem(headphonesItem)
+        let anyAudioItem = NSMenuItem(title: "看视频/玩游戏有声音时也戴", action: #selector(toggleHeadphonesForAnyAudio), keyEquivalent: "")
+        anyAudioItem.target = self
+        anyAudioItem.state = settings.headphonesForAnyAudio ? .on : .off
+        musicMenu.addItem(anyAudioItem)
+        let bubbleItem = NSMenuItem(title: "切歌时显示歌名气泡", action: #selector(toggleTrackBubble), keyEquivalent: "")
+        bubbleItem.target = self
+        bubbleItem.state = settings.showTrackBubble ? .on : .off
+        musicMenu.addItem(bubbleItem)
+        let nowItem: NSMenuItem
+        switch MusicMonitor.shared.activity {
+        case .music(let app): nowItem = NSMenuItem(title: "正在听：\(app)", action: nil, keyEquivalent: "")
+        case .otherAudio: nowItem = NSMenuItem(title: "检测到其他 App 在出声", action: nil, keyEquivalent: "")
+        case .silent: nowItem = NSMenuItem(title: "当前没有声音", action: nil, keyEquivalent: "")
+        }
+        nowItem.isEnabled = false
+        musicMenu.addItem(.separator())
+        musicMenu.addItem(nowItem)
+        let musicParent = NSMenuItem(title: "音乐 🎵", action: nil, keyEquivalent: "")
+        musicParent.submenu = musicMenu
+        menu.addItem(musicParent)
+
+        menu.addItem(buildMeetingMenuItem())
+        menu.addItem(buildClaudeMenuItem())
 
         menu.addItem(.separator())
 
@@ -457,6 +567,238 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func togglePetInteraction() {
         CatSettings.shared.petInteraction.toggle()
+    }
+
+    @objc private func toggleKeyHabits() {
+        CatSettings.shared.keyHabitReactions.toggle()
+    }
+
+    @objc private func toggleMusicHeadphones() {
+        CatSettings.shared.musicHeadphones.toggle()
+    }
+
+    @objc private func toggleHeadphonesForAnyAudio() {
+        CatSettings.shared.headphonesForAnyAudio.toggle()
+        applyAudioActivity(MusicMonitor.shared.activity)
+    }
+
+    // MARK: - 会议模式
+
+    private func buildMeetingMenuItem() -> NSMenuItem {
+        let sub = NSMenu()
+        let state = MeetingMonitor.shared.state
+        var parts: [String] = []
+        if state.micActive { parts.append("🎙 " + (state.micApp ?? "麦克风") + " 在用") }
+        if state.cameraActive { parts.append("📷 摄像头开着") }
+        let statusItem = NSMenuItem(title: parts.isEmpty ? "当前没有在开会" : parts.joined(separator: " · "), action: nil, keyEquivalent: "")
+        statusItem.isEnabled = false
+        sub.addItem(statusItem)
+        sub.addItem(.separator())
+
+        let modeItem = NSMenuItem(title: "开麦戴耳麦、开摄像头先洗脸", action: #selector(toggleMeetingMode), keyEquivalent: "")
+        modeItem.target = self
+        modeItem.state = CatSettings.shared.meetingMode ? .on : .off
+        sub.addItem(modeItem)
+        let noiseItem = NSMenuItem(title: "开麦时打字太猛提醒「嘘」🤫", action: #selector(toggleKeyboardNoiseReminder), keyEquivalent: "")
+        noiseItem.target = self
+        noiseItem.state = CatSettings.shared.keyboardNoiseReminder ? .on : .off
+        sub.addItem(noiseItem)
+        sub.addItem(.separator())
+        let demoItem = NSMenuItem(title: "🎬 演示：开摄像头 → 开麦 → 打字太吵", action: #selector(runMeetingDemo), keyEquivalent: "")
+        demoItem.target = self
+        sub.addItem(demoItem)
+
+        let parent = NSMenuItem(title: "会议模式 🎙", action: nil, keyEquivalent: "")
+        parent.submenu = sub
+        return parent
+    }
+
+    @objc private func toggleMeetingMode() {
+        CatSettings.shared.meetingMode.toggle()
+    }
+
+    @objc private func toggleKeyboardNoiseReminder() {
+        CatSettings.shared.keyboardNoiseReminder.toggle()
+    }
+
+    /// 不碰真实设备，直接驱动 physics 演示一遍
+    @objc private func runMeetingDemo() {
+        let physics = overlayWindow.catView.physics
+        physics.setMeeting(mic: false, micApp: nil, camera: false)
+        physics.setMeeting(mic: false, micApp: nil, camera: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) {
+            physics.setMeeting(mic: true, micApp: "腾讯会议", camera: true)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 9) {
+            for i in 0..<10 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.08) {
+                    physics.triggerKeyDown([.j, .k, .l, .f, .d][i % 5])
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
+            // 恢复时读最新状态：演示期间可能真的开了会
+            let live = MeetingMonitor.shared.state
+            physics.setMeeting(mic: live.micActive, micApp: live.micApp, camera: live.cameraActive)
+        }
+    }
+
+    // MARK: - Claude Code 联动
+
+    // 可能运行 Claude Code 的宿主 App（bundle ID 小写子串）
+    private static let claudeHostTokens = [
+        "terminal", "iterm", "warp", "ghostty", "kitty", "alacritty", "wezterm", "hyper", "tabby",
+        "vscode", "todesktop", "cursor", "windsurf", "zed", "jetbrains", "xcode", "anthropic", "claude"
+    ]
+
+    private static let terminalTokens = [
+        "terminal", "iterm", "warp", "ghostty", "kitty", "alacritty", "wezterm", "hyper", "tabby", "anthropic", "claude"
+    ]
+    private static let clickablePromptTokens = ["anthropic", "claude", "vscode", "todesktop", "cursor", "windsurf", "zed"]
+
+    private static func frontmostBundleID() -> String? {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier?.lowercased()
+    }
+
+    private static func frontmostIsTerminal() -> Bool {
+        guard let id = frontmostBundleID() else { return false }
+        return terminalTokens.contains { id.contains($0) }
+    }
+
+    private static func frontmostHasClickablePrompt() -> Bool {
+        guard let id = frontmostBundleID() else { return false }
+        return clickablePromptTokens.contains { id.contains($0) }
+    }
+
+    private static func commandModifierHeld() -> Bool {
+        let modifiers: Set<PhysicalKey> = [.leftCommand, .rightCommand, .leftControl, .rightControl, .leftOption, .rightOption]
+        return !InputEngine.shared.activeKeys.isDisjoint(with: modifiers)
+    }
+
+    private static func frontmostIsClaudeHost() -> Bool {
+        guard let id = NSWorkspace.shared.frontmostApplication?.bundleIdentifier?.lowercased() else { return false }
+        return claudeHostTokens.contains { id.contains($0) }
+    }
+
+    private func buildClaudeMenuItem() -> NSMenuItem {
+        let sub = NSMenu()
+        let state = ClaudeHookInstaller.state()
+
+        let statusText: String
+        switch state {
+        case .notInstalled: statusText = "未连接 Claude Code"
+        case .outdated: statusText = "⚠️ hook 指向旧的 KuroCat 位置，需要重新连接"
+        case .installed: statusText = "已连接 Claude Code"
+        }
+        let statusItem = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
+        statusItem.isEnabled = false
+        sub.addItem(statusItem)
+        // 逐会话列出：项目 · 动作 · 耗时
+        let now = CACurrentMediaTime()
+        let lines = ClaudeActivityTracker.shared.lines(now: now)
+        if state == .installed && lines.isEmpty {
+            let idleItem = NSMenuItem(title: "    所有会话都空闲", action: nil, keyEquivalent: "")
+            idleItem.isEnabled = false
+            sub.addItem(idleItem)
+        }
+        for line in lines {
+            let elapsed = line.elapsed.map { " · " + ClaudeActivityTracker.formatElapsed($0) } ?? ""
+            let item = NSMenuItem(title: "    \(line.project) · \(line.detail)\(elapsed)", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            sub.addItem(item)
+        }
+        sub.addItem(.separator())
+
+        let enabledItem = NSMenuItem(title: "显示 Claude 状态气泡与动作", action: #selector(toggleClaudeIntegration), keyEquivalent: "")
+        enabledItem.target = self
+        enabledItem.state = CatSettings.shared.claudeIntegration ? .on : .off
+        sub.addItem(enabledItem)
+
+        let installTitle = state == .notInstalled ? "连接 Claude Code（写入 ~/.claude/settings.json）..." : "重新连接 Claude Code"
+        let installItem = NSMenuItem(title: installTitle, action: #selector(installClaudeHooks), keyEquivalent: "")
+        installItem.target = self
+        sub.addItem(installItem)
+        if state != .notInstalled {
+            let uninstallItem = NSMenuItem(title: "断开 Claude Code（移除 hook）", action: #selector(uninstallClaudeHooks), keyEquivalent: "")
+            uninstallItem.target = self
+            sub.addItem(uninstallItem)
+        }
+        sub.addItem(.separator())
+        let demoItem = NSMenuItem(title: "🎬 演示：思考 → 等批准 → 搞定", action: #selector(runClaudeDemo), keyEquivalent: "")
+        demoItem.target = self
+        sub.addItem(demoItem)
+
+        let parent = NSMenuItem(title: "Claude Code 联动 🤖", action: nil, keyEquivalent: "")
+        parent.submenu = sub
+        return parent
+    }
+
+    @objc private func toggleClaudeIntegration() {
+        CatSettings.shared.claudeIntegration.toggle()
+    }
+
+    @objc private func installClaudeHooks() {
+        let confirm = NSAlert()
+        confirm.messageText = "连接 Claude Code"
+        confirm.informativeText = """
+        KuroCat 会在 ~/.claude/settings.json 里加入 7 个 hook（会话开始/结束、提交提示词、调用工具前后、通知、完成）。
+
+        • 只把事件名、工具名、项目文件夹名发给小猫，不读取你的提示词和代码
+        • 原文件会备份为 settings.json.kurocat-backup
+        • 已打开的 Claude Code 会话需要重启（或执行 /hooks）后生效
+        """
+        confirm.addButton(withTitle: "连接")
+        confirm.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try ClaudeHookInstaller.install()
+            CatSettings.shared.claudeIntegration = true
+            showInfoAlert("已连接 Claude Code 🎉", "新开的 Claude Code 会话里，小猫会跟着思考、等你批准、完成任务做出反应。")
+        } catch {
+            showInfoAlert("连接失败", error.localizedDescription)
+        }
+    }
+
+    @objc private func uninstallClaudeHooks() {
+        do {
+            try ClaudeHookInstaller.uninstall()
+            showInfoAlert("已断开 Claude Code", "KuroCat 的 hook 已从 ~/.claude/settings.json 移除，其他配置未改动。")
+        } catch {
+            showInfoAlert("断开失败", error.localizedDescription)
+        }
+    }
+
+    /// 不依赖 hook，直接给 tracker 喂一串假事件，方便预览动画
+    @objc private func runClaudeDemo() {
+        let tracker = ClaudeActivityTracker.shared
+        let session = "kurocat-demo"
+        let steps: [(TimeInterval, String, String?, String?)] = [
+            (0.0, "UserPromptSubmit", nil, nil),
+            (2.0, "PreToolUse", "Read", nil),
+            (4.0, "PreToolUse", "Edit", nil),
+            (6.5, "Notification", nil, "permission_prompt"),
+            (10.0, "PostToolUse", "Bash", nil),
+            (11.5, "Stop", nil, nil),
+            (16.0, "SessionEnd", nil, nil)
+        ]
+        for (delay, event, tool, type) in steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                tracker.apply(event: event, session: session, tool: tool, notificationType: type, now: CACurrentMediaTime())
+            }
+        }
+    }
+
+    private func showInfoAlert(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    @objc private func toggleTrackBubble() {
+        CatSettings.shared.showTrackBubble.toggle()
     }
 
     @objc private func selectScale(_ sender: NSMenuItem) {
