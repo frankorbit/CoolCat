@@ -375,6 +375,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         habitItem.state = settings.keyHabitReactions ? .on : .off
         menu.addItem(habitItem)
 
+        let fed = overlayWindow.catView.physics.feedLog
+        let feedItem = NSMenuItem(title: "🐟 喂小鱼干（今天 \(fed.count)/\(FeedLog.dailyLimit)）", action: #selector(feedCat), keyEquivalent: "")
+        feedItem.target = self
+        menu.addItem(feedItem)
+        let playItem = NSMenuItem(title: "🪶 光标逗猫（在小猫身边慢慢晃光标）", action: #selector(toggleCursorPlay), keyEquivalent: "")
+        playItem.target = self
+        playItem.state = settings.cursorPlay ? .on : .off
+        menu.addItem(playItem)
+
         menu.addItem(buildLifeMenuItem())
 
         let idleItem = NSMenuItem(title: "空闲时的小动作（打哈欠 / 伸懒腰 / 踩奶 / 慢眨眼……）", action: #selector(toggleIdleAnimations), keyEquivalent: "")
@@ -713,6 +722,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleLifeNight() { CatSettings.shared.lifeNight.toggle() }
+    @objc private func feedCat() { overlayWindow.catView.physics.feed() }
+    @objc private func toggleCursorPlay() { CatSettings.shared.cursorPlay.toggle() }
     @objc private func toggleLifeMorning() { CatSettings.shared.lifeMorning.toggle() }
     @objc private func toggleLifeBattery() { CatSettings.shared.lifeBattery.toggle() }
     @objc private func toggleLifeWorkBreak() { CatSettings.shared.lifeWorkBreak.toggle() }

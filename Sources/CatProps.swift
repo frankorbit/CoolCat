@@ -214,6 +214,92 @@ extension CatRenderer {
         ctx.restoreGState()
     }
 
+    // MARK: - Fish Treat & Swat
+
+    /// 小鱼干：金黄鱼身 + 条纹 + 尾鳍 + 鱼眼；被咬掉的一端是一排圆弧缺口
+    static func drawFishTreat(in ctx: CGContext, physics: CatPhysics) {
+        guard let center = physics.fishPoint else { return }
+        let eaten = CGFloat(physics.fishBites) / 3        // 0..1 从鱼头一侧往后啃
+        guard eaten < 0.99 else { return }
+        ctx.saveGState()
+        ctx.translateBy(x: center.x, y: center.y)
+        ctx.rotate(by: -0.12)
+        let length: CGFloat = 30, height: CGFloat = 12
+        // 只保留没被吃掉的部分：左边界是三个向右鼓的咬痕
+        if eaten > 0 {
+            let cut = -length / 2 + length * eaten * 0.8
+            let clip = CGMutablePath()
+            clip.move(to: CGPoint(x: cut, y: -height))
+            let r = height * 2 / 6
+            for i in 0..<3 {
+                let cy = -height + r + CGFloat(i) * 2 * r
+                clip.addArc(center: CGPoint(x: cut, y: cy), radius: r, startAngle: -.pi / 2, endAngle: .pi / 2, clockwise: false)
+            }
+            clip.addLine(to: CGPoint(x: length, y: height))
+            clip.addLine(to: CGPoint(x: length, y: -height))
+            clip.closeSubpath()
+            ctx.addPath(clip)
+            ctx.clip()
+        }
+        // 尾鳍
+        let tail = CGMutablePath()
+        tail.move(to: CGPoint(x: length / 2 - 3, y: 0))
+        tail.addLine(to: CGPoint(x: length / 2 + 7, y: -7))
+        tail.addQuadCurve(to: CGPoint(x: length / 2 + 7, y: 7), control: CGPoint(x: length / 2 + 3, y: 0))
+        tail.closeSubpath()
+        ctx.setFillColor(rgb(0xE08A2E).cgColor)
+        ctx.addPath(tail)
+        ctx.fillPath()
+        // 鱼身
+        let body = CGMutablePath()
+        body.move(to: CGPoint(x: -length / 2, y: 0))
+        body.addQuadCurve(to: CGPoint(x: length / 2 - 2, y: 0), control: CGPoint(x: 0, y: -height))
+        body.addQuadCurve(to: CGPoint(x: -length / 2, y: 0), control: CGPoint(x: 0, y: height))
+        body.closeSubpath()
+        ctx.saveGState()
+        ctx.addPath(body)
+        ctx.clip()
+        let colors = [rgb(0xFFD27A).cgColor, rgb(0xF2A93B).cgColor, rgb(0xC97A22).cgColor] as CFArray
+        if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.5, 1]) {
+            ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: -height / 2), end: CGPoint(x: 0, y: height / 2), options: [])
+        }
+        ctx.setStrokeColor(rgb(0xB8681C, 0.55).cgColor)
+        ctx.setLineWidth(1)
+        for x in [CGFloat(-3), 2, 7] {
+            ctx.move(to: CGPoint(x: x, y: -5)); ctx.addQuadCurve(to: CGPoint(x: x, y: 5), control: CGPoint(x: x + 2.5, y: 0))
+        }
+        ctx.strokePath()
+        ctx.restoreGState()
+        // 鱼眼
+        ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.95).cgColor)
+        ctx.fillEllipse(in: CGRect(x: -length / 2 + 4, y: -2.6, width: 4, height: 4))
+        ctx.setFillColor(rgb(0x2A1C10).cgColor)
+        ctx.fillEllipse(in: CGRect(x: -length / 2 + 5, y: -1.8, width: 2.2, height: 2.2))
+        ctx.restoreGState()
+    }
+
+    /// 出爪：爪尖后面两道速度线（黑猫的黑爪子拍出去也看得清）
+    static func drawSwatStreak(in ctx: CGContext, physics: CatPhysics) {
+        guard let streak = physics.swatStreak, streak.extension > 0.35 else { return }
+        let paw = streak.paw
+        let shoulderX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value + (paw.x < CatPhysics.seatAnchor.x ? -20 : 20)
+        let dir = CGPoint(x: paw.x - shoulderX, y: paw.y - 182)
+        let len = max(1, hypot(dir.x, dir.y))
+        let back = CGPoint(x: -dir.x / len, y: -dir.y / len)
+        let normal = CGPoint(x: -back.y, y: back.x)
+        ctx.saveGState()
+        ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.75 * streak.extension).cgColor)
+        ctx.setLineWidth(1.6)
+        ctx.setLineCap(.round)
+        for offset in [CGFloat(-6), 0, 6] {
+            let start = CGPoint(x: paw.x + back.x * 9 + normal.x * offset, y: paw.y + back.y * 9 + normal.y * offset)
+            let end = CGPoint(x: start.x + back.x * 14, y: start.y + back.y * 14)
+            ctx.move(to: start); ctx.addLine(to: end)
+        }
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
     // MARK: - Battery Badge
 
     /// 身体左下方的电量小图标：低电量红色、充电绿色带闪电

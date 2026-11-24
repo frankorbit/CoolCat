@@ -586,6 +586,108 @@ func renderCapPreviewSheet(to path: String) {
     }
 }
 
+// 逗猫 & 喂食预览：4 皮肤 x 5 个瞬间
+if let idx = CommandLine.arguments.firstIndex(of: "--render-play-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderPlayPreviewSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
+func renderPlayPreviewSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme, settings.cursorPlay)
+    defer { (settings.coatTheme, settings.eyeTheme, settings.cursorPlay) = saved }
+    settings.cursorPlay = true
+    let coats: [(CatCoatTheme, EyeColorTheme)] = [
+        (.classicBlack, .neonChartreuse), (.siamese, .siameseBlue),
+        (.shorthair, .referenceHazel), (.orangeWhite, .warmAmber)
+    ]
+    let cursorAt = CGPoint(x: 86, y: 168)
+    // (名称, 是否画光标, 准备)
+    let scenes: [(String, Bool, (CatPhysics) -> Void)] = [
+        ("盯上：压低、扭屁股", true, { p in
+            p.debugCursorCanvas = cursorAt; p.debugPlayAvailable = true
+            // 停在蓄力满、还没出爪的那一刻
+            for _ in 0..<60 {
+                p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100))
+                if p.playWiggle > 0.9 && sin(p.time * 24) > 0.8 { break }
+            }
+            if ProcessInfo.processInfo.environment["COOLCAT_DEBUG_PLAY"] != nil {
+                print("stalk", p.playStalk, "wiggle", p.playWiggle)
+            }
+        }),
+        ("出爪！", true, { p in
+            p.debugCursorCanvas = cursorAt; p.debugPlayAvailable = true
+            // 先扭 0.7–1.3s 屁股才出爪，给足 3s
+            for _ in 0..<180 {
+                p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100))
+                if let s = p.swatStreak, s.extension > 0.9 { break }
+            }
+        }),
+        ("小鱼干掉下来", false, { p in
+            p.feed()
+            for _ in 0..<20 { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+        }),
+        ("捧着啃", false, { p in
+            p.feed()
+            for _ in 0..<Int(2.3 * 60) { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+        }),
+        ("吃不下：摇头", false, { p in
+            for _ in 0..<FeedLog.dailyLimit { p.feed(); for _ in 0..<Int(4.4 * 60) { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) } }
+            p.feed()
+            for _ in 0..<20 { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+        })
+    ]
+    let suite = "coolcat.preview.feed"
+    let cellW = 360, cellH = 320, scale = 2
+    let cols = scenes.count, rows = coats.count
+    guard let ctx = CGContext(
+        data: nil, width: cellW * cols * scale, height: cellH * rows * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(cellH * rows * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.66, green: 0.70, blue: 0.68, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: cellW * cols, height: cellH * rows))
+    _ = suite
+    for (row, coat) in coats.enumerated() {
+        settings.coatTheme = coat.0
+        settings.eyeTheme = coat.1
+        for (col, scene) in scenes.enumerated() {
+            // 预览不写真实的喂食记录
+            let savedFeedDay = UserDefaults.standard.string(forKey: "CoolCat.FeedDay")
+            let savedFeedCount = UserDefaults.standard.integer(forKey: "CoolCat.FeedCount")
+            UserDefaults.standard.removeObject(forKey: "CoolCat.FeedDay")
+            let physics = CatPhysics()
+            for _ in 0..<30 { physics.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+            scene.2(physics)
+            UserDefaults.standard.set(savedFeedDay, forKey: "CoolCat.FeedDay")
+            UserDefaults.standard.set(savedFeedCount, forKey: "CoolCat.FeedCount")
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(col * cellW), y: CGFloat(row * cellH))
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.25).cgColor)
+            ctx.stroke(CGRect(x: 0.5, y: 0.5, width: CGFloat(cellW) - 1, height: CGFloat(cellH) - 1))
+            CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: false)
+            if scene.1 { drawMacCursor(in: ctx, at: cursorAt, clicking: false) }
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            NSAttributedString(string: scene.0, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.white
+            ]).draw(at: CGPoint(x: 10, y: 296))
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
+    }
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+    } catch {
+        FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
+    }
+}
+
 /// 预览用：键鼠长时间无操作的脚本输入
 private func idleInput(now: CFTimeInterval) -> ScriptedFrameInput {
     ScriptedFrameInput(

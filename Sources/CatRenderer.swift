@@ -160,6 +160,8 @@ enum CatRenderer {
 
         // 8a. 爪子捧着的咖啡 / 奶瓶 / 水杯，电量小图标
         drawHeldProp(in: ctx, physics: physics)
+        drawFishTreat(in: ctx, physics: physics)
+        drawSwatStreak(in: ctx, physics: physics)
         drawBatteryBadge(in: ctx, physics: physics)
 
         // 8b. 嘘：嘴边冒一个"嘘~"（黑猫捂嘴时爪子和脸同色，需要文字点题）

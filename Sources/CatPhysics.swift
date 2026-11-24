@@ -120,6 +120,10 @@ final class CatSettings {
     var idleAnimations: Bool {
         didSet { UserDefaults.standard.set(idleAnimations, forKey: "CoolCat.IdleAnimations") }
     }
+    /// 光标在小猫身边晃时盯上、蓄力、出爪拍
+    var cursorPlay: Bool {
+        didSet { UserDefaults.standard.set(cursorPlay, forKey: "CoolCat.CursorPlay") }
+    }
     /// 生活陪伴：深夜睡帽、早晨咖啡、低电量/插电、久坐喝水
     var lifeNight: Bool {
         didSet { UserDefaults.standard.set(lifeNight, forKey: "CoolCat.LifeNight") }
@@ -172,6 +176,7 @@ final class CatSettings {
         meetingMode = d.object(forKey: "CoolCat.MeetingMode") as? Bool ?? true
         keyHabitReactions = d.object(forKey: "CoolCat.KeyHabitReactions") as? Bool ?? true
         lifeNight = d.object(forKey: "CoolCat.LifeNight") as? Bool ?? true
+        cursorPlay = d.object(forKey: "CoolCat.CursorPlay") as? Bool ?? true
         lifeMorning = d.object(forKey: "CoolCat.LifeMorning") as? Bool ?? true
         lifeBattery = d.object(forKey: "CoolCat.LifeBattery") as? Bool ?? true
         lifeWorkBreak = d.object(forKey: "CoolCat.LifeWorkBreak") as? Bool ?? true
@@ -411,6 +416,29 @@ final class CatPhysics {
     /// 节拍是否锁在真实鼓点上（否则是按 BPM 自由走）
     var isBeatLocked: Bool { time - lastLiveBeatTime < 3 }
 
+    // 逗猫 & 喂食
+    private var play = PlayDirector()
+    private(set) var playStalk: CGFloat = 0
+    private(set) var playWiggle: CGFloat = 0
+    /// 出爪中：哪只爪、伸展程度（给渲染画速度线）
+    var swatStreak: (paw: CGPoint, extension: CGFloat)? {
+        guard let s = play.swat else { return nil }
+        let paw = s.side == .left ? leftPaw.point : rightPaw.point
+        return (paw, play.extension_)
+    }
+    private var lastCursorCanvas: CGPoint?
+    /// 预览/调试：直接指定光标在画布上的位置
+    var debugCursorCanvas: CGPoint?
+    var debugPlayAvailable = false
+    private(set) var feedLog = FeedLog(today: LifeCompanion.dayKey(Date(), calendar: .current))
+    /// 非 nil = 正在吃小鱼干（已吃了几秒）
+    private(set) var feedAge: CGFloat?
+    /// 非 nil = 吃不下在摇头
+    private(set) var feedRefuseAge: CGFloat?
+    static let feedDuration: CGFloat = 4.2
+    /// 已经啃掉几口（0...3）
+    private(set) var fishBites = 0
+
     // 生活陪伴
     enum HeldProp { case coffee, milk, water }
     /// 0..1 戴睡帽（深夜）
@@ -512,6 +540,7 @@ final class CatPhysics {
     /// True when eyes should draw the signature glowing lime horizontal closed-eye lines
     var isHappyClosedEyes: Bool {
         if case .waiting = claudeStatus { return petHeadIntensity > 0.45 }
+        if let age = feedAge, age > 0.9 { return true }       // 吧唧吧唧啃，眯眼享受
         return petHeadIntensity > 0.45 || musicVibe > 0.6 || celebration > 0.35 || groomTimer > 0.3
             || peaceTimer > 0.3 || overlay.eyeClosure > 0.6
     }
@@ -654,6 +683,83 @@ final class CatPhysics {
             pupilScale.target = 1.22
         default:
             break
+        }
+    }
+
+    // MARK: - Cursor Play
+
+    private func reactToPlay(_ event: PlayEvent) {
+        switch event {
+        case .caught(let streak):
+            guard let target = play.swat?.target else { return }
+            sparkles.append(PurrSparkle(position: target, velocity: CGPoint(x: 0, y: -30), isSleepZ: false))
+            if streak >= 3 {
+                toast = Toast(text: "🐾 抓到啦！连抓三下", style: .habit)
+                celebration = max(celebration, 0.6)
+                spawnHeart()
+            }
+        case .missed:
+            earTwitch.velocity += 4
+        }
+    }
+
+    // MARK: - Feeding
+
+    /// 喂一条小鱼干；今天吃满 6 条就摇头
+    func feed() {
+        feedLog.roll(to: LifeCompanion.dayKey(Date(), calendar: .current))
+        guard feedAge == nil, feedRefuseAge == nil else { return }
+        sleepiness = 0
+        if feedLog.isFull {
+            feedRefuseAge = 0
+            toast = Toast(text: "吃不下啦，肚子圆滚滚～ 🐟×\(FeedLog.dailyLimit)", style: .habit)
+        } else {
+            feedAge = 0
+            fishBites = 0
+            toast = Toast(text: "🐟 小鱼干来啦！", style: .habit)
+        }
+    }
+
+    /// 小鱼干此刻的位置：从上方掉下来，落进捧在胸前的两只爪子里
+    var fishPoint: CGPoint? {
+        guard let age = feedAge else { return nil }
+        let hold = CGPoint(x: CatPhysics.seatAnchor.x + bodyShiftX.value + 1, y: mouthCanvasPoint.y + 20)
+        let fall: CGFloat = 0.55
+        guard age < fall else { return hold }
+        // easeOutBack：落下时轻轻弹一下
+        let t = age / fall, c: CGFloat = 1.6
+        let e = 1 + (c + 1) * pow(t - 1, 3) + c * pow(t - 1, 2)
+        return CGPoint(x: hold.x, y: 24 + (hold.y - 24) * e)
+    }
+
+    private func updateFeeding(dt: CGFloat) {
+        if var age = feedAge {
+            let before = age
+            age += dt
+            // 三口：每口掉一点碎渣
+            for biteTime: CGFloat in [1.4, 2.1, 2.8] where before < biteTime && age >= biteTime {
+                fishBites += 1
+                let m = mouthCanvasPoint
+                for _ in 0..<5 {
+                    sparkles.append(PurrSparkle(
+                        position: CGPoint(x: m.x + CGFloat.random(in: -8...8), y: m.y + 14),
+                        velocity: CGPoint(x: CGFloat.random(in: -40...40), y: CGFloat.random(in: -60 ... -20)),
+                        lifetime: 0.8, isSleepZ: false, noteGlyph: "•", noteHue: 0.09, gravity: 260,
+                        spin: CGFloat.random(in: -6...6)
+                    ))
+                }
+            }
+            if before < 3.5 && age >= 3.5 { spawnHeart() }
+            if age >= CatPhysics.feedDuration {
+                feedAge = nil
+                feedLog.recordMeal()
+                toast = Toast(text: "嗝～ 今天第 \(feedLog.count) 条小鱼干", style: .habit)
+            } else {
+                feedAge = age
+            }
+        }
+        if let refuse = feedRefuseAge {
+            feedRefuseAge = refuse + dt >= 1.4 ? nil : refuse + dt
         }
     }
 
@@ -1058,6 +1164,7 @@ final class CatPhysics {
         let busyElsewhere = shushTimer > 0 || groomTimer > 0 || peaceTimer > 0 || claudeStatusIsWaiting
             || petHeadIntensity > 0.3 || petBodyIntensity > 0.3
         let canDance = wantMusic && CatSettings.shared.musicDance && music > 0.5 && userIdleShort && !isAudioQuiet
+            && feedAge == nil
             && hunt < 0.2 && !busyElsewhere && activeKeys.isEmpty
         danceAmount += ((canDance ? 1 : 0) - danceAmount) * min(1, dt * (canDance ? 1.5 : 6))
         var frameOverlay = PoseOverlay.none
@@ -1085,7 +1192,12 @@ final class CatPhysics {
         if idle.action != nil { frameOverlay = idleResult.overlay }
         if idleResult.started == .slowBlink { spawnHeart() }
         overlay = frameOverlay
-        mouthOpen.target = max(overlay.mouthOpen, isHoldingProp && isSipping ? 0.25 : 0)
+        var chew: CGFloat = 0
+        if let age = feedAge {
+            if age > 0.9 && age < 3.4 { chew = 0.3 + 0.3 * sin(age * 2 * .pi * 4.5) }   // 吧唧吧唧
+            else if age >= 3.4 { chew = 0.15 }                                            // 舔嘴
+        }
+        mouthOpen.target = max(overlay.mouthOpen, max(isHoldingProp && isSipping ? 0.25 : 0, chew))
         mouthOpen.step(dt: dt, stiffness: 300, damping: 22)
         tailAmplitude += (1 + overlay.tailBoost - tailAmplitude) * min(1, dt * 6)
         if let key = overlay.pressedKey { keyGlow[key] = max(keyGlow[key] ?? 0, 0.9) }
@@ -1107,6 +1219,36 @@ final class CatPhysics {
         }
         let shownBattery = debugBattery ?? latestBattery
         batteryBadge = (tiredness > 0.1 || time < batteryBadgeUntil) ? shownBattery : nil
+
+        // 2k. 喂食 + 逗猫
+        updateFeeding(dt: dt)
+        var cursorCanvasNow: CGPoint? = debugCursorCanvas
+        if cursorCanvasNow == nil, windowFrameInScreen.width > 1 {
+            let k = windowFrameInScreen.width / CatPhysics.canvasSize.width
+            cursorCanvasNow = CGPoint(x: (curMouseLoc.x - windowFrameInScreen.minX) / k,
+                                      y: (windowFrameInScreen.maxY - curMouseLoc.y) / k)
+        }
+        let cursorSpeed = zip2(cursorCanvasNow, lastCursorCanvas).map { hypot($0.x - $1.x, $0.y - $1.y) / max(dt, 1e-3) } ?? 0
+        lastCursorCanvas = cursorCanvasNow
+        // 逗猫区：画布内、不在头/身体/键盘（那是摸猫和拖动的地方）
+        var playCursor: CGPoint?
+        if let c = cursorCanvasNow, c.x >= 0, c.y >= 0,
+           c.x <= CatPhysics.canvasSize.width, c.y <= CatPhysics.canvasSize.height,
+           CatRenderer.hitTest(point: c, physics: self, showPermissionPill: false) == .none {
+            playCursor = c
+        }
+        let typingRecent = !activeKeys.isEmpty || now - curLastKeyTime < 1.0
+        let playAvailable = debugPlayAvailable || (CatSettings.shared.cursorPlay && !typingRecent && danceAmount < 0.3
+            && !claudeStatusIsWaiting && heldProp == nil && shushTimer == 0 && groomTimer == 0 && peaceTimer == 0
+            && feedAge == nil && feedRefuseAge == nil && petHeadIntensity < 0.2 && sleepiness < 0.4 && hunt < 0.5)
+        let seatXNow = CatPhysics.seatAnchor.x + bodyShiftX.value
+        let shoulders = (left: CGPoint(x: seatXNow - 20, y: 182), right: CGPoint(x: seatXNow + 20, y: 182))
+        if let playEvent = play.update(dt: dt, cursor: playCursor, speed: cursorSpeed, available: playAvailable,
+                                       shoulders: shoulders) {
+            reactToPlay(playEvent)
+        }
+        playStalk = play.stalk
+        playWiggle = play.wiggle
 
         // 2f. 键盘习惯：计时衰减 + 定期采样 KPM 判断破纪录
         sweatTimer = max(0, sweatTimer - dt)
@@ -1260,8 +1402,15 @@ final class CatPhysics {
         }
 
         isHoldingProp = false
-        // 会议动作优先级最高：捂嘴 > 洗脸 > 比耶 > 手持道具（短暂打断打字爪）
-        if shushTimer > 0 {
+        // 优先级：喂食（你主动点的）> 捂嘴 > 洗脸 > 比耶 > 手持道具 > 逗猫出爪 > 舞步/空闲动作
+        if let fish = fishPoint, let age = feedAge, age > 0.15 {
+            // 两只爪子捧着小鱼干
+            leftPaw.target = CGPoint(x: fish.x - 9, y: fish.y + 7)
+            rightPaw.target = CGPoint(x: fish.x + 9, y: fish.y + 7)
+            leftPawOnMouse = false
+            leftPawTyping = false
+            rightPawTyping = false
+        } else if shushTimer > 0 {
             let m = mouthCanvasPoint
             rightPaw.target = CGPoint(x: m.x + 3, y: m.y - 4)
             rightPawTyping = false
@@ -1280,6 +1429,20 @@ final class CatPhysics {
                                         : CGPoint(x: CatPhysics.seatAnchor.x + bodyShiftX.value + 16, y: 184)
             rightPawTyping = false
             isHoldingProp = true
+        } else if play.swat != nil {
+            // 逗猫：出爪拍光标
+            let side = play.swat?.side ?? .left
+            let shoulder = side == .left ? shoulders.left : shoulders.right
+            if let target = play.swatPawTarget(shoulder: shoulder) {
+                if side == .left {
+                    leftPaw.target = target
+                    leftPawOnMouse = false
+                    leftPawTyping = false
+                } else {
+                    rightPaw.target = target
+                    rightPawTyping = false
+                }
+            }
         } else {
             // 舞步 / 空闲动作的爪子（打字中的爪子不抢）
             // 按权重从默认位置拉过去：开始跳舞、换舞步时爪子平滑过渡，不会"嗖"地跳过去
@@ -1333,8 +1496,12 @@ final class CatPhysics {
         // Coiled low hunting crouch when chasing a fast-moving mouse!
         bodySquash.target = 1.0 - hunt * 0.11
         bodyShiftX.target += overlay.bodyShiftX
+        // 逗猫蓄力：扭屁股（高频小幅左右晃）
+        bodyShiftX.target += sin(time * 24) * 2.4 * playWiggle
+        bodyTilt.target += sin(time * 24) * 0.025 * playWiggle
         bodyTilt.target += overlay.bodyTilt
         bodySquash.target -= overlay.squash
+        bodySquash.target -= 0.14 * playStalk // 盯上：压低身子
 
         headOffsetY.target = (leftPawTyping || rightPawTyping) ? 3.5 : (sleepiness * 5.0 + hunt * 10.5)
         // 听歌点头：每拍向下顿一下（打字时幅度减半，保证不影响看键盘）
@@ -1344,6 +1511,8 @@ final class CatPhysics {
             * (isAudioQuiet ? 0 : 1)
         headOffsetY.target += overlay.headOffsetY
         headOffsetY.target += tiredness * 3.5 // 没精神：脑袋往下耷拉
+        headOffsetY.target += 10 * playStalk
+        if let age = feedAge, age > 0.5, age < 3.6 { headOffsetY.target += 4 } // 低头啃
         if claudeWaiting && !typingNow {
             // 着急地小跳
             headOffsetY.target -= abs(sin(time * 6)) * 4.5
@@ -1353,6 +1522,7 @@ final class CatPhysics {
             + (sweatTimer > 0 ? 0.4 : 0) // 冒汗时耳朵往后背
             + overlay.earFold
             + tiredness * 0.3 // 没精神：耳朵耷拉
+            - 0.22 * playStalk // 盯上：耳朵朝前
         earTwitch.target = 0
 
         // 跳舞时弹簧更硬，才跟得上 2Hz 左右的节拍
@@ -1432,8 +1602,19 @@ final class CatPhysics {
             let extraPitch = overlay.overridesGaze ? 0 : overlay.headPitch
             headYaw.target = max(-1.0, min(1.0, lookTargetX + extraYaw))
             headPitch.target = max(-1.0, min(1.0, lookTargetY + extraPitch - (isHoldingProp && isSipping ? 0.18 : 0)))
+            if let age = feedAge {
+                // 先抬头看鱼掉下来，接住后低头啃
+                headYaw.target = 0
+                headPitch.target = age < 0.5 ? -0.5 : 0.45
+            }
+            if let refuse = feedRefuseAge {
+                // 吃不下：摇头
+                let env = sin(min(1, refuse / 1.4) * .pi)
+                headYaw.target = sin(refuse * 16) * 0.5 * env
+                headPitch.target = 0.1
+            }
         }
-        let headStiff: CGFloat = 88 + hunt * 75 + groove * 140
+        let headStiff: CGFloat = 88 + hunt * 75 + groove * 140 + playStalk * 80
         let headDamp: CGFloat = 14.5 + hunt * 4.5 + groove * 5
         headYaw.step(dt: dt, stiffness: headStiff, damping: headDamp)
         headPitch.step(dt: dt, stiffness: headStiff, damping: headDamp)
@@ -1458,6 +1639,8 @@ final class CatPhysics {
             pupilScale.target = 1.24
         } else if claudeWaiting {
             pupilScale.target = 1.22
+        } else if playStalk > 0.3 {
+            pupilScale.target = 1 + 0.38 * playStalk   // 盯上光标：瞳孔放大
         } else if now - curLastKeyTime > 0.45 && now - curLastMouseClick > 0.45 {
             pupilScale.target = 1.0
         }
@@ -1485,7 +1668,7 @@ final class CatPhysics {
         let petBoost = max(petHeadIntensity, petBodyIntensity) * 1.4
         let huntBoost = hunt * 2.8
         var tailSpeed: CGFloat = 1.85 + kpmBoost + petBoost + huntBoost - sleepiness * 1.1 + celebration * 3.5
-            - tiredness * 0.8
+            - tiredness * 0.8 + playStalk * 4 // 蓄力时尾巴尖抽得飞快
         // 听歌时尾巴摆动速度向节拍靠拢（每拍半个周期）
         // 舒缓的歌尾巴摆得更慢（约半速）
         let beatTailSpeed = beatsPerMinute / 60 * .pi * (0.45 + 0.55 * musicArousal)
@@ -1598,4 +1781,10 @@ final class CatPhysics {
         }
         if sparkles.count > 48 { sparkles.removeFirst(sparkles.count - 48) }
     }
+}
+
+/// 两个可选值都有时打包成元组
+private func zip2<A, B>(_ a: A?, _ b: B?) -> (A, B)? {
+    guard let a, let b else { return nil }
+    return (a, b)
 }
