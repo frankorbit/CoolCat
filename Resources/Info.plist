@@ -19,15 +19,17 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.3.5</string>
+    <string>1.5.0</string>
     <key>CFBundleVersion</key>
-    <string>135</string>
+    <string>150</string>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>KuroCat 在你听歌时分析正在播放的声音频谱和鼓点，让小猫跟着节奏跳舞、身后的光谱跟着跳动。音频只在内存里实时计算，绝不录制、保存或上传。</string>
     <key>NSInputMonitoringUsageDescription</key>
     <string>KuroCat 需要「输入监控」权限以在打字和玩游戏时实时接收全状态键盘与鼠标按键，所有输入仅用于本地驱动桌宠动画，绝不记录或上传任何内容。</string>
 </dict>

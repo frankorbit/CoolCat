@@ -94,6 +94,11 @@ enum CatRenderer {
         let seatX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
         let seatY = CatPhysics.seatAnchor.y
 
+        // 0. 听歌时猫身后的频谱墙（最先画，压在所有东西下面）
+        if physics.spectrumVisibility.value > 0.01 {
+            drawSpectrumWall(in: ctx, physics: physics)
+        }
+
         // 1. Mini White Mouse (left of keyboard)
         drawMouse(in: ctx, physics: physics, theme: settings.keyboardTheme)
 
@@ -468,8 +473,10 @@ enum CatRenderer {
     private static func drawTail(in ctx: CGContext, seatX: CGFloat, seatY: CGFloat, physics: CatPhysics, coat: CatCoatTheme) {
         let p = physics.tailPhase
         let hunt = max(0, min(1, physics.huntIntensity.value))
-        let wag1 = sin(p) * (8.0 + hunt * 5.5)
-        let wag2 = cos(p * 1.3) * (6.0 + hunt * 4.5)
+        // 跳舞/看尾巴时摆幅加大
+        let amp = max(0.3, physics.tailAmplitude)
+        let wag1 = sin(p) * (8.0 + hunt * 5.5) * amp
+        let wag2 = cos(p * 1.3) * (6.0 + hunt * 4.5) * amp
         // Tail drops lower & swishes tautly when stalking/hunting!
         let huntDrop = hunt * 14.0
 
@@ -869,6 +876,32 @@ enum CatRenderer {
             ctx.addQuadCurve(to: mouthR, control: CGPoint(x: (mouthM.x + mouthR.x) * 0.5, y: mouthR.y + 1.6))
             ctx.strokePath()
             ctx.restoreGState()
+        }
+
+        // 1c. 张嘴：唱歌 / 打哈欠 / 舔爪子
+        let open = max(0, min(1, physics.mouthOpen.value))
+        if open > 0.04 {
+            let mouth = projectHead3D(x: 0, y: 13.5, z: 28.2, yawRad: yawRad, pitchRad: pitchRad).pt
+            let w = 4.5 + open * 5.5
+            let h = 2 + open * 9
+            let rect = CGRect(x: mouth.x - w / 2, y: mouth.y - 1.5, width: w, height: h)
+            ctx.saveGState()
+            ctx.setFillColor(rgb(0x3A1C1F).cgColor)
+            ctx.fillEllipse(in: rect)
+            // 舌头：下半部分的粉色
+            ctx.addEllipse(in: rect)
+            ctx.clip()
+            ctx.setFillColor(rgb(0xF08A9B).cgColor)
+            ctx.fillEllipse(in: CGRect(x: rect.minX + w * 0.12, y: rect.minY + h * 0.52, width: w * 0.76, height: h * 0.7))
+            ctx.restoreGState()
+            // 黑猫的嘴和脸同色，描一圈浅色边才看得见
+            if coat == .classicBlack {
+                ctx.saveGState()
+                ctx.setStrokeColor(contourMint.withAlphaComponent(0.55).cgColor)
+                ctx.setLineWidth(0.9)
+                ctx.strokeEllipse(in: rect)
+                ctx.restoreGState()
+            }
         }
 
         // 2. 3D-Projected Whiskers (outer-side whiskers poke out past silhouette when turning!)
@@ -1725,6 +1758,78 @@ enum CatRenderer {
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
         str.draw(at: CGPoint(x: rect.minX + 9, y: rect.midY - size.height * 0.5 - 0.5))
         NSGraphicsContext.restoreGraphicsState()
+        ctx.restoreGState()
+    }
+
+    // MARK: - Spectrum Wall
+
+    /// 猫身后的竖直 LED 均衡器墙：柱子从桌面往上长，每根由一格格方块组成；
+    /// 低音在中间（打鼓时会从猫头后面冒出来），往两边频率越来越高，左右镜像。
+    /// 没点亮的方块也淡淡地画出来，安静段落也看得出是一面墙。
+    private static func drawSpectrumWall(in ctx: CGContext, physics: CatPhysics) {
+        let vis = max(0, min(1, physics.spectrumVisibility.value))
+        let bands = physics.spectrum
+        let peaks = physics.spectrumPeaks
+        guard bands.count == peaks.count, !bands.isEmpty else { return }
+        let t = physics.time
+        let kick = physics.beatKick
+
+        let columns = 32
+        let left: CGFloat = 12, right: CGFloat = 348
+        let pitch = (right - left) / CGFloat(columns)
+        let barWidth = pitch * 0.72
+        let baseline: CGFloat = 228
+        let segmentHeight: CGFloat = 4.2
+        let segmentPitch: CGFloat = 6
+        let maxSegments = 28
+        let center = CGFloat(columns - 1) / 2
+
+        ctx.saveGState()
+        ctx.setAlpha(vis)
+
+        // 墙根的柔光，随鼓点亮一下
+        let glowHue = (t * 0.04).truncatingRemainder(dividingBy: 1)
+        drawRadialGlow(in: ctx, center: CGPoint(x: (left + right) / 2, y: baseline - 40), radius: 190,
+                       color: NSColor(calibratedHue: glowHue, saturation: 0.5, brightness: 1, alpha: 0.10 + kick * 0.12))
+
+        var unlit: [CGRect] = []
+        unlit.reserveCapacity(columns * maxSegments)
+        for c in 0..<columns {
+            let distance = abs(CGFloat(c) - center) / (center + 0.5)          // 0 中间 … 1 两边
+            let band = min(bands.count - 1, Int(distance * CGFloat(bands.count)))
+            let value = bands[band]
+            let peak = peaks[band]
+            let x = left + CGFloat(c) * pitch + (pitch - barWidth) / 2
+            let lit = Int((value * CGFloat(maxSegments)).rounded())
+            let peakSegment = min(maxSegments - 1, Int((peak * CGFloat(maxSegments)).rounded()))
+            // 每列一个色相，整面墙缓慢流动
+            let hue = ((1 - distance) * 0.78 + t * 0.05).truncatingRemainder(dividingBy: 1)
+
+            var litRects: [CGRect] = []
+            for k in 0..<maxSegments {
+                let rect = CGRect(x: x, y: baseline - CGFloat(k + 1) * segmentPitch, width: barWidth, height: segmentHeight)
+                if k < lit { litRects.append(rect) } else { unlit.append(rect) }
+            }
+            if !litRects.isEmpty {
+                // 越往上越亮：底部稍暗，顶端接近白
+                for (k, rect) in litRects.enumerated() {
+                    let h = CGFloat(k) / CGFloat(maxSegments)
+                    let color = NSColor(calibratedHue: hue, saturation: 0.85 - h * 0.35, brightness: 0.75 + h * 0.25,
+                                        alpha: 0.78 + kick * 0.2)
+                    ctx.setFillColor(color.cgColor)
+                    ctx.fill(rect)
+                }
+            }
+            // 峰值帽
+            if peak > 0.04 {
+                let capY = baseline - CGFloat(peakSegment + 1) * segmentPitch
+                ctx.setFillColor(NSColor(calibratedHue: hue, saturation: 0.25, brightness: 1, alpha: 0.95).cgColor)
+                ctx.fill(CGRect(x: x, y: capY, width: barWidth, height: segmentHeight * 0.75))
+            }
+        }
+        // 未点亮的格子一次性画完
+        ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.07).cgColor)
+        ctx.fill(unlit)
         ctx.restoreGState()
     }
 

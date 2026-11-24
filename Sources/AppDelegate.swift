@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isHandingOverToNewerCopy = false
 
     private var currentAppVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.5"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.0"
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -87,9 +87,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         music.start()
 
+        // 实时音频只收到静音时提示一次去哪里开权限
+        AudioSpectrumAnalyzer.shared.onStateChange = { [weak self] state in
+            guard state == .silentNoPermission else { return }
+            self?.overlayWindow.catView.physics.showNotice("🎧 没拿到音频，先用模拟节拍跳；可在「录屏与系统录音」里允许")
+        }
+
         // Claude Code hook 事件 -> 小猫状态；App 换了位置就顺手把 hook 路径修好
         ClaudeActivityTracker.shared.start()
         ClaudeHookInstaller.repairIfOutdated()
+        suggestClaudeIntegrationIfNeeded()
 
         // 麦克风/摄像头占用 -> 耳麦、嘘、洗脸
         let meeting = MeetingMonitor.shared
@@ -118,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         InputEngine.shared.flushStats()
         InputEngine.shared.stop()
         MusicMonitor.shared.stop()
+        AudioSpectrumAnalyzer.shared.setWanted(false)
         ClaudeActivityTracker.shared.stop()
         MeetingMonitor.shared.stop()
     }
@@ -132,6 +140,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .otherAudio:
             physics.setListening(CatSettings.shared.headphonesForAnyAudio, musicApp: false)
         }
+        updateAudioAnalyzer()
+    }
+
+    /// 只在音乐播放器出声时才开系统音频 tap：停播、关开关都立刻停掉
+    private func updateAudioAnalyzer() {
+        let settings = CatSettings.shared
+        let isMusic: Bool = {
+            if case .music = MusicMonitor.shared.activity { return true }
+            return false
+        }()
+        let wanted = isMusic && settings.musicHeadphones && settings.realAudioAnalysis
+            && (settings.musicVisualizer || settings.musicDance)
+        // 第一次要读音频前先说明一下，紧接着系统会弹授权框
+        if wanted && !UserDefaults.standard.bool(forKey: "KuroCat.AudioCaptureExplained") {
+            UserDefaults.standard.set(true, forKey: "KuroCat.AudioCaptureExplained")
+            overlayWindow.catView.physics.showNotice("🎧 想跟着你的歌跳舞，系统会问能否读取播放的声音")
+        }
+        AudioSpectrumAnalyzer.shared.setWanted(wanted)
     }
 
     // MARK: - One KuroCat at a time (newest copy wins)
@@ -229,6 +255,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 view.physics.updateClaude(.idle)
             }
+            view.physics.outputSilentHint = MusicMonitor.shared.isMomentarilySilent
+            view.physics.updateAudio(AudioSpectrumAnalyzer.shared.snapshot())
             view.physics.step(dt: dt, windowFrameInScreen: self.overlayWindow.frame)
             view.updateHoverAndClickThrough()
             view.needsDisplay = true
@@ -337,6 +365,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         habitItem.state = settings.keyHabitReactions ? .on : .off
         menu.addItem(habitItem)
 
+        let idleItem = NSMenuItem(title: "空闲时的小动作（打哈欠 / 伸懒腰 / 踩奶 / 慢眨眼……）", action: #selector(toggleIdleAnimations), keyEquivalent: "")
+        idleItem.target = self
+        idleItem.state = settings.idleAnimations ? .on : .off
+        menu.addItem(idleItem)
+
         let musicMenu = NSMenu()
         let headphonesItem = NSMenuItem(title: "听歌时戴耳机摇头 🎧", action: #selector(toggleMusicHeadphones), keyEquivalent: "")
         headphonesItem.target = self
@@ -350,6 +383,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         bubbleItem.target = self
         bubbleItem.state = settings.showTrackBubble ? .on : .off
         musicMenu.addItem(bubbleItem)
+        musicMenu.addItem(.separator())
+        let haloItem = NSMenuItem(title: "猫身后的频谱墙 🎛", action: #selector(toggleMusicVisualizer), keyEquivalent: "")
+        haloItem.target = self
+        haloItem.state = settings.musicVisualizer ? .on : .off
+        musicMenu.addItem(haloItem)
+        let danceItem = NSMenuItem(title: "没在打字时跟着节奏跳舞 💃", action: #selector(toggleMusicDance), keyEquivalent: "")
+        danceItem.target = self
+        danceItem.state = settings.musicDance ? .on : .off
+        musicMenu.addItem(danceItem)
+        let realItem = NSMenuItem(title: "跟随真实音频节拍（需「录制系统音频」授权）", action: #selector(toggleRealAudio), keyEquivalent: "")
+        realItem.target = self
+        realItem.state = settings.realAudioAnalysis ? .on : .off
+        musicMenu.addItem(realItem)
+        let analyzerText: String
+        switch AudioSpectrumAnalyzer.shared.state {
+        case .off: analyzerText = settings.realAudioAnalysis ? "实时音频：等音乐响起时启动" : "实时音频：已关闭，使用模拟节拍"
+        case .starting: analyzerText = "实时音频：启动中…"
+        case .running:
+            let bpm = AudioSpectrumAnalyzer.shared.snapshot().bpm.map { "，约 \(Int($0)) BPM" } ?? ""
+            analyzerText = "实时音频：分析中\(bpm)"
+        case .silentNoPermission: analyzerText = "⚠️ 实时音频：只收到静音。在「隐私与安全性 → 录屏与系统录音」允许 KuroCat 后，重新勾选上一项"
+        case .unsupported: analyzerText = "实时音频：需要 macOS 14.2+，当前使用模拟节拍"
+        case .failed(let reason): analyzerText = "实时音频启动失败：\(reason)"
+        }
+        let analyzerItem = NSMenuItem(title: analyzerText, action: nil, keyEquivalent: "")
+        analyzerItem.isEnabled = false
+        musicMenu.addItem(analyzerItem)
         let nowItem: NSMenuItem
         switch MusicMonitor.shared.activity {
         case .music(let app): nowItem = NSMenuItem(title: "正在听：\(app)", action: nil, keyEquivalent: "")
@@ -645,6 +705,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Claude Code 联动
 
+    /// 这台机器装了 Claude Code（有 ~/.claude）但还没连接时，启动后提示一次去哪里开
+    private func suggestClaudeIntegrationIfNeeded() {
+        let key = "KuroCat.SuggestedClaudeIntegration"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let claudeDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path
+        guard FileManager.default.fileExists(atPath: claudeDir), ClaudeHookInstaller.state() == .notInstalled else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.overlayWindow.catView.physics.showNotice("🤖 发现 Claude Code：右键我 →「Claude Code 联动」→ 连接")
+        }
+    }
+
     // 可能运行 Claude Code 的宿主 App（bundle ID 小写子串）
     private static let claudeHostTokens = [
         "terminal", "iterm", "warp", "ghostty", "kitty", "alacritty", "wezterm", "hyper", "tabby",
@@ -799,6 +871,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleTrackBubble() {
         CatSettings.shared.showTrackBubble.toggle()
+    }
+
+    @objc private func toggleMusicVisualizer() {
+        CatSettings.shared.musicVisualizer.toggle()
+        updateAudioAnalyzer()
+    }
+
+    @objc private func toggleMusicDance() {
+        CatSettings.shared.musicDance.toggle()
+        updateAudioAnalyzer()
+    }
+
+    @objc private func toggleRealAudio() {
+        CatSettings.shared.realAudioAnalysis.toggle()
+        // 重新打开 = 用户想再试一次（可能刚在系统设置里授了权）
+        if CatSettings.shared.realAudioAnalysis { AudioSpectrumAnalyzer.shared.resetPermissionMemory() }
+        updateAudioAnalyzer()
+    }
+
+    @objc private func toggleIdleAnimations() {
+        CatSettings.shared.idleAnimations.toggle()
     }
 
     @objc private func selectScale(_ sender: NSMenuItem) {

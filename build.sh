@@ -93,6 +93,8 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/ClaudeBridge.swift"
     "$ROOT/Sources/MeetingMonitor.swift"
     "$ROOT/Sources/KeyHabits.swift"
+    "$ROOT/Sources/AudioSpectrumAnalyzer.swift"
+    "$ROOT/Sources/Choreography.swift"
     "$ROOT/Sources/CatRenderer.swift"
     "$ROOT/Sources/CoatPatterns.swift"
     "$ROOT/Sources/OverlayWindow.swift"
@@ -109,6 +111,7 @@ COMMON_FLAGS=(
     -framework IOKit
     -framework CoreAudio
     -framework CoreMediaIO
+    -framework Accelerate
     -framework ApplicationServices
 )
 
@@ -147,7 +150,15 @@ fi
 
 if [ -n "$SIGN_IDENTITY" ]; then
     echo "==> Signing with stable certificate: $SIGN_IDENTITY"
-    codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "com.chanke.kurocat" "$APP_BUNDLE"
+    if [ -n "${KUROCAT_HARDENED:-}" ]; then
+        # 分发给他人：加固运行时 + 安全时间戳，Apple 公证的前提条件
+        echo "==> Hardened runtime + secure timestamp (for notarization)"
+        codesign --force --deep --options runtime --timestamp \
+            --entitlements "$ROOT/Resources/KuroCat.entitlements" \
+            --sign "$SIGN_IDENTITY" --identifier "com.chanke.kurocat" "$APP_BUNDLE"
+    else
+        codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "com.chanke.kurocat" "$APP_BUNDLE"
+    fi
 else
     echo "==> WARNING: no stable signing certificate found — signing ad-hoc." >&2
     echo "    Users will have to re-enable Input Monitoring after EVERY update." >&2

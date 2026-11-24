@@ -364,6 +364,93 @@ func renderHabitsPreviewSheet(to path: String) {
     }
 }
 
+// 跳舞 + 空闲动作预览
+if let idx = CommandLine.arguments.firstIndex(of: "--render-dance-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderDancePreviewSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
+func renderDancePreviewSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme, settings.musicVisualizer, settings.musicDance, settings.idleAnimations)
+    defer { (settings.coatTheme, settings.eyeTheme, settings.musicVisualizer, settings.musicDance, settings.idleAnimations) = saved }
+    settings.musicVisualizer = true
+    settings.musicDance = true
+    settings.idleAnimations = true
+    let coats: [(CatCoatTheme, EyeColorTheme)] = [
+        (.classicBlack, .neonChartreuse), (.siamese, .siameseBlue),
+        (.shorthair, .referenceHazel), (.orangeWhite, .warmAmber)
+    ]
+    enum Scene { case dance(DanceMove, CGFloat), idle(IdleAction, CGFloat) }
+    // 每只猫两行：上排激烈歌的舞步，下排舒缓歌的舞步（空闲动作见 --render-idle 之前的版本，已单独验证）
+    let scenes: [(String, Scene)] = [
+        ("举爪蹦迪", .dance(.raiseTheRoof, 0.05)),
+        ("左右摇摆", .dance(.sway, 0.45)),
+        ("指挥家", .dance(.conductor, 0.3)),
+        ("甩头", .dance(.headbang, 0.04)),
+        ("舒缓·轻轻摇摆", .dance(.gentleSway, 1.0)),
+        ("舒缓·梦游画圈", .dance(.dreamyCircle, 0.5)),
+        ("舒缓·演唱会挥手", .dance(.concertWave, 1.0)),
+        ("舒缓·摇椅", .dance(.rocking, 1.0))
+    ]
+    _ = Scene.idle(.yawn, 0)
+    let cellW = 360, cellH = 320, scale = 2
+    let cols = scenes.count / 2, rows = coats.count * 2
+    guard let ctx = CGContext(
+        data: nil, width: cellW * cols * scale, height: cellH * rows * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(cellH * rows * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.22, green: 0.23, blue: 0.27, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: cellW * cols, height: cellH * rows))
+    for (coatIndex, coat) in coats.enumerated() {
+        settings.coatTheme = coat.0
+        settings.eyeTheme = coat.1
+        for (sceneIndex, scene) in scenes.enumerated() {
+            let physics = CatPhysics()
+            switch scene.1 {
+            case .dance(let move, let beatFraction):
+                physics.setListening(true, musicApp: true)
+                physics.debugArousal = move.isCalm ? 0.2 : 0.8
+                // 先跑 3 秒让耳机戴好、进入跳舞，再强制舞步并停在拍内指定位置
+                for _ in 0..<180 { physics.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+                physics.debugForceDance(move)
+                let framesPerBeat = 60.0 * 60.0 / Double(physics.beatsPerMinute)
+                let target = Int(framesPerBeat * 2 + framesPerBeat * Double(beatFraction))
+                for _ in 0..<target { physics.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+            case .idle(let action, let age):
+                physics.debugForceIdle(action, age: 0)
+                for _ in 0..<Int(age * 60) { physics.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+            }
+            physics.floatingKeycaps.removeAll()
+            let col = sceneIndex % cols
+            let row = coatIndex * 2 + sceneIndex / cols
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(col * cellW), y: CGFloat(row * cellH))
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.15).cgColor)
+            ctx.stroke(CGRect(x: 0.5, y: 0.5, width: CGFloat(cellW) - 1, height: CGFloat(cellH) - 1))
+            CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: false)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            NSAttributedString(string: scene.0, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.white
+            ]).draw(at: CGPoint(x: 10, y: 296))
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
+    }
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+    } catch {
+        FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
+    }
+}
+
 /// 预览用：键鼠长时间无操作的脚本输入
 private func idleInput(now: CFTimeInterval) -> ScriptedFrameInput {
     ScriptedFrameInput(

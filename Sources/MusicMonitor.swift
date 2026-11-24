@@ -33,6 +33,8 @@ final class MusicMonitor {
     var onTrackChange: ((NowPlayingTrack) -> Void)?
 
     private(set) var activity: AudioActivity = .silent
+    /// 未经防抖的即时判断：暂停的一瞬间就是 true（activity 要等 3 秒才变）
+    var isMomentarilySilent: Bool { candidate == .silent }
     private var pollTimer: Timer?
     private var candidate: AudioActivity = .silent
     private var candidateSince: CFTimeInterval = 0
@@ -71,6 +73,12 @@ final class MusicMonitor {
     ]
 
     private init() {}
+
+    /// bundle ID（含 helper 进程）是否属于已知音乐播放器
+    static func isMusicBundle(_ bundleID: String) -> Bool {
+        let lower = bundleID.lowercased()
+        return musicAppTokens.contains { lower.contains($0.token) }
+    }
 
     func start() {
         guard pollTimer == nil else { return }
@@ -235,6 +243,67 @@ enum AudioProcessProbe {
             }
         }
         return result
+    }
+
+    /// macOS 14.2+：bundle ID 满足条件的所有 Core Audio 进程对象（不要求此刻正在出声）
+    @available(macOS 14.2, *)
+    static func processObjects(where matches: (String) -> Bool) -> [AudioObjectID] {
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var processes = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &processes) == noErr else { return [] }
+        return processes.filter { process in
+            guard let bundleID = stringProperty(process, kAudioProcessPropertyBundleID) else { return false }
+            return matches(bundleID)
+        }
+    }
+
+    /// 默认输出设备的总延迟（秒）：设备延迟 + 安全偏移 + 缓冲 + 首个输出流延迟。
+    /// 蓝牙耳机通常 0.15~0.3s，AirPlay 可达 ~2s；读不到时返回 0
+    static func defaultOutputLatency() -> CFTimeInterval {
+        guard let device = defaultDeviceID(input: false) else { return 0 }
+        func scoped(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> UInt32 {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var value: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            return AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr ? value : 0
+        }
+        var rateAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var rate: Float64 = 0
+        var rateSize = UInt32(MemoryLayout<Float64>.size)
+        guard AudioObjectGetPropertyData(device, &rateAddress, 0, nil, &rateSize, &rate) == noErr, rate > 0 else { return 0 }
+
+        var frames = scoped(device, kAudioDevicePropertyLatency)
+            + scoped(device, kAudioDevicePropertySafetyOffset)
+            + scoped(device, kAudioDevicePropertyBufferFrameSize)
+        // 首个输出流的延迟
+        var streamsAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var streamsSize: UInt32 = 0
+        if AudioObjectGetPropertyDataSize(device, &streamsAddress, 0, nil, &streamsSize) == noErr, streamsSize > 0 {
+            var streams = [AudioStreamID](repeating: 0, count: Int(streamsSize) / MemoryLayout<AudioStreamID>.size)
+            if AudioObjectGetPropertyData(device, &streamsAddress, 0, nil, &streamsSize, &streams) == noErr, let first = streams.first {
+                frames += uint32Property(first, kAudioStreamPropertyLatency) ?? 0
+            }
+        }
+        return min(3, Double(frames) / rate)
     }
 
     static func defaultDeviceID(input: Bool) -> AudioDeviceID? {
