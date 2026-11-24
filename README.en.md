@@ -1,11 +1,54 @@
-# 🐱 CoolCat — a desktop cat that listens to your music and watches Claude Code (macOS)
+<p align="center">
+  <img src="assets/coolcat/hero.png" alt="CoolCat" />
+</p>
 
-> CoolCat is a macOS fork of [chanke17/KuroCat](https://github.com/chanke17/KuroCat) (MIT). Thanks to the original author.
-> The original KuroCat documentation is kept below; the Windows / Linux builds are still the original KuroCat.
+<p align="center">
+  <a href="README.md">简体中文</a> | <b>English</b>
+</p>
 
-**Added in CoolCat:** music-reactive headphones, a vertical LED spectrum wall and beat-synced dancing (calm songs get calm moves),
-Claude Code session status via hooks, meeting mode (headset / shush / grooming), keyboard-habit reactions and idle animations.
-See the Chinese README for details. Build with `./build.sh`, package with `scripts/package-macos.sh`.
+# 🐱 CoolCat
+
+A little cat that lives in the corner of your Mac desktop. It types along with you, puts on headphones and dances to the beat of your music, keeps an eye on every Claude Code session, stalks your cursor, munches fish treats — and every now and then pushes a small gift onto your desk.
+
+> 🙏 **Credits**: CoolCat is a heavily modified fork of **[chanke17/KuroCat](https://github.com/chanke17/KuroCat)**.
+> The full-state keyboard/mouse capture, 2.5D head tracking, four coat skins and the whole procedural CoreGraphics renderer come from the original project — huge thanks to [@chanke17](https://github.com/chanke17)!
+> The original is MIT licensed; this repository stays MIT and keeps the original copyright notice in [LICENSE](LICENSE).
+
+## ✨ Features
+
+<p align="center">
+  <img src="assets/coolcat/features.png" alt="CoolCat features" />
+</p>
+
+- 🎧 **Dances to your music** — headphones on when a music player is playing, a vertical LED spectrum wall behind the cat, real beat tracking via a system audio tap (macOS 14.2+) aligned to your output latency. Strong beats get head-bobs, calm songs get slow sways.
+- 🤖 **Claude Code integration** — one-click hooks; a bubble shows *project · action · elapsed* per session, the cat waves when a session needs your approval and throws confetti when it is done.
+- 🎙 **Meeting mode** — headset when the mic is on, a "shh" when you type too loudly, a quick face wash before the camera turns on.
+- 🌙 **Life companion** — nightcap late at night, morning coffee, sleepy on low battery, a water reminder after 50 minutes of work.
+- 🪶 **Cursor play** — move the cursor slowly in front of the cat: it locks on, wiggles, and swats.
+- 🐟 **Fish treats** — it holds the treat with both paws, nibbles, drops crumbs and burps (6 per day).
+- 💞 **Bond levels** — every interaction builds affection (capped per day, never decays). Level up to unlock a bell collar, knitted scarf, bow and sunglasses; at higher levels it nuzzles your resting cursor and brings you a daily gift.
+- ⌨️ **Keyboard habits** and 😺 **idle animations**.
+
+## ⚙️ Settings window
+
+A System Settings–style window (menu bar icon / right-click the cat → *Settings…*, or ⌘,) with a live-rendered preview cat.
+
+<table>
+  <tr>
+    <td><img src="assets/coolcat/settings-appearance.png" alt="Appearance" /></td>
+    <td><img src="assets/coolcat/settings-bond.png" alt="Bond" /></td>
+  </tr>
+</table>
+
+## 📦 Build
+
+macOS 11+ (real-time beat tracking needs macOS 14.2+).
+
+```bash
+./build.sh && open CoolCat.app
+```
+
+Requires *Input Monitoring*; *Screen & System Audio Recording* is optional and only used to analyze the music player's audio in memory. Package with `scripts/package-macos.sh`. The UI is in Simplified Chinese.
 
 ---
 

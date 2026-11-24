@@ -1,25 +1,69 @@
-# 🐱 CoolCat — 会听歌、会开会、会盯 Claude Code 的桌面小猫（macOS）
+<p align="center">
+  <img src="assets/coolcat/hero.png" alt="CoolCat — 会听歌、会开会、会盯 Claude Code 的桌面小猫" />
+</p>
 
-> CoolCat 是基于 [chanke17/KuroCat](https://github.com/chanke17/KuroCat)（MIT）的 macOS 魔改版，感谢原作者。
-> 下方「原版 KuroCat 说明」保留了上游的完整文档；Windows / Linux 版仍是原版 KuroCat，没有下面这些新功能。
+<p align="center">
+  <b>简体中文</b> | <a href="README.en.md">English</a>
+</p>
 
-## ✨ CoolCat 新增
+# 🐱 CoolCat
 
-- **🎧 听歌**：检测到音乐播放器出声就戴上耳机；用系统音频 tap（macOS 14.2+，只读音乐 App 的声音、只在内存里分析）做频谱和鼓点检测。
-  - 猫身后一面竖直 LED 频谱墙，跟着鼓点跳，安静时全部落下
-  - 不打字时跳舞：7 个蹦迪舞步 + 5 个舒缓舞步，按歌曲能量感自动挑；舞步按输出设备延迟对齐到你听到的拍点
-- **🤖 Claude Code 联动**：右键 →「Claude Code 联动」一键写入 hook。气泡逐会话显示「项目 · 动作 · 耗时」，等你批准时举爪挥手，完成时撒彩带。
-- **🎙 会议模式**：开麦戴耳麦，开麦时打字太吵会"嘘"你，开摄像头先洗把脸。
-- **⌨️ 键盘习惯**：狂按退格冒汗、⌘S 盖章、截图比耶、手速破纪录戴皇冠。
-- **😺 空闲小动作**：打哈欠、伸懒腰、踩奶、舔爪、东张西望、看尾巴、慢眨眼、拍小老鼠。
+一只住在你 Mac 桌面角落的小猫：你打字，它跟着按键；你听歌，它戴上耳机跟着鼓点跳舞；你用 Claude Code，它帮你盯着每一个会话；你闲下来，它会盯着光标扭屁股、捧着小鱼干啃，还会悄悄送你一份礼物。
 
-所有功能都能在右键菜单里单独关闭。
+> 🙏 **致谢**：CoolCat 基于 **[chanke17/KuroCat](https://github.com/chanke17/KuroCat)** 魔改而来。
+> 键盘鼠标全状态捕获、2.5D 球面头部追踪、四种毛色和整套 CoreGraphics 程序化绘制，这些地基都来自原作者，非常感谢 [@chanke17](https://github.com/chanke17) 的开源！
+> 原项目以 MIT 协议开源，本仓库沿用 MIT，并在 [LICENSE](LICENSE) 中保留原作者的版权声明。
 
-## 🔨 构建与分发（macOS）
+## ✨ 特色功能
+
+<p align="center">
+  <img src="assets/coolcat/features.png" alt="CoolCat 特色功能" />
+</p>
+
+| | 功能 | 说明 |
+|---|---|---|
+| 🎧 | **跟着鼓点跳舞** | 音乐播放器一出声就戴上耳机；猫身后立起一面 LED 频谱墙。用系统音频 tap（macOS 14.2+）实时检测鼓点，舞步按输出设备延迟对齐到你听到的拍子。强节奏多点头，舒缓的歌慢慢摇。 |
+| 🤖 | **Claude Code 联动** | 一键写入 hook。气泡逐会话显示「项目 · 动作 · 耗时」，多个会话同时在忙也分得清；等你批准时举爪挥手，任务完成撒彩带。 |
+| 🎙 | **会议模式** | 开麦自动戴耳麦，开麦时打字太猛会「嘘」你，开摄像头前先洗把脸。 |
+| 🌙 | **生活陪伴** | 深夜戴睡帽提醒早点睡，早上第一次开工端咖啡，低电量没精神、插电喝奶，连续工作 50 分钟提醒喝水。 |
+| 🪶 | **光标逗猫** | 在它身前慢慢晃光标：盯上 → 压低扭屁股 → 出爪拍。出爪那一刻光标还在就算抓到，连抓三下有奖励。 |
+| 🐟 | **喂小鱼干** | 小鱼干从天而降，双爪捧着啃三口、掉渣、打嗝；每天最多 6 条，吃饱了会摇头。 |
+| 💞 | **亲密度养成** | 摸摸、逗猫、喂鱼、一起听歌、陪 Claude 干活都会攒亲密度（每天封顶、只增不减）。升级解锁铃铛项圈、毛线围巾、蝴蝶结、墨镜；熟了会主动蹭你的光标，每天还会推一个小礼物到桌上。 |
+| ⌨️ | **键盘习惯** | 狂按退格冒汗、⌘S 盖章、截图比耶、手速破纪录戴皇冠。 |
+| 😺 | **空闲小动作** | 打哈欠、伸懒腰、踩奶、舔爪、东张西望、看尾巴、慢眨眼。 |
+
+## ⚙️ 设置面板
+
+菜单栏只保留常用操作，其余开关都在仿「系统设置」风格的设置窗口里（菜单栏图标 / 右键小猫 →「设置…」，或 ⌘,）。外观页和亲密度页带一只实时渲染的预览小猫，换毛色、瞳色、装扮立刻能看到。
+
+<table>
+  <tr>
+    <td><img src="assets/coolcat/settings-appearance.png" alt="外观设置" /></td>
+    <td><img src="assets/coolcat/settings-bond.png" alt="亲密度" /></td>
+  </tr>
+  <tr>
+    <td align="center">外观：毛色、瞳色、键盘配色，实时预览</td>
+    <td align="center">亲密度：等级、相处统计、装扮</td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="assets/coolcat/settings-claude.png" width="60%" alt="Claude Code 设置" /><br/>
+  Claude Code：一键连接 / 断开，逐会话查看状态
+</p>
+
+## 📦 构建与运行
+
+要求 macOS 11+（实时音频节拍需要 macOS 14.2+，更低版本自动用模拟节拍）。
 
 ```bash
 ./build.sh && open CoolCat.app
 ```
+
+首次运行需要的授权：
+
+- **输入监控**（必需）：让小猫跟着你的键盘鼠标动。只用于动画和按键计数，不记录你输入的内容。
+- **录屏与系统录音**（可选）：只读取音乐播放器的声音、只在内存里做频谱分析，用来让舞步踩准鼓点。不授权也能跳，只是用模拟节拍。
 
 打一个发给别人的包（Developer ID 签名 + 加固运行时，可选公证；zip 里附安装说明）：
 
@@ -30,6 +74,27 @@ scripts/package-macos.sh
 ```
 
 从 KuroCat 升级：首次启动会自动迁移设置、开机自启和 Claude Code hook；因为包标识改为 `ai.today.coolcat`，需要重新授权「输入监控」和「录制系统音频」。
+
+## 🔒 隐私
+
+- 键盘鼠标事件只驱动动画和统计次数，不记录、不上传任何输入内容。
+- 系统音频只取音乐播放器的声音，在内存中实时分析后即丢弃。
+- Claude Code hook 只把事件名、工具名、项目文件夹名发给本机的小猫，不读取提示词和代码；修改前会备份 `~/.claude/settings.json`。
+- 不联网，不检查更新。
+
+## 🧪 开发
+
+所有动画都可以离屏渲染成图片检查，例如：
+
+```bash
+swiftc -swift-version 5 -O -framework AppKit -framework SwiftUI -framework IOKit -framework CoreAudio \
+  -framework CoreMediaIO -framework Accelerate -framework ApplicationServices Sources/*.swift -o /tmp/coolcat
+/tmp/coolcat --render-readme-art assets/coolcat      # README 头图和功能卡片
+/tmp/coolcat --render-dance-preview /tmp/dance.png   # 舞步
+/tmp/coolcat --render-bond-preview /tmp/bond.png     # 装扮、礼物、蹭蹭
+```
+
+其余还有 `--render-music-preview`、`--render-claude-preview`、`--render-meeting-preview`、`--render-life-preview`、`--render-play-preview`、`--render-habits-preview`。
 
 ---
 
