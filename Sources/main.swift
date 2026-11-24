@@ -2,17 +2,24 @@ import Foundation
 import AppKit
 import SwiftUI
 
-// Claude Code hook 中继：必须最先处理，读完 stdin 立即退出，不启动任何 UI
+// Claude Code / Codex hook 中继：必须最先处理，读完 stdin 立即退出，不启动任何 UI
 if CommandLine.arguments.contains(ClaudeHookRelay.argument) {
-    ClaudeHookRelay.run()
+    ClaudeHookRelay.run(agent: .claude)
+}
+if CommandLine.arguments.contains(ClaudeHookRelay.codexArgument) {
+    ClaudeHookRelay.run(agent: .codex)
 }
 
-// 命令行安装/卸载 Claude Code hook（和菜单里的按钮走同一套逻辑，方便脚本化）
-if CommandLine.arguments.contains("--install-claude-hooks") || CommandLine.arguments.contains("--uninstall-claude-hooks") {
-    let installing = CommandLine.arguments.contains("--install-claude-hooks")
+// 命令行安装/卸载 hook（和设置面板里的按钮走同一套逻辑，方便脚本化）：
+// --install-claude-hooks / --uninstall-claude-hooks / --install-codex-hooks / --uninstall-codex-hooks
+for agent in CodingAgent.allCases {
+    let install = "--install-\(agent.rawValue)-hooks", uninstall = "--uninstall-\(agent.rawValue)-hooks"
+    guard CommandLine.arguments.contains(install) || CommandLine.arguments.contains(uninstall) else { continue }
+    let installer = AgentHookInstaller.installer(for: agent)
+    let installing = CommandLine.arguments.contains(install)
     do {
-        if installing { try ClaudeHookInstaller.install() } else { try ClaudeHookInstaller.uninstall() }
-        print(installing ? "已连接 Claude Code：\(ClaudeHookInstaller.hookCommand)" : "已移除 CoolCat 的 Claude Code hook")
+        if installing { try installer.install() } else { try installer.uninstall() }
+        print(installing ? "已连接 \(agent.displayName)：\(installer.hookCommand)" : "已移除 CoolCat 的 \(agent.displayName) hook")
         exit(0)
     } catch {
         FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
@@ -155,7 +162,9 @@ func renderClaudePreviewSheet(to path: String) {
         ("思考中（写代码）", .working(tool: "Edit", sessions: 2), 60),
         ("等你批准", .waiting(.permission), 50),
         ("搞定！", .done, 24),
-        ("5 个会话同时在忙", .working(tool: nil, sessions: 5), 60)
+        ("5 个会话同时在忙", .working(tool: nil, sessions: 5), 60),
+        ("Claude + Codex 一起干活", .working(tool: "Edit", sessions: 3), 60),
+        ("Codex 等你批准", .waiting(.permission), 50)
     ]
     let cellW = 360, cellH = 320, scale = 2
     let cols = states.count, rows = coats.count
@@ -192,6 +201,19 @@ func renderClaudePreviewSheet(to path: String) {
                 physics.claudeLines = [ClaudeSessionLine(project: "Faceplant", detail: "搞定", kind: .done, elapsed: nil)]
             default:
                 break
+            }
+            if case .working(_, let n) = state.1, n == 3 {
+                physics.claudeLines = [
+                    ClaudeSessionLine(project: "CoolCat", detail: "写代码", kind: .working, elapsed: 134),
+                    ClaudeSessionLine(project: "api-server", detail: "跑命令", kind: .working, elapsed: 61, agent: .codex),
+                    ClaudeSessionLine(project: "web", detail: "思考中", kind: .working, elapsed: 8, agent: .codex)
+                ]
+            }
+            if state.0 == "Codex 等你批准" {
+                physics.claudeLines = [
+                    ClaudeSessionLine(project: "api-server", detail: "等你批准", kind: .waiting, elapsed: nil, agent: .codex),
+                    ClaudeSessionLine(project: "CoolCat", detail: "读代码", kind: .working, elapsed: 252)
+                ]
             }
             if case .working(_, let n) = state.1, n == 5 {
                 physics.claudeLines = [
@@ -806,8 +828,8 @@ private final class PreviewSettingsHost: SettingsHost {
     func resetPetPosition() {}
     func relaunch() {}
     func openInputMonitoring() {}
-    func installClaude() {}
-    func uninstallClaude() {}
+    func install(_ agent: CodingAgent) {}
+    func uninstall(_ agent: CodingAgent) {}
     func runDemo(_ demo: SettingsDemo) {}
 }
 

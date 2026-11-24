@@ -17,13 +17,13 @@ protocol SettingsHost: AnyObject {
     func resetPetPosition()
     func relaunch()
     func openInputMonitoring()
-    func installClaude()
-    func uninstallClaude()
+    func install(_ agent: CodingAgent)
+    func uninstall(_ agent: CodingAgent)
     func runDemo(_ demo: SettingsDemo)
 }
 
 enum SettingsDemo {
-    case typing, life, meeting, claude, gift
+    case typing, life, meeting, claude, codex, gift
 }
 
 // MARK: - Store
@@ -127,7 +127,7 @@ final class CatPreviewModel: ObservableObject {
 // MARK: - Panes
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, appearance, interaction, bond, music, life, meeting, claude
+    case general, appearance, interaction, bond, music, life, meeting, claude, codex
 
     var id: String { rawValue }
 
@@ -141,6 +141,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .life: return "生活陪伴"
         case .meeting: return "会议模式"
         case .claude: return "Claude Code"
+        case .codex: return "Codex"
         }
     }
 
@@ -154,6 +155,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .life: return "moon.stars.fill"
         case .meeting: return "video.fill"
         case .claude: return "sparkles"
+        case .codex: return "chevron.left.forwardslash.chevron.right"
         }
     }
 
@@ -167,6 +169,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .life: return Color(red: 0.42, green: 0.40, blue: 0.90)
         case .meeting: return Color(red: 0.20, green: 0.74, blue: 0.45)
         case .claude: return Color(red: 0.85, green: 0.47, blue: 0.34)
+        case .codex: return Color(red: 0.16, green: 0.17, blue: 0.20)
         }
     }
 }
@@ -237,7 +240,8 @@ struct SettingsRootView: View {
         case .music: MusicPane(store: store)
         case .life: LifePane(store: store)
         case .meeting: MeetingPane(store: store)
-        case .claude: ClaudePane(store: store)
+        case .claude: AgentPane(store: store, agent: .claude)
+        case .codex: AgentPane(store: store, agent: .codex)
         }
     }
 }
@@ -874,27 +878,40 @@ private struct MeetingPane: View {
     }
 }
 
-// MARK: - Claude
+// MARK: - Agents (Claude Code / Codex)
 
-private struct ClaudePane: View {
+private struct AgentPane: View {
     @ObservedObject var store: SettingsStore
+    let agent: CodingAgent
 
     var body: some View {
-        let state = ClaudeHookInstaller.state()
-        let lines = ClaudeActivityTracker.shared.lines(now: CACurrentMediaTime())
+        let installer = AgentHookInstaller.installer(for: agent)
+        let state = installer.state()
+        let lines = ClaudeActivityTracker.shared.lines(now: CACurrentMediaTime(), agents: [agent])
         let host = store.host
+        let lastEvent = ClaudeActivityTracker.lastEventDate(for: agent)
         VStack(alignment: .leading, spacing: 18) {
-            SettingsCard(title: "连接", footer: "连接会在 ~/.claude/settings.json 里加入 hook：只把事件名、工具名、项目文件夹名发给小猫，不读取提示词和代码；原文件会备份。") {
-                SettingsRow(title: statusTitle(state), subtitle: statusSubtitle(state)) {
+            SettingsCard(title: "连接", footer: footer(installer)) {
+                SettingsRow(title: statusTitle(state), subtitle: statusSubtitle(state, lastEvent: lastEvent)) {
                     HStack(spacing: 8) {
                         if state != .notInstalled {
-                            Button("断开") { host.uninstallClaude(); store.refresh() }
+                            Button("断开") { host.uninstall(agent); store.refresh() }
                         }
-                        Button(state == .notInstalled ? "连接…" : "重新连接") { host.installClaude(); store.refresh() }
+                        Button(state == .notInstalled ? "连接…" : "重新连接") { host.install(agent); store.refresh() }
+                    }
+                }
+                if agent == .codex && state != .notInstalled {
+                    RowDivider()
+                    SettingsRow(title: "信任 hook", subtitle: "Codex 不会运行未经信任的新 hook：桌面 App 在「设置 → Hooks」点「needs review」，CLI 输入 /hooks，信任标题为「CoolCat 桌面小猫」的 8 条") {
+                        Text(lastEvent == nil ? "等待信任" : "已生效")
+                            .font(.system(size: 12))
+                            .foregroundColor(lastEvent == nil ? .orange : .green)
                     }
                 }
                 RowDivider()
-                ToggleRow(title: "显示状态气泡和动作", subtitle: "思考中、等你批准、完成撒花", isOn: store.binding(\.claudeIntegration))
+                ToggleRow(title: "显示状态气泡和动作", subtitle: "思考中、等你批准、完成撒花",
+                          isOn: store.binding(get: { CatSettings.shared.isIntegrationEnabled(agent) },
+                                              set: { CatSettings.shared.setIntegration(agent, enabled: $0) }))
             }
             SettingsCard(title: "会话") {
                 if lines.isEmpty {
@@ -908,24 +925,38 @@ private struct ClaudePane: View {
                 }
             }
             SettingsCard {
-                ActionRow(title: "演示", subtitle: "思考 → 等批准 → 搞定", button: "播放") { host.runDemo(.claude) }
+                ActionRow(title: "演示", subtitle: "思考 → 等批准 → 搞定", button: "播放") {
+                    host.runDemo(agent == .codex ? .codex : .claude)
+                }
             }
         }
     }
 
-    private func statusTitle(_ state: ClaudeHookInstaller.InstallState) -> String {
+    private func footer(_ installer: AgentHookInstaller) -> String {
+        "连接会在 \(installer.displayPath) 里加入 hook：只把事件名、工具名、项目文件夹名发给小猫，不读取提示词和代码；原文件会备份。"
+    }
+
+    private func statusTitle(_ state: HookInstallState) -> String {
         switch state {
-        case .notInstalled: return "未连接 Claude Code"
+        case .notInstalled: return "未连接 \(agent.displayName)"
         case .outdated: return "⚠️ 需要重新连接"
-        case .installed: return "已连接 Claude Code"
+        case .installed: return "已连接 \(agent.displayName)"
         }
     }
 
-    private func statusSubtitle(_ state: ClaudeHookInstaller.InstallState) -> String? {
+    private func statusSubtitle(_ state: HookInstallState, lastEvent: Date?) -> String? {
         switch state {
-        case .notInstalled: return "连接后，小猫会跟着 Claude 思考、等你批准、完成任务做出反应"
-        case .outdated: return "hook 还指向旧的 CoolCat 位置"
-        case .installed: return "已打开的会话需要重启（或执行 /hooks）后生效"
+        case .notInstalled:
+            return "连接后，小猫会跟着 \(agent.displayName) 思考、等你批准、完成任务做出反应"
+        case .outdated:
+            return "hook 还指向旧的 CoolCat 位置，或缺少新版本需要的事件"
+        case .installed:
+            if let lastEvent {
+                let f = RelativeDateTimeFormatter()
+                f.locale = Locale(identifier: "zh_CN")
+                return "已收到事件（最近一次 \(f.localizedString(for: lastEvent, relativeTo: Date()))）"
+            }
+            return agent == .codex ? "已写入，还没收到事件：先在 Codex 里信任 hook" : "已打开的会话需要重启（或执行 /hooks）后生效"
         }
     }
 }

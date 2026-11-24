@@ -102,8 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Claude Code hook 事件 -> 小猫状态；App 换了位置就顺手把 hook 路径修好
         ClaudeActivityTracker.shared.start()
-        ClaudeHookInstaller.repairIfOutdated()
-        suggestClaudeIntegrationIfNeeded()
+        for agent in CodingAgent.allCases { AgentHookInstaller.installer(for: agent).repairIfOutdated() }
+        suggestAgentIntegrationIfNeeded()
 
         // 麦克风/摄像头占用 -> 耳麦、嘘、洗脸
         let meeting = MeetingMonitor.shared
@@ -259,13 +259,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.lastFrameTime = now
 
             let view = self.overlayWindow.catView
-            if CatSettings.shared.claudeIntegration {
+            let agents = CatSettings.shared.enabledAgents
+            if !agents.isEmpty {
                 let tracker = ClaudeActivityTracker.shared
-                view.physics.updateClaude(tracker.status(now: now))
+                view.physics.updateClaude(tracker.status(now: now, agents: agents))
                 // 明细每秒刷新 4 次就够（耗时按秒显示），不必每帧排序拼字符串
                 if now - self.lastClaudeLinesUpdate >= 0.25 {
                     self.lastClaudeLinesUpdate = now
-                    view.physics.claudeLines = tracker.lines(now: now)
+                    view.physics.claudeLines = tracker.lines(now: now, agents: agents)
                 }
             } else {
                 view.physics.updateClaude(.idle)
@@ -536,27 +537,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Claude Code 联动
 
     /// 这台机器装了 Claude Code（有 ~/.claude）但还没连接时，启动后提示一次去哪里开
-    private func suggestClaudeIntegrationIfNeeded() {
-        let key = "CoolCat.SuggestedClaudeIntegration"
-        guard !UserDefaults.standard.bool(forKey: key) else { return }
-        let claudeDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path
-        guard FileManager.default.fileExists(atPath: claudeDir), ClaudeHookInstaller.state() == .notInstalled else { return }
-        UserDefaults.standard.set(true, forKey: key)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            self?.overlayWindow.catView.physics.showNotice("🤖 发现 Claude Code：右键我 →「设置…」→ Claude Code → 连接")
+    /// 这台机器装了 Claude Code / Codex（有配置目录）但还没连接时，启动后各提示一次去哪里开
+    private func suggestAgentIntegrationIfNeeded() {
+        var delay: TimeInterval = 3
+        for agent in CodingAgent.allCases {
+            let installer = AgentHookInstaller.installer(for: agent)
+            // 沿用旧 key，老用户不会被再提示一次 Claude Code
+            let key = agent == .claude ? "CoolCat.SuggestedClaudeIntegration" : "CoolCat.SuggestedCodexIntegration"
+            guard !UserDefaults.standard.bool(forKey: key), installer.isAgentPresent,
+                  installer.state() == .notInstalled else { continue }
+            UserDefaults.standard.set(true, forKey: key)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.overlayWindow.catView.physics.showNotice("🤖 发现 \(agent.displayName)：右键我 →「设置…」→ \(agent.displayName) → 连接")
+            }
+            delay += 6
         }
     }
 
     // 可能运行 Claude Code 的宿主 App（bundle ID 小写子串）
     private static let claudeHostTokens = [
         "terminal", "iterm", "warp", "ghostty", "kitty", "alacritty", "wezterm", "hyper", "tabby",
-        "vscode", "todesktop", "cursor", "windsurf", "zed", "jetbrains", "xcode", "anthropic", "claude"
+        "vscode", "todesktop", "cursor", "windsurf", "zed", "jetbrains", "xcode", "anthropic", "claude",
+        "openai", "codex", "chatgpt"
     ]
 
     private static let terminalTokens = [
         "terminal", "iterm", "warp", "ghostty", "kitty", "alacritty", "wezterm", "hyper", "tabby", "anthropic", "claude"
     ]
-    private static let clickablePromptTokens = ["anthropic", "claude", "vscode", "todesktop", "cursor", "windsurf", "zed"]
+    private static let clickablePromptTokens = ["anthropic", "claude", "vscode", "todesktop", "cursor", "windsurf", "zed",
+                                                "openai", "codex", "chatgpt"]
 
     private static func frontmostBundleID() -> String? {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier?.lowercased()
@@ -582,54 +591,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return claudeHostTokens.contains { id.contains($0) }
     }
 
-    @objc private func installClaudeHooks() {
+    private func installHooks(for agent: CodingAgent) {
+        let installer = AgentHookInstaller.installer(for: agent)
         let confirm = NSAlert()
-        confirm.messageText = "连接 Claude Code"
-        confirm.informativeText = """
-        CoolCat 会在 ~/.claude/settings.json 里加入 7 个 hook（会话开始/结束、提交提示词、调用工具前后、通知、完成）。
+        confirm.messageText = "连接 \(agent.displayName)"
+        var info = """
+        CoolCat 会在 \(installer.displayPath) 里加入 \(installer.events.count) 个 hook（\(installer.events.joined(separator: "、"))）。
 
         • 只把事件名、工具名、项目文件夹名发给小猫，不读取你的提示词和代码
-        • 原文件会备份为 settings.json.coolcat-backup
-        • 已打开的 Claude Code 会话需要重启（或执行 /hooks）后生效
+        • 原文件会备份为 \((installer.displayPath as NSString).lastPathComponent).coolcat-backup
         """
+        switch agent {
+        case .claude:
+            info += "\n• 已打开的 Claude Code 会话需要重启（或执行 /hooks）后生效"
+        case .codex:
+            info += "\n• Codex 要求先信任新 hook：在 Codex 桌面 App「设置 → Hooks → needs review」（CLI 输入 /hooks）里信任标题为「CoolCat 桌面小猫」的条目后才会生效"
+        }
+        confirm.informativeText = info
         confirm.addButton(withTitle: "连接")
         confirm.addButton(withTitle: "取消")
         NSApp.activate(ignoringOtherApps: true)
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
         do {
-            try ClaudeHookInstaller.install()
-            CatSettings.shared.claudeIntegration = true
-            showInfoAlert("已连接 Claude Code 🎉", "新开的 Claude Code 会话里，小猫会跟着思考、等你批准、完成任务做出反应。")
+            try installer.install()
+            CatSettings.shared.setIntegration(agent, enabled: true)
+            switch agent {
+            case .claude:
+                showInfoAlert("已连接 Claude Code 🎉", "新开的 Claude Code 会话里，小猫会跟着思考、等你批准、完成任务做出反应。")
+            case .codex:
+                showInfoAlert("已写入 Codex hook，还差一步 🔑",
+                              "打开 Codex「设置 → Hooks」，点「needs review」，把标题为「CoolCat 桌面小猫」的 8 条 hook 标记为信任（CLI 里输入 /hooks）。\n信任之后，小猫会跟着 Codex 干活、等你批准、完成任务做出反应；设置面板里看到「已收到事件」就说明通了。")
+            }
         } catch {
             showInfoAlert("连接失败", error.localizedDescription)
         }
     }
 
-    @objc private func uninstallClaudeHooks() {
+    private func uninstallHooks(for agent: CodingAgent) {
+        let installer = AgentHookInstaller.installer(for: agent)
         do {
-            try ClaudeHookInstaller.uninstall()
-            showInfoAlert("已断开 Claude Code", "CoolCat 的 hook 已从 ~/.claude/settings.json 移除，其他配置未改动。")
+            try installer.uninstall()
+            showInfoAlert("已断开 \(agent.displayName)", "CoolCat 的 hook 已从 \(installer.displayPath) 移除，其他配置未改动。")
         } catch {
             showInfoAlert("断开失败", error.localizedDescription)
         }
     }
 
     /// 不依赖 hook，直接给 tracker 喂一串假事件，方便预览动画
-    @objc private func runClaudeDemo() {
+    private func runAgentDemo(_ agent: CodingAgent) {
         let tracker = ClaudeActivityTracker.shared
         let session = "coolcat-demo"
+        let project = agent == .codex ? "Codex 演示" : "Claude 演示"
         let steps: [(TimeInterval, String, String?, String?)] = [
             (0.0, "UserPromptSubmit", nil, nil),
             (2.0, "PreToolUse", "Read", nil),
-            (4.0, "PreToolUse", "Edit", nil),
-            (6.5, "Notification", nil, "permission_prompt"),
+            (4.0, "PreToolUse", agent == .codex ? "apply_patch" : "Edit", nil),
+            (6.5, agent == .codex ? "PermissionRequest" : "Notification", agent == .codex ? "Bash" : nil, "permission_prompt"),
             (10.0, "PostToolUse", "Bash", nil),
             (11.5, "Stop", nil, nil),
             (16.0, "SessionEnd", nil, nil)
         ]
         for (delay, event, tool, type) in steps {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                tracker.apply(event: event, session: session, tool: tool, notificationType: type, now: CACurrentMediaTime())
+                tracker.apply(event: event, session: session, tool: tool, notificationType: type, project: project,
+                              agent: agent, now: CACurrentMediaTime())
             }
         }
     }
@@ -1023,15 +1048,16 @@ extension AppDelegate: SettingsHost {
     func resetPetPosition() { resetPosition() }
     func relaunch() { relaunchApp() }
     func openInputMonitoring() { openInputMonitoringSettings() }
-    func installClaude() { installClaudeHooks() }
-    func uninstallClaude() { uninstallClaudeHooks() }
+    func install(_ agent: CodingAgent) { installHooks(for: agent) }
+    func uninstall(_ agent: CodingAgent) { uninstallHooks(for: agent) }
 
     func runDemo(_ demo: SettingsDemo) {
         switch demo {
         case .typing: runDemoBurst()
         case .life: runLifeDemo()
         case .meeting: runMeetingDemo()
-        case .claude: runClaudeDemo()
+        case .claude: runAgentDemo(.claude)
+        case .codex: runAgentDemo(.codex)
         case .gift: physics.offerGift()
         }
     }

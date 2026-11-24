@@ -2012,6 +2012,9 @@ enum CatRenderer {
     // MARK: - Claude Code Status Bubble
 
     private static let claudeOrange = NSColor(calibratedRed: 0.851, green: 0.467, blue: 0.341, alpha: 1) // #D97757
+    /// Codex 会话的转圈：半圆轮转 + 冷色，和 Claude 的橙色星芒一眼区分
+    private static let codexBlue = NSColor(calibratedRed: 0.47, green: 0.66, blue: 1.0, alpha: 1)
+    private static let codexFrames = ["◐", "◓", "◑", "◒"]
     private static let waitingAmber = NSColor(calibratedRed: 0.98, green: 0.69, blue: 0.20, alpha: 1)
     private static let doneGreen = NSColor(calibratedRed: 0.40, green: 0.80, blue: 0.50, alpha: 1)
 
@@ -2098,6 +2101,9 @@ enum CatRenderer {
             let glyph: String
             let glyphColor: NSColor
             switch line.kind {
+            case .working where line.agent == .codex:
+                glyph = codexFrames[(frameIndex / 2 + i) % codexFrames.count]
+                glyphColor = codexBlue
             case .working:
                 glyph = frames[(frameIndex + i * 3) % frames.count]
                 glyphColor = claudeOrange

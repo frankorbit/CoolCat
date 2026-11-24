@@ -3,6 +3,19 @@ import Foundation
 
 // MARK: - Public Status Model
 
+/// 接入的 AI 编程助手。rawValue 用于会话键和持久化，别改。
+enum CodingAgent: String, CaseIterable {
+    case claude
+    case codex
+
+    var displayName: String {
+        switch self {
+        case .claude: return "Claude Code"
+        case .codex: return "Codex"
+        }
+    }
+}
+
 enum ClaudeWaitKind: Equatable {
     /// 弹出了权限确认（要你点"允许"）
     case permission
@@ -32,12 +45,18 @@ enum ClaudeStatus: Equatable {
 enum ClaudeHookRelay {
     static let notificationName = Notification.Name("ai.today.coolcat.claude-event")
     static let argument = "--claude-hook"
+    /// Codex 的 hooks.json 和 Claude Code 同格式，复用同一个中继，只多带一个 agent 字段
+    static let codexArgument = "--codex-hook"
 
-    static func run() -> Never {
+    static func argument(for agent: CodingAgent) -> String {
+        agent == .codex ? codexArgument : argument
+    }
+
+    static func run(agent: CodingAgent = .claude) -> Never {
         let data = FileHandle.standardInput.readDataToEndOfFile()
         if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
            let event = json["hook_event_name"] as? String {
-            var info: [String: String] = ["event": event]
+            var info: [String: String] = ["event": event, "agent": agent.rawValue]
             if let session = json["session_id"] as? String { info["session"] = session }
             if let tool = json["tool_name"] as? String { info["tool"] = tool }
             if let cwd = json["cwd"] as? String { info["project"] = (cwd as NSString).lastPathComponent }
@@ -71,6 +90,8 @@ struct ClaudeSessionLine: Equatable {
     let kind: Kind
     /// 本轮提示词开始到现在的秒数（仅 working）
     let elapsed: CFTimeInterval?
+    /// 来自哪个助手（气泡里用不同的转圈图标区分）
+    var agent: CodingAgent = .claude
 }
 
 /// 按 session_id 维护每个 Claude Code 会话的阶段，并聚合成一个 `ClaudeStatus` 和逐会话的 `lines`。
@@ -89,6 +110,7 @@ final class ClaudeActivityTracker {
         var phase: Phase
         var updatedAt: CFTimeInterval
         var project: String
+        var agent: CodingAgent = .claude
         var promptStartedAt: CFTimeInterval?
         /// 并行工具调用：工具名 -> 未结束的次数。PostToolUse 只减自己那一个，不清空别人
         var inFlight: [String: Int] = [:]
@@ -143,19 +165,37 @@ final class ClaudeActivityTracker {
 
     @objc private func handleEvent(_ note: Notification) {
         guard let info = note.userInfo as? [String: String], let event = info["event"] else { return }
+        let agent = info["agent"].flatMap(CodingAgent.init(rawValue:)) ?? .claude
         apply(event: event, session: info["session"] ?? "default", tool: info["tool"],
-              notificationType: info["notificationType"], project: info["project"], now: CACurrentMediaTime())
+              notificationType: info["notificationType"], project: info["project"], agent: agent,
+              now: CACurrentMediaTime())
+        noteEventReceived(from: agent)
+    }
+
+    /// 某个助手最近一次真实事件的时间（墙上时间，持久化）：用来判断 hook 是否已经真正跑通
+    /// （Codex 新 hook 需要用户在 /hooks 里信任后才会运行，写进文件不代表已生效）
+    static func lastEventDate(for agent: CodingAgent) -> Date? {
+        UserDefaults.standard.object(forKey: "CoolCat.LastHookEvent.\(agent.rawValue)") as? Date
+    }
+
+    private func noteEventReceived(from agent: CodingAgent) {
+        let key = "CoolCat.LastHookEvent.\(agent.rawValue)"
+        // 每分钟最多写一次，别每个工具事件都写盘
+        if let last = UserDefaults.standard.object(forKey: key) as? Date, Date().timeIntervalSince(last) < 60 { return }
+        UserDefaults.standard.set(Date(), forKey: key)
     }
 
     /// 单独暴露出来便于预览/测试直接喂事件。
-    func apply(event: String, session: String, tool: String?, notificationType: String?,
-               project: String? = nil, now: CFTimeInterval) {
+    /// - Parameter agent: 不同助手的会话 ID 可能撞车，内部按「助手:会话」区分
+    func apply(event: String, session rawSession: String, tool: String?, notificationType: String?,
+               project: String? = nil, agent: CodingAgent = .claude, now: CFTimeInterval) {
         lastEventTime = now
+        let session = agent == .claude ? rawSession : agent.rawValue + ":" + rawSession
         if event == "SessionEnd" {
             sessions[session] = nil
             return
         }
-        var state = sessions[session] ?? Session(phase: .idle, updatedAt: now, project: project ?? "Claude")
+        var state = sessions[session] ?? Session(phase: .idle, updatedAt: now, project: project ?? agent.displayName, agent: agent)
         if let project, !project.isEmpty { state.project = project }
 
         var isWaiting = false
@@ -212,6 +252,13 @@ final class ClaudeActivityTracker {
             default:
                 return
             }
+        case "PermissionRequest":
+            // Codex：要你批准某个工具调用（自带工具名，比按"最近一次 PreToolUse"猜更准）
+            state.phase = .waiting(.permission, since: now)
+            state.waitingTool = tool ?? state.lastPreTool
+        case "Interrupt":
+            // Codex：用户按 Esc 打断，这一轮不会再有 Stop
+            resetToIdle(&state)
         case "Stop":
             state.phase = .done(at: now)
             state.inFlight.removeAll()
@@ -315,12 +362,12 @@ final class ClaudeActivityTracker {
     }
 
     /// 给小猫做动作用的聚合状态：等你 > 干活 > 搞定 > 空闲
-    func status(now: CFTimeInterval) -> ClaudeStatus {
+    func status(now: CFTimeInterval, agents: Set<CodingAgent> = Set(CodingAgent.allCases)) -> ClaudeStatus {
         expire(now: now)
         var waitingKind: ClaudeWaitKind?
         var working: [Session] = []
         var anyDone = false
-        for state in sessions.values {
+        for state in sessions.values where agents.contains(state.agent) {
             switch state.phase {
             case .waiting(let kind, _):
                 if waitingKind != .permission { waitingKind = kind }
@@ -341,20 +388,23 @@ final class ClaudeActivityTracker {
     }
 
     /// 给气泡用的逐会话明细：等你的排最前，其次按开始时间
-    func lines(now: CFTimeInterval) -> [ClaudeSessionLine] {
+    func lines(now: CFTimeInterval, agents: Set<CodingAgent> = Set(CodingAgent.allCases)) -> [ClaudeSessionLine] {
         expire(now: now)
         var result: [(order: Int, start: CFTimeInterval, line: ClaudeSessionLine)] = []
-        for state in sessions.values {
+        for state in sessions.values where agents.contains(state.agent) {
             switch state.phase {
             case .waiting(let kind, let since):
                 let detail = kind == .permission ? "等你批准" : "等你回复"
-                result.append((0, since, ClaudeSessionLine(project: state.project, detail: detail, kind: .waiting, elapsed: nil)))
+                result.append((0, since, ClaudeSessionLine(project: state.project, detail: detail, kind: .waiting,
+                                                           elapsed: nil, agent: state.agent)))
             case .working:
                 let start = state.promptStartedAt ?? state.updatedAt
                 let detail = Self.label(forTool: toolName(for: state, now: now))
-                result.append((1, start, ClaudeSessionLine(project: state.project, detail: detail, kind: .working, elapsed: now - start)))
+                result.append((1, start, ClaudeSessionLine(project: state.project, detail: detail, kind: .working,
+                                                           elapsed: now - start, agent: state.agent)))
             case .done(let at):
-                result.append((2, at, ClaudeSessionLine(project: state.project, detail: "搞定", kind: .done, elapsed: nil)))
+                result.append((2, at, ClaudeSessionLine(project: state.project, detail: "搞定", kind: .done,
+                                                        elapsed: nil, agent: state.agent)))
             case .idle:
                 break
             }
@@ -373,8 +423,8 @@ final class ClaudeActivityTracker {
     static func label(forTool tool: String?) -> String {
         guard let tool else { return "思考中" }
         switch tool {
-        case "Bash", "BashOutput", "KillShell", "KillBash": return "跑命令"
-        case "Edit", "MultiEdit", "Write", "NotebookEdit": return "写代码"
+        case "Bash", "BashOutput", "KillShell", "KillBash", "shell", "exec_command", "unified_exec": return "跑命令"
+        case "Edit", "MultiEdit", "Write", "NotebookEdit", "apply_patch": return "写代码"
         case "Read": return "读代码"
         case "Grep", "Glob", "LS": return "翻文件"
         case "WebFetch", "WebSearch": return "上网查"
@@ -400,56 +450,80 @@ final class ClaudeActivityTracker {
     }
 }
 
-// MARK: - ~/.claude/settings.json Installer
 
-/// 把 CoolCat 的 hook 写进（或移出）`~/.claude/settings.json`。
+// MARK: - Hook Installer (~/.claude/settings.json, ~/.codex/hooks.json)
+
+enum HookInstallState: Equatable {
+    case notInstalled
+    case installed
+    /// 已安装，但指向的 CoolCat 路径和当前运行的不一致（App 被挪过位置），或事件列表变了
+    case outdated
+}
+
+/// 把 CoolCat 的 hook 写进（或移出）某个助手的 hook 配置文件。Claude Code 和 Codex 的格式相同：
+/// `{ "hooks": { 事件名: [ { "matcher": "*", "hooks": [ { "type": "command", "command": ... } ] } ] } }`
 ///
-/// - 只增删 command 里带 `--claude-hook` 的条目，其他 hook 和配置原样保留。
-/// - 写入前备份到 `settings.json.coolcat-backup`。
+/// - 只增删 command 里带本助手中继参数的条目，其他 hook 和配置原样保留。
+/// - 第一次修改前备份为 `<文件>.coolcat-backup`。
 /// - 文件不是合法 JSON（例如手写了注释）时拒绝修改，交给用户处理。
-enum ClaudeHookInstaller {
-    enum InstallState: Equatable {
-        case notInstalled
-        case installed
-        /// 已安装，但指向的 CoolCat 路径和当前运行的不一致（App 被挪过位置）
-        case outdated
-    }
-
+struct AgentHookInstaller {
     enum InstallError: LocalizedError {
-        case unreadableSettings(String)
-        case writeFailed(String)
+        case unreadableSettings(path: String, detail: String)
+        case writeFailed(path: String, detail: String)
         case translocated
-        case unexpectedShape(String)
+        case unexpectedShape(path: String, detail: String)
 
         var errorDescription: String? {
             switch self {
-            case .unreadableSettings(let detail): return "无法解析 ~/.claude/settings.json：\(detail)"
-            case .writeFailed(let detail): return "写入 ~/.claude/settings.json 失败：\(detail)"
+            case let .unreadableSettings(path, detail): return "无法解析 \(path)：\(detail)"
+            case let .writeFailed(path, detail): return "写入 \(path) 失败：\(detail)"
             case .translocated: return "CoolCat 正在 macOS 的临时隔离目录里运行，路径重启后会失效。请先把 CoolCat.app 拖进「应用程序」文件夹再打开。"
-            case .unexpectedShape(let detail): return "~/.claude/settings.json 里的 hooks 格式不符合预期（\(detail)），为避免覆盖你的配置，已放弃修改。"
+            case let .unexpectedShape(path, detail): return "\(path) 里的 hooks 格式不符合预期（\(detail)），为避免覆盖你的配置，已放弃修改。"
             }
         }
     }
 
-    /// PostToolUseFailure：工具失败时不发 PostToolUse，漏掉它会让工具计数一直挂着
-    static let hookEvents = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
-                             "Notification", "Stop", "SessionEnd"]
+    let agent: CodingAgent
+    let settingsURL: URL
+    /// 给用户看的路径（~ 开头）
+    let displayPath: String
+    let events: [String]
     /// 这些事件支持按工具名匹配，需要 matcher
-    private static let toolEvents: Set<String> = ["PreToolUse", "PostToolUse", "PostToolUseFailure"]
+    let toolEvents: Set<String>
+    /// 有些事件有更短的超时上限（Codex 的 SessionEnd / Interrupt 最多 3 秒）
+    let timeouts: [String: Int]
+    /// Codex 设置页用它当 hook 标题（不写就只显示「Hook 1」，用户认不出是谁的）
+    var statusMessage: String?
 
-    static var defaultSettingsURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
+    static let claude = AgentHookInstaller(
+        agent: .claude,
+        settingsURL: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json"),
+        displayPath: "~/.claude/settings.json",
+        // PostToolUseFailure：工具失败时不发 PostToolUse，漏掉它会让工具计数一直挂着
+        events: ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+                 "Notification", "Stop", "SessionEnd"],
+        toolEvents: ["PreToolUse", "PostToolUse", "PostToolUseFailure"],
+        timeouts: [:]
+    )
+
+    static let codex = AgentHookInstaller(
+        agent: .codex,
+        settingsURL: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/hooks.json"),
+        displayPath: "~/.codex/hooks.json",
+        // PermissionRequest = 等你批准；Interrupt = 按 Esc 打断（不会再有 Stop）
+        events: ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse",
+                 "Stop", "Interrupt", "SessionEnd"],
+        toolEvents: ["PreToolUse", "PermissionRequest", "PostToolUse"],
+        timeouts: ["SessionEnd": 2, "Interrupt": 2],
+        statusMessage: "CoolCat 桌面小猫"
+    )
+
+    static func installer(for agent: CodingAgent) -> AgentHookInstaller {
+        agent == .codex ? codex : claude
     }
 
     static var executablePath: String {
         Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
-    }
-
-    /// App 被移走/删除后不能让 Claude Code 每个事件都报 127：
-    /// 可执行文件不存在时吞掉 stdin 并静默退出 0。
-    static var hookCommand: String {
-        let quoted = shellQuote(executablePath)
-        return "[ -x \(quoted) ] && exec \(quoted) \(ClaudeHookRelay.argument); cat >/dev/null; exit 0"
     }
 
     /// 从"下载"等目录直接双击运行时，系统会把 App 随机挪进 AppTranslocation 只读目录，这个路径重启就失效
@@ -457,29 +531,45 @@ enum ClaudeHookInstaller {
         executablePath.contains("/AppTranslocation/")
     }
 
-    static func state(settingsURL: URL = defaultSettingsURL) -> InstallState {
+    var relayArgument: String { ClaudeHookRelay.argument(for: agent) }
+
+    /// App 被移走/删除后不能让助手每个事件都报 127：可执行文件不存在时吞掉 stdin 并静默退出 0
+    var hookCommand: String {
+        let quoted = Self.shellQuote(Self.executablePath)
+        return "[ -x \(quoted) ] && exec \(quoted) \(relayArgument); cat >/dev/null; exit 0"
+    }
+
+    /// 这个助手是否装在这台机器上（有配置目录）
+    var isAgentPresent: Bool {
+        FileManager.default.fileExists(atPath: settingsURL.deletingLastPathComponent().path)
+    }
+
+    func state() -> HookInstallState {
         guard let root = try? loadSettings(settingsURL),
               let hooks = root["hooks"] as? [String: Any] else { return .notInstalled }
-        func ourCommands(_ event: String) -> [String] {
+        func ourHandlers(_ event: String) -> [[String: Any]] {
             ((hooks[event] as? [[String: Any]]) ?? [])
                 .compactMap { $0["hooks"] as? [[String: Any]] }
                 .flatMap { $0 }
-                .compactMap { $0["command"] as? String }
-                .filter(isOurCommand)
+                .filter { isOurCommand($0["command"] as? String ?? "") }
         }
-        let all = hooks.keys.flatMap(ourCommands)
+        let all = hooks.keys.flatMap(ourHandlers)
         if all.isEmpty { return .notInstalled }
-        // 路径变了，或新版本多了要监听的事件（例如 PostToolUseFailure），都需要重写
-        let complete = hookEvents.allSatisfy { !ourCommands($0).isEmpty }
-        return (complete && all.allSatisfy { $0 == hookCommand }) ? .installed : .outdated
+        // 路径变了、新版本多了要监听的事件、或标题（statusMessage）变了，都需要重写
+        let complete = events.allSatisfy { !ourHandlers($0).isEmpty }
+        let current = all.allSatisfy {
+            ($0["command"] as? String) == hookCommand && ($0["statusMessage"] as? String) == statusMessage
+        }
+        return (complete && current) ? .installed : .outdated
     }
 
-    static func install(settingsURL: URL = defaultSettingsURL) throws {
-        guard !isTranslocated else { throw InstallError.translocated }
-        try mutateSettings(settingsURL) { root in
+    func install() throws {
+        guard !Self.isTranslocated else { throw InstallError.translocated }
+        try mutateSettings { root in
             var hooks = removingOurHooks(from: try validatedHooks(root))
-            let handler: [String: Any] = ["type": "command", "command": hookCommand, "timeout": 5]
-            for event in hookEvents {
+            for event in events {
+                var handler: [String: Any] = ["type": "command", "command": hookCommand, "timeout": timeouts[event] ?? 5]
+                if let statusMessage { handler["statusMessage"] = statusMessage }
                 var group: [String: Any] = ["hooks": [handler]]
                 if toolEvents.contains(event) { group["matcher"] = "*" }
                 var groups = hooks[event] as? [[String: Any]] ?? []
@@ -490,59 +580,61 @@ enum ClaudeHookInstaller {
         }
     }
 
-    static func uninstall(settingsURL: URL = defaultSettingsURL) throws {
-        try mutateSettings(settingsURL) { root in
+    func uninstall() throws {
+        try mutateSettings { root in
             guard root["hooks"] != nil else { return }
             let cleaned = removingOurHooks(from: try validatedHooks(root))
             root["hooks"] = cleaned.isEmpty ? nil : cleaned
         }
     }
 
-    /// 启动时调用：已安装但路径指向别处（App 被挪过）时自动改成当前路径。失败静默，菜单里仍会提示。
-    static func repairIfOutdated() {
-        guard !isTranslocated, state() == .outdated else { return }
+    /// 启动时调用：已安装但路径指向别处（App 被挪过）时自动改成当前路径。失败静默，设置面板里仍会提示。
+    func repairIfOutdated() {
+        guard !Self.isTranslocated, state() == .outdated else { return }
         try? install()
     }
 
+    // MARK: Helpers
+
     /// hooks 必须是 { 事件名: [对象] }；形状不对就拒绝修改，避免覆盖用户手写的配置
-    private static func validatedHooks(_ root: [String: Any]) throws -> [String: Any] {
+    private func validatedHooks(_ root: [String: Any]) throws -> [String: Any] {
         guard let raw = root["hooks"] else { return [:] }
-        guard let hooks = raw as? [String: Any] else { throw InstallError.unexpectedShape("hooks 不是对象") }
-        for event in hookEvents {
+        guard let hooks = raw as? [String: Any] else {
+            throw InstallError.unexpectedShape(path: displayPath, detail: "hooks 不是对象")
+        }
+        for event in events {
             if let value = hooks[event], !(value is [[String: Any]]) {
-                throw InstallError.unexpectedShape("\(event) 不是数组")
+                throw InstallError.unexpectedShape(path: displayPath, detail: "\(event) 不是数组")
             }
         }
         return hooks
     }
 
-    /// 读-改-写：解析软链接写到真实文件；写之前比对修改时间，期间被别人（例如 Claude Code）改过就重来
-    private static func mutateSettings(_ url: URL, _ body: (inout [String: Any]) throws -> Void) throws {
-        let target = url.resolvingSymlinksInPath()
+    /// 读-改-写：解析软链接写到真实文件；写之前比对修改时间，期间被别人（例如助手自己）改过就重来
+    private func mutateSettings(_ body: (inout [String: Any]) throws -> Void) throws {
+        let target = settingsURL.resolvingSymlinksInPath()
         for _ in 0..<3 {
-            let before = modificationDate(target)
+            let before = Self.modificationDate(target)
             var root = try loadSettings(target)
             try body(&root)
-            guard modificationDate(target) == before else { continue }
+            guard Self.modificationDate(target) == before else { continue }
             try save(root, to: target)
             return
         }
-        throw InstallError.writeFailed("文件在修改过程中被其他程序反复改动，请稍后重试")
+        throw InstallError.writeFailed(path: displayPath, detail: "文件在修改过程中被其他程序反复改动，请稍后重试")
     }
 
     private static func modificationDate(_ url: URL) -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
-    // MARK: Helpers
-
-    private static func isOurCommand(_ command: String) -> Bool {
+    private func isOurCommand(_ command: String) -> Bool {
         // 也认改名前的 KuroCat hook，这样升级后能自动替换掉旧路径
-        command.contains(ClaudeHookRelay.argument)
+        command.contains(relayArgument)
             && (command.contains("CoolCat") || command.contains(LegacyMigration.legacyName))
     }
 
-    private static func removingOurHooks(from hooks: [String: Any]) -> [String: Any] {
+    private func removingOurHooks(from hooks: [String: Any]) -> [String: Any] {
         var result: [String: Any] = [:]
         for (event, value) in hooks {
             guard let groups = value as? [[String: Any]] else {
@@ -562,28 +654,28 @@ enum ClaudeHookInstaller {
         return result
     }
 
-    private static func loadSettings(_ url: URL) throws -> [String: Any] {
+    private func loadSettings(_ url: URL) throws -> [String: Any] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
         let data: Data
         do {
             data = try Data(contentsOf: url)
         } catch {
-            throw InstallError.unreadableSettings(error.localizedDescription)
+            throw InstallError.unreadableSettings(path: displayPath, detail: error.localizedDescription)
         }
         if data.allSatisfy({ $0 == 0x20 || $0 == 0x0A || $0 == 0x0D || $0 == 0x09 }) { return [:] }
         do {
             guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw InstallError.unreadableSettings("顶层不是 JSON 对象")
+                throw InstallError.unreadableSettings(path: displayPath, detail: "顶层不是 JSON 对象")
             }
             return dict
         } catch let error as InstallError {
             throw error
         } catch {
-            throw InstallError.unreadableSettings(error.localizedDescription)
+            throw InstallError.unreadableSettings(path: displayPath, detail: error.localizedDescription)
         }
     }
 
-    private static func save(_ root: [String: Any], to url: URL) throws {
+    private func save(_ root: [String: Any], to url: URL) throws {
         let fm = FileManager.default
         do {
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -598,7 +690,7 @@ enum ClaudeHookInstaller {
             let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
             try data.write(to: url, options: .atomic)
         } catch {
-            throw InstallError.writeFailed(error.localizedDescription)
+            throw InstallError.writeFailed(path: displayPath, detail: error.localizedDescription)
         }
     }
 
