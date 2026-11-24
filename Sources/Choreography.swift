@@ -365,7 +365,8 @@ struct IdleDirector {
     private var rng = SystemRandomNumberGenerator()
 
     /// 返回本帧要叠加的姿态；`allowed` 为 false 时立刻收手并重新计时
-    mutating func update(dt: CGFloat, allowed: Bool, seatX: CGFloat) -> (overlay: PoseOverlay, started: IdleAction?) {
+    /// - preferYawn: 深夜时更爱打哈欠
+    mutating func update(dt: CGFloat, allowed: Bool, seatX: CGFloat, preferYawn: Bool = false) -> (overlay: PoseOverlay, started: IdleAction?) {
         guard allowed else {
             action = nil
             cooldown = max(cooldown, 4)
@@ -383,7 +384,11 @@ struct IdleDirector {
             cooldown -= dt
             if cooldown <= 0 {
                 let pool = IdleAction.allCases.filter { $0 != last }
-                action = pool.randomElement(using: &rng)
+                if preferYawn && last != .yawn && Double.random(in: 0..<1, using: &rng) < 0.45 {
+                    action = .yawn
+                } else {
+                    action = pool.randomElement(using: &rng)
+                }
                 age = 0
                 started = action
             }

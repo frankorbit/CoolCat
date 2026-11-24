@@ -11,7 +11,7 @@ enum CatHitZone {
 
 enum CatRenderer {
     private static func patterned(_ coat: CatCoatTheme) -> Bool { coat == .shorthair || coat == .orangeWhite }
-    private static func rgb(_ hex: Int, _ alpha: CGFloat = 1) -> NSColor {
+    static func rgb(_ hex: Int, _ alpha: CGFloat = 1) -> NSColor {
         NSColor(calibratedRed: CGFloat((hex >> 16) & 255)/255,
                 green: CGFloat((hex >> 8) & 255)/255, blue: CGFloat(hex & 255)/255, alpha: alpha)
     }
@@ -150,9 +150,17 @@ enum CatRenderer {
         if physics.crownPop.value > 0.02 || physics.sweatTimer > 0 {
             drawHeadAccessories(in: ctx, center: headCenter, physics: physics)
         }
+        // 7d. 深夜睡帽（皇冠戴着时让位）
+        if physics.crownPop.value < 0.3 {
+            drawNightCap(in: ctx, center: headCenter, physics: physics)
+        }
 
         // 8. Front Arms / Paws (over torso & keyboard/mouse with crisp separation outlines / Siamese chocolate socks!)
         drawFrontPaws(in: ctx, seatX: seatX, seatY: seatY, breath: breath, physics: physics, coat: coat)
+
+        // 8a. 爪子捧着的咖啡 / 奶瓶 / 水杯，电量小图标
+        drawHeldProp(in: ctx, physics: physics)
+        drawBatteryBadge(in: ctx, physics: physics)
 
         // 8b. 嘘：嘴边冒一个"嘘~"（黑猫捂嘴时爪子和脸同色，需要文字点题）
         if physics.shushTimer > 0 {
@@ -786,7 +794,7 @@ enum CatRenderer {
 
     /// Projects a 3D point on the cat's head ellipsoid rotated by (yawRad, pitchRad)
     /// into 2D head-local coordinates — creating true Live2D-style 2.5D head turning!
-    private static func projectHead3D(
+    static func projectHead3D(
         x: CGFloat, y: CGFloat, z: CGFloat,
         yawRad: CGFloat, pitchRad: CGFloat
     ) -> (pt: CGPoint, z: CGFloat) {
@@ -807,7 +815,7 @@ enum CatRenderer {
 
     // MARK: - 2.5D Ears Layer (drawn behind unified silhouette so Siamese seal-point ears emerge organically!)
 
-    private static func drawEarsLayer(
+    static func drawEarsLayer(
         in ctx: CGContext,
         center: CGPoint,
         physics: CatPhysics,

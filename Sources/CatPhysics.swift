@@ -120,6 +120,19 @@ final class CatSettings {
     var idleAnimations: Bool {
         didSet { UserDefaults.standard.set(idleAnimations, forKey: "CoolCat.IdleAnimations") }
     }
+    /// 生活陪伴：深夜睡帽、早晨咖啡、低电量/插电、久坐喝水
+    var lifeNight: Bool {
+        didSet { UserDefaults.standard.set(lifeNight, forKey: "CoolCat.LifeNight") }
+    }
+    var lifeMorning: Bool {
+        didSet { UserDefaults.standard.set(lifeMorning, forKey: "CoolCat.LifeMorning") }
+    }
+    var lifeBattery: Bool {
+        didSet { UserDefaults.standard.set(lifeBattery, forKey: "CoolCat.LifeBattery") }
+    }
+    var lifeWorkBreak: Bool {
+        didSet { UserDefaults.standard.set(lifeWorkBreak, forKey: "CoolCat.LifeWorkBreak") }
+    }
     /// 键盘习惯小反应：⌫ 冒汗 / ⌘S 盖章 / 截图比耶 / KPM 破纪录戴皇冠
     var keyHabitReactions: Bool {
         didSet { UserDefaults.standard.set(keyHabitReactions, forKey: "CoolCat.KeyHabitReactions") }
@@ -158,6 +171,10 @@ final class CatSettings {
         claudeIntegration = d.object(forKey: "CoolCat.ClaudeIntegration") as? Bool ?? true
         meetingMode = d.object(forKey: "CoolCat.MeetingMode") as? Bool ?? true
         keyHabitReactions = d.object(forKey: "CoolCat.KeyHabitReactions") as? Bool ?? true
+        lifeNight = d.object(forKey: "CoolCat.LifeNight") as? Bool ?? true
+        lifeMorning = d.object(forKey: "CoolCat.LifeMorning") as? Bool ?? true
+        lifeBattery = d.object(forKey: "CoolCat.LifeBattery") as? Bool ?? true
+        lifeWorkBreak = d.object(forKey: "CoolCat.LifeWorkBreak") as? Bool ?? true
         musicVisualizer = d.object(forKey: "CoolCat.MusicVisualizer") as? Bool ?? true
         realAudioAnalysis = d.object(forKey: "CoolCat.RealAudioAnalysis") as? Bool ?? true
         musicDance = d.object(forKey: "CoolCat.MusicDance") as? Bool ?? true
@@ -394,6 +411,41 @@ final class CatPhysics {
     /// 节拍是否锁在真实鼓点上（否则是按 BPM 自由走）
     var isBeatLocked: Bool { time - lastLiveBeatTime < 3 }
 
+    // 生活陪伴
+    enum HeldProp { case coffee, milk, water }
+    /// 0..1 戴睡帽（深夜）
+    var nightCap = Spring1D(0)
+    /// 帽尖的惯性：软弹簧追着头的歪斜/上下，差值就是帽尖"慢半拍"甩出去的量
+    var capSway = Spring1D(0)
+    var capBob = Spring1D(0)
+    private(set) var isNightTime = false
+    /// 0..1 低电量没精神
+    private(set) var tiredness: CGFloat = 0
+    private var tirednessTarget: CGFloat = 0
+    /// 电量小图标（低电量时一直显示，插电后显示几秒）
+    private(set) var batteryBadge: BatteryStatus?
+    private var batteryBadgeUntil: CGFloat = 0
+    private var latestBattery: BatteryStatus?
+    private(set) var heldProp: HeldProp?
+    private var propRemaining: CGFloat = 0
+    private(set) var propAge: CGFloat = 0
+    /// 本帧爪子是否真的拿着道具（打字/跳舞时会先放下）
+    private(set) var isHoldingProp = false
+    /// 预览/演示：强制深夜、强制电池状态
+    var debugNight: Bool?
+    var debugBattery: BatteryStatus?
+
+    /// 正在抿一口（咖啡/水每 3.4 秒抿一次；奶瓶一直咕咚咕咚）
+    var isSipping: Bool {
+        guard let prop = heldProp else { return false }
+        switch prop {
+        case .milk: return propAge.truncatingRemainder(dividingBy: 1.6) < 1.1
+        case .coffee, .water:
+            let cycle = propAge.truncatingRemainder(dividingBy: 3.4)
+            return cycle > 2.2 && cycle < 3.2
+        }
+    }
+
     // 键盘习惯
     private var habits = KeyHabitDetector()
     private var kpmSampleCooldown: CGFloat = 0
@@ -453,7 +505,8 @@ final class CatPhysics {
     var effectiveEyeClosure: CGFloat {
         let petClose = max(petHeadIntensity * 1.0, petBodyIntensity * 0.62)
         let sleepClose = sleepiness * 0.92
-        return min(1.0, max(blinkProgress, max(petClose, max(sleepClose, overlay.eyeClosure))))
+        let lifeClose = max(isHoldingProp && isSipping ? 0.85 : 0, tiredness * 0.45)
+        return min(1.0, max(blinkProgress, max(petClose, max(sleepClose, max(overlay.eyeClosure, lifeClose)))))
     }
 
     /// True when eyes should draw the signature glowing lime horizontal closed-eye lines
@@ -602,6 +655,50 @@ final class CatPhysics {
         default:
             break
         }
+    }
+
+    // MARK: - Life Companion
+
+    /// 每隔几秒由 AppDelegate 喂入：是否深夜、电池状态、没精神程度
+    func setLife(isNight: Bool, battery: BatteryStatus?, tiredness: CGFloat) {
+        isNightTime = isNight
+        latestBattery = battery
+        tirednessTarget = CatSettings.shared.lifeBattery ? tiredness : 0
+    }
+
+    func react(life event: LifeEvent) {
+        sleepiness = 0
+        switch event {
+        case .nightReminder(let text):
+            toast = Toast(text: text, style: .habit)
+        case .morningCoffee:
+            toast = Toast(text: "☀️ 早上好！先来杯咖啡", style: .habit)
+            offerProp(.coffee, duration: 150)
+        case .lowBattery(let percent):
+            toast = Toast(text: "🪫 电量只剩 \(percent)%，该充电啦", style: .habit)
+        case .pluggedIn:
+            toast = Toast(text: "⚡ 充上电啦，咕咚咕咚", style: .habit)
+            offerProp(.milk, duration: 6)
+            batteryBadgeUntil = time + 6
+            // 闪电从身体两侧往上飘，别糊在脸上
+            for i in 0..<4 {
+                let side: CGFloat = i % 2 == 0 ? -1 : 1
+                sparkles.append(PurrSparkle(
+                    position: CGPoint(x: CatPhysics.seatAnchor.x + side * CGFloat.random(in: 58...78), y: CGFloat.random(in: 150...200)),
+                    velocity: CGPoint(x: CGFloat.random(in: -6...6), y: -26),
+                    lifetime: 1.4, isSleepZ: false, noteGlyph: "⚡", noteHue: 0.14
+                ))
+            }
+        case .workBreak(let minutes):
+            toast = Toast(text: "💧 已经连续忙了 \(minutes) 分钟，喝口水、站起来动动", style: .habit)
+            offerProp(.water, duration: 10)
+        }
+    }
+
+    func offerProp(_ prop: HeldProp, duration: CGFloat) {
+        heldProp = prop
+        propRemaining = duration
+        propAge = 0
     }
 
     // MARK: - Key Habit Reactions
@@ -982,15 +1079,34 @@ final class CatPhysics {
         let idleAllowed = debugAllowIdle || (CatSettings.shared.idleAnimations && !wantMusic && !busyElsewhere
             && !claudeStatus.isActive && idleFor > 5 && sleepiness < 0.2 && hunt < 0.1 && activeKeys.isEmpty
             && !micActive)
-        let idleResult = idle.update(dt: dt, allowed: idleAllowed, seatX: CatPhysics.seatAnchor.x + bodyShiftX.value)
+        let idleResult = idle.update(dt: dt, allowed: idleAllowed, seatX: CatPhysics.seatAnchor.x + bodyShiftX.value,
+                                     preferYawn: (debugNight ?? isNightTime) && CatSettings.shared.lifeNight)
         currentIdleAction = idle.action
         if idle.action != nil { frameOverlay = idleResult.overlay }
         if idleResult.started == .slowBlink { spawnHeart() }
         overlay = frameOverlay
-        mouthOpen.target = overlay.mouthOpen
+        mouthOpen.target = max(overlay.mouthOpen, isHoldingProp && isSipping ? 0.25 : 0)
         mouthOpen.step(dt: dt, stiffness: 300, damping: 22)
         tailAmplitude += (1 + overlay.tailBoost - tailAmplitude) * min(1, dt * 6)
         if let key = overlay.pressedKey { keyGlow[key] = max(keyGlow[key] ?? 0, 0.9) }
+
+        // 2j. 生活陪伴：睡帽、没精神、手持道具计时、电量小图标
+        let night = debugNight ?? isNightTime
+        nightCap.target = (night && CatSettings.shared.lifeNight) ? 1 : 0
+        nightCap.step(dt: dt, stiffness: 200, damping: 13)
+        capSway.target = headTilt.value
+        capSway.step(dt: dt, stiffness: 45, damping: 4.5)
+        capBob.target = headOffsetY.value
+        capBob.step(dt: dt, stiffness: 60, damping: 5)
+        let tiredTarget = debugBattery.map { $0.onAC ? 0 : ($0.percent <= 10 ? 1 : ($0.percent <= 20 ? 0.6 : 0)) } ?? tirednessTarget
+        tiredness += (tiredTarget - tiredness) * min(1, dt * 1.5)
+        if heldProp != nil {
+            propRemaining -= dt
+            propAge += dt
+            if propRemaining <= 0 { heldProp = nil }
+        }
+        let shownBattery = debugBattery ?? latestBattery
+        batteryBadge = (tiredness > 0.1 || time < batteryBadgeUntil) ? shownBattery : nil
 
         // 2f. 键盘习惯：计时衰减 + 定期采样 KPM 判断破纪录
         sweatTimer = max(0, sweatTimer - dt)
@@ -1143,7 +1259,8 @@ final class CatPhysics {
             rightPawTyping = false
         }
 
-        // 会议动作优先级最高：捂嘴 > 洗脸 > 比耶（短暂打断打字爪）
+        isHoldingProp = false
+        // 会议动作优先级最高：捂嘴 > 洗脸 > 比耶 > 手持道具（短暂打断打字爪）
         if shushTimer > 0 {
             let m = mouthCanvasPoint
             rightPaw.target = CGPoint(x: m.x + 3, y: m.y - 4)
@@ -1156,6 +1273,13 @@ final class CatPhysics {
             // 截图比耶：举爪停在脸旁边
             rightPaw.target = CGPoint(x: CatPhysics.rightPawRest.x + 32, y: 140)
             rightPawTyping = false
+        } else if heldProp != nil && rightKey == nil && danceAmount < 0.3 {
+            // 端着咖啡/奶瓶/水杯：平时捧在胸前，抿一口时送到嘴边
+            let m = mouthCanvasPoint
+            rightPaw.target = isSipping ? CGPoint(x: m.x + 9, y: m.y + 7)
+                                        : CGPoint(x: CatPhysics.seatAnchor.x + bodyShiftX.value + 16, y: 184)
+            rightPawTyping = false
+            isHoldingProp = true
         } else {
             // 舞步 / 空闲动作的爪子（打字中的爪子不抢）
             // 按权重从默认位置拉过去：开始跳舞、换舞步时爪子平滑过渡，不会"嗖"地跳过去
@@ -1219,6 +1343,7 @@ final class CatPhysics {
         headOffsetY.target += beatPulse * music * (typingNow ? 1.6 : 3.4) * (1 - hunt) * (1 - danceAmount)
             * (isAudioQuiet ? 0 : 1)
         headOffsetY.target += overlay.headOffsetY
+        headOffsetY.target += tiredness * 3.5 // 没精神：脑袋往下耷拉
         if claudeWaiting && !typingNow {
             // 着急地小跳
             headOffsetY.target -= abs(sin(time * 6)) * 4.5
@@ -1227,6 +1352,7 @@ final class CatPhysics {
             - (claudeWaiting ? 0.2 : 0)
             + (sweatTimer > 0 ? 0.4 : 0) // 冒汗时耳朵往后背
             + overlay.earFold
+            + tiredness * 0.3 // 没精神：耳朵耷拉
         earTwitch.target = 0
 
         // 跳舞时弹簧更硬，才跟得上 2Hz 左右的节拍
@@ -1305,7 +1431,7 @@ final class CatPhysics {
             let extraYaw = overlay.overridesGaze ? 0 : overlay.headYaw
             let extraPitch = overlay.overridesGaze ? 0 : overlay.headPitch
             headYaw.target = max(-1.0, min(1.0, lookTargetX + extraYaw))
-            headPitch.target = max(-1.0, min(1.0, lookTargetY + extraPitch))
+            headPitch.target = max(-1.0, min(1.0, lookTargetY + extraPitch - (isHoldingProp && isSipping ? 0.18 : 0)))
         }
         let headStiff: CGFloat = 88 + hunt * 75 + groove * 140
         let headDamp: CGFloat = 14.5 + hunt * 4.5 + groove * 5
@@ -1359,6 +1485,7 @@ final class CatPhysics {
         let petBoost = max(petHeadIntensity, petBodyIntensity) * 1.4
         let huntBoost = hunt * 2.8
         var tailSpeed: CGFloat = 1.85 + kpmBoost + petBoost + huntBoost - sleepiness * 1.1 + celebration * 3.5
+            - tiredness * 0.8
         // 听歌时尾巴摆动速度向节拍靠拢（每拍半个周期）
         // 舒缓的歌尾巴摆得更慢（约半速）
         let beatTailSpeed = beatsPerMinute / 60 * .pi * (0.45 + 0.55 * musicArousal)

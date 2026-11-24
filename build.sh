@@ -96,6 +96,8 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/AudioSpectrumAnalyzer.swift"
     "$ROOT/Sources/Choreography.swift"
     "$ROOT/Sources/LegacyMigration.swift"
+    "$ROOT/Sources/LifeCompanion.swift"
+    "$ROOT/Sources/CatProps.swift"
     "$ROOT/Sources/CatRenderer.swift"
     "$ROOT/Sources/CoatPatterns.swift"
     "$ROOT/Sources/OverlayWindow.swift"

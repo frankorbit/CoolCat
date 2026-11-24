@@ -8,6 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var renderTimer: Timer?
     private var lastFrameTime: CFTimeInterval = CACurrentMediaTime()
     private var lastClaudeLinesUpdate: CFTimeInterval = 0
+    private var lifeCompanion = LifeCompanion(lastCoffeeDay: UserDefaults.standard.string(forKey: "CoolCat.LastCoffeeDay"))
+    private var lifeTimer: Timer?
     private var isPetVisible = true
     private var availableUpdateVersion: String?
     private var availableUpdateURL: URL?
@@ -116,6 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             _ = setAutoStartEnabled(true)
         }
         startRenderLoop()
+        startLifeCompanion()
 
         if Self.updateChecksEnabled {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
@@ -131,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         InputEngine.shared.flushStats()
         InputEngine.shared.stop()
         MusicMonitor.shared.stop()
+        lifeTimer?.invalidate()
         AudioSpectrumAnalyzer.shared.setWanted(false)
         ClaudeActivityTracker.shared.stop()
         MeetingMonitor.shared.stop()
@@ -370,6 +374,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         habitItem.target = self
         habitItem.state = settings.keyHabitReactions ? .on : .off
         menu.addItem(habitItem)
+
+        menu.addItem(buildLifeMenuItem())
 
         let idleItem = NSMenuItem(title: "空闲时的小动作（打哈欠 / 伸懒腰 / 踩奶 / 慢眨眼……）", action: #selector(toggleIdleAnimations), keyEquivalent: "")
         idleItem.target = self
@@ -651,6 +657,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleHeadphonesForAnyAudio() {
         CatSettings.shared.headphonesForAnyAudio.toggle()
         applyAudioActivity(MusicMonitor.shared.activity)
+    }
+
+    // MARK: - 生活陪伴
+
+    /// 每 5 秒看一眼时间、电量、键鼠活动，把该触发的事件交给小猫
+    private func startLifeCompanion() {
+        let tick = { [weak self] in
+            guard let self else { return }
+            let settings = CatSettings.shared
+            var options = LifeCompanion.Options()
+            options.night = settings.lifeNight
+            options.morning = settings.lifeMorning
+            options.battery = settings.lifeBattery
+            options.workBreak = settings.lifeWorkBreak
+            let engine = InputEngine.shared
+            let lastInput = max(engine.lastKeyActivityTime, max(engine.lastMouseMoveTime, engine.lastMouseClickTime))
+            let battery = PowerSourceProbe.read()
+            let events = self.lifeCompanion.update(date: Date(), clock: CACurrentMediaTime(), lastInput: lastInput,
+                                                   battery: battery, options: options)
+            if let day = self.lifeCompanion.coffeeDay {
+                UserDefaults.standard.set(day, forKey: "CoolCat.LastCoffeeDay")
+            }
+            let physics = self.overlayWindow.catView.physics
+            physics.setLife(isNight: self.lifeCompanion.isNight, battery: battery,
+                            tiredness: CGFloat(self.lifeCompanion.tiredness))
+            for event in events { physics.react(life: event) }
+        }
+        let timer = Timer(timeInterval: 5, repeats: true) { _ in tick() }
+        RunLoop.main.add(timer, forMode: .common)
+        lifeTimer = timer
+        tick()
+    }
+
+    private func buildLifeMenuItem() -> NSMenuItem {
+        let sub = NSMenu()
+        let settings = CatSettings.shared
+        func toggle(_ title: String, _ on: Bool, _ action: Selector) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.state = on ? .on : .off
+            sub.addItem(item)
+        }
+        toggle("🌙 深夜戴睡帽、提醒早点睡", settings.lifeNight, #selector(toggleLifeNight))
+        toggle("☀️ 早上第一次开工端咖啡", settings.lifeMorning, #selector(toggleLifeMorning))
+        toggle("🪫 低电量没精神 / ⚡ 插电喝奶", settings.lifeBattery, #selector(toggleLifeBattery))
+        toggle("💧 连续工作 50 分钟提醒喝水", settings.lifeWorkBreak, #selector(toggleLifeWorkBreak))
+        sub.addItem(.separator())
+        let demo = NSMenuItem(title: "🎬 演示：睡帽 → 咖啡 → 没电 → 插电 → 喝水", action: #selector(runLifeDemo), keyEquivalent: "")
+        demo.target = self
+        sub.addItem(demo)
+        let parent = NSMenuItem(title: "生活陪伴 🌙", action: nil, keyEquivalent: "")
+        parent.submenu = sub
+        return parent
+    }
+
+    @objc private func toggleLifeNight() { CatSettings.shared.lifeNight.toggle() }
+    @objc private func toggleLifeMorning() { CatSettings.shared.lifeMorning.toggle() }
+    @objc private func toggleLifeBattery() { CatSettings.shared.lifeBattery.toggle() }
+    @objc private func toggleLifeWorkBreak() { CatSettings.shared.lifeWorkBreak.toggle() }
+
+    /// 不改真实状态，直接驱动 physics 演示一遍（约 30 秒）
+    @objc private func runLifeDemo() {
+        let physics = overlayWindow.catView.physics
+        let steps: [(TimeInterval, () -> Void)] = [
+            (0, { physics.debugNight = true; physics.react(life: .nightReminder("🌙 已经 23:30 了，早点休息吧")) }),
+            (6, { physics.debugNight = nil; physics.react(life: .morningCoffee) }),
+            (13, { physics.offerProp(.coffee, duration: 0.01)
+                   physics.debugBattery = BatteryStatus(percent: 9, onAC: false)
+                   physics.react(life: .lowBattery(9)) }),
+            (19, { physics.debugBattery = BatteryStatus(percent: 9, onAC: true); physics.react(life: .pluggedIn) }),
+            (26, { physics.debugBattery = nil; physics.react(life: .workBreak(minutes: 50)) })
+        ]
+        for (delay, action) in steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
+        }
     }
 
     // MARK: - 会议模式
