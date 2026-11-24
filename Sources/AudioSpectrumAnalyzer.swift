@@ -5,7 +5,7 @@ import Foundation
 import os
 
 /// 分析器运行日志：只含采样率/峰值/鼓点数/BPM 等统计量，不含音频内容，标记为 public 便于 `log show` 查看
-private let audioLog = Logger(subsystem: "com.chanke.kurocat", category: "audio")
+private let audioLog = Logger(subsystem: "ai.today.coolcat", category: "audio")
 
 // MARK: - Snapshot
 
@@ -414,7 +414,7 @@ private final class SystemAudioTap {
                handler: @escaping (UnsafePointer<AudioBufferList>, AudioStreamBasicDescription) -> Void) throws {
         let description = CATapDescription(stereoMixdownOfProcesses: processes)
         description.uuid = UUID()
-        description.name = "KuroCat Visualizer"
+        description.name = "CoolCat Visualizer"
         description.muteBehavior = .unmuted
         description.isPrivate = true
         var status = AudioHardwareCreateProcessTap(description, &tapID)
@@ -435,8 +435,8 @@ private final class SystemAudioTap {
         }
 
         let aggregate: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "KuroCat Visualizer",
-            kAudioAggregateDeviceUIDKey: "com.chanke.kurocat.visualizer.\(UUID().uuidString)",
+            kAudioAggregateDeviceNameKey: "CoolCat Visualizer",
+            kAudioAggregateDeviceUIDKey: "ai.today.coolcat.visualizer.\(UUID().uuidString)",
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
             kAudioAggregateDeviceTapAutoStartKey: true,
@@ -510,8 +510,8 @@ final class AudioSpectrumAnalyzer {
     /// 主线程回调
     var onStateChange: ((State) -> Void)?
 
-    private let controlQueue = DispatchQueue(label: "com.chanke.kurocat.audiotap.control")
-    private let ioQueue = DispatchQueue(label: "com.chanke.kurocat.audiotap.io", qos: .userInteractive)
+    private let controlQueue = DispatchQueue(label: "ai.today.coolcat.audiotap.control")
+    private let ioQueue = DispatchQueue(label: "ai.today.coolcat.audiotap.io", qos: .userInteractive)
     private let lock = NSLock()
 
     // lock 保护
@@ -531,7 +531,7 @@ final class AudioSpectrumAnalyzer {
 
     /// 这台机器上是否曾经收到过真实信号：收到过就说明授权没问题，之后的全零只是"在安静"
     /// （网易云这类 App 暂停/切歌时不关音频流，会持续输出数字静音）
-    private var everSeenSignal = UserDefaults.standard.bool(forKey: "KuroCat.AudioCaptureSeenSignal")
+    private var everSeenSignal = UserDefaults.standard.bool(forKey: "CoolCat.AudioCaptureSeenSignal")
 
     // ioQueue
     private var dsp: SpectrumDSP?
@@ -788,7 +788,7 @@ final class AudioSpectrumAnalyzer {
             if !everSeenSignal {
                 everSeenSignal = true
                 DispatchQueue.main.async {
-                    UserDefaults.standard.set(true, forKey: "KuroCat.AudioCaptureSeenSignal")
+                    UserDefaults.standard.set(true, forKey: "CoolCat.AudioCaptureSeenSignal")
                 }
             }
         }

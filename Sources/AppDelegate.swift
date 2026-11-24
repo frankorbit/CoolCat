@@ -71,8 +71,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         engine.start()
         // 系统只有在 App 申请过一次后，才会把它列进「输入监控」；首次启动主动申请（只弹系统框，不跳设置）
-        if !engine.hasInputMonitoringPermission && !UserDefaults.standard.bool(forKey: "KuroCat.DidRequestInputMonitoring") {
-            UserDefaults.standard.set(true, forKey: "KuroCat.DidRequestInputMonitoring")
+        if !engine.hasInputMonitoringPermission && !UserDefaults.standard.bool(forKey: "CoolCat.DidRequestInputMonitoring") {
+            UserDefaults.standard.set(true, forKey: "CoolCat.DidRequestInputMonitoring")
             CGRequestListenEventAccess()
             IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
         }
@@ -107,14 +107,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         setupStatusItem()
         if isAutoStartEnabled() {
-            // Keep LaunchAgent path updated if user moved KuroCat.app into /Applications
+            // Keep LaunchAgent path updated if user moved CoolCat.app into /Applications
+            _ = setAutoStartEnabled(true)
+        }
+        // 改名前开过开机自启：旧启动项已在迁移时删掉，这里用新路径重建
+        if UserDefaults.standard.bool(forKey: LegacyMigration.autoStartPendingKey) {
+            UserDefaults.standard.removeObject(forKey: LegacyMigration.autoStartPendingKey)
             _ = setAutoStartEnabled(true)
         }
         startRenderLoop()
 
-        // Auto-check GitHub Releases for updates shortly after launch
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-            self?.checkForUpdates(manual: false)
+        if Self.updateChecksEnabled {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                self?.checkForUpdates(manual: false)
+            }
         }
     }
 
@@ -153,16 +159,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let wanted = isMusic && settings.musicHeadphones && settings.realAudioAnalysis
             && (settings.musicVisualizer || settings.musicDance)
         // 第一次要读音频前先说明一下，紧接着系统会弹授权框
-        if wanted && !UserDefaults.standard.bool(forKey: "KuroCat.AudioCaptureExplained") {
-            UserDefaults.standard.set(true, forKey: "KuroCat.AudioCaptureExplained")
+        if wanted && !UserDefaults.standard.bool(forKey: "CoolCat.AudioCaptureExplained") {
+            UserDefaults.standard.set(true, forKey: "CoolCat.AudioCaptureExplained")
             overlayWindow.catView.physics.showNotice("🎧 想跟着你的歌跳舞，系统会问能否读取播放的声音")
         }
         AudioSpectrumAnalyzer.shared.setWanted(wanted)
     }
 
-    // MARK: - One KuroCat at a time (newest copy wins)
+    // MARK: - One CoolCat at a time (newest copy wins)
 
-    /// Users often download a new KuroCat.app while an older copy is still running (or is started
+    /// Users often download a new CoolCat.app while an older copy is still running (or is started
     /// by the login item from another folder). That old process kept running and kept announcing
     /// "new version available" even though they had already updated. Keep only the newest copy:
     /// quit older ones, or hand over to an already-running newer one. Returns true if THIS process quits.
@@ -201,7 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return dict["CFBundleShortVersionString"] as? String
     }
 
-    /// A newer KuroCat.app that is already on disk (e.g. downloaded to ~/Downloads but never
+    /// A newer CoolCat.app that is already on disk (e.g. downloaded to ~/Downloads but never
     /// launched because LaunchServices just re-activated this running copy).
     private func newestDownloadedCopy() -> (url: URL, version: String)? {
         guard let bundleID = Bundle.main.bundleIdentifier else { return nil }
@@ -271,7 +277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
             button.image = makeMenuBarCatIcon()
-            button.toolTip = "KuroCat 黑猫键盘桌宠"
+            button.toolTip = "CoolCat 黑猫键盘桌宠"
         }
         let menu = NSMenu()
         menu.delegate = self
@@ -403,7 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .running:
             let bpm = AudioSpectrumAnalyzer.shared.snapshot().bpm.map { "，约 \(Int($0)) BPM" } ?? ""
             analyzerText = "实时音频：分析中\(bpm)"
-        case .silentNoPermission: analyzerText = "⚠️ 实时音频：只收到静音。在「隐私与安全性 → 录屏与系统录音」允许 KuroCat 后，重新勾选上一项"
+        case .silentNoPermission: analyzerText = "⚠️ 实时音频：只收到静音。在「隐私与安全性 → 录屏与系统录音」允许 CoolCat 后，重新勾选上一项"
         case .unsupported: analyzerText = "实时音频：需要 macOS 14.2+，当前使用模拟节拍"
         case .failed(let reason): analyzerText = "实时音频启动失败：\(reason)"
         }
@@ -497,11 +503,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         resetPosItem.target = self
         menu.addItem(resetPosItem)
 
-        let relaunchItem = NSMenuItem(title: "重启 KuroCat (授权后刷新)", action: #selector(relaunchApp), keyEquivalent: "")
+        let relaunchItem = NSMenuItem(title: "重启 CoolCat (授权后刷新)", action: #selector(relaunchApp), keyEquivalent: "")
         relaunchItem.target = self
         menu.addItem(relaunchItem)
 
-        if let ver = availableUpdateVersion {
+        if !Self.updateChecksEnabled {
+            // CoolCat 暂无自己的发布地址：不检查更新，只显示版本号
+            let versionItem = NSMenuItem(title: "CoolCat v\(currentAppVersion)", action: nil, keyEquivalent: "")
+            versionItem.isEnabled = false
+            menu.addItem(versionItem)
+        } else if let ver = availableUpdateVersion {
             let title = isUpdating ? "⏳ 正在下载更新 \(ver)..." : "🆕 发现新版本 \(ver) — 点击自动更新"
             let updateItem = NSMenuItem(title: title, action: #selector(openUpdateDownload), keyEquivalent: "")
             updateItem.target = self
@@ -515,7 +526,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "退出 KuroCat", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "退出 CoolCat", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -529,8 +540,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "已授权，键盘监听启动失败"
-            alert.informativeText = "请重启 KuroCat，让系统重新建立键盘监听。\n当前程序位置：\(Bundle.main.bundlePath)"
-            alert.addButton(withTitle: "重启 KuroCat")
+            alert.informativeText = "请重启 CoolCat，让系统重新建立键盘监听。\n当前程序位置：\(Bundle.main.bundlePath)"
+            alert.addButton(withTitle: "重启 CoolCat")
             alert.addButton(withTitle: "打开输入监控")
             alert.addButton(withTitle: "取消")
             let response = alert.runModal()
@@ -566,7 +577,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchAgentURL: URL {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
-        return dir.appendingPathComponent("com.chanke.kurocat.plist")
+        return dir.appendingPathComponent("ai.today.coolcat.plist")
     }
 
     private func isAutoStartEnabled() -> Bool {
@@ -582,7 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                 let appPath = Bundle.main.bundlePath
                 let plist: [String: Any] = [
-                    "Label": "com.chanke.kurocat",
+                    "Label": "ai.today.coolcat",
                     "ProgramArguments": ["/usr/bin/open", "-a", appPath],
                     "RunAtLoad": true,
                     "KeepAlive": false
@@ -707,7 +718,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 这台机器装了 Claude Code（有 ~/.claude）但还没连接时，启动后提示一次去哪里开
     private func suggestClaudeIntegrationIfNeeded() {
-        let key = "KuroCat.SuggestedClaudeIntegration"
+        let key = "CoolCat.SuggestedClaudeIntegration"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
         let claudeDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path
         guard FileManager.default.fileExists(atPath: claudeDir), ClaudeHookInstaller.state() == .notInstalled else { return }
@@ -759,7 +770,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let statusText: String
         switch state {
         case .notInstalled: statusText = "未连接 Claude Code"
-        case .outdated: statusText = "⚠️ hook 指向旧的 KuroCat 位置，需要重新连接"
+        case .outdated: statusText = "⚠️ hook 指向旧的 CoolCat 位置，需要重新连接"
         case .installed: statusText = "已连接 Claude Code"
         }
         let statusItem = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
@@ -813,10 +824,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let confirm = NSAlert()
         confirm.messageText = "连接 Claude Code"
         confirm.informativeText = """
-        KuroCat 会在 ~/.claude/settings.json 里加入 7 个 hook（会话开始/结束、提交提示词、调用工具前后、通知、完成）。
+        CoolCat 会在 ~/.claude/settings.json 里加入 7 个 hook（会话开始/结束、提交提示词、调用工具前后、通知、完成）。
 
         • 只把事件名、工具名、项目文件夹名发给小猫，不读取你的提示词和代码
-        • 原文件会备份为 settings.json.kurocat-backup
+        • 原文件会备份为 settings.json.coolcat-backup
         • 已打开的 Claude Code 会话需要重启（或执行 /hooks）后生效
         """
         confirm.addButton(withTitle: "连接")
@@ -835,7 +846,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func uninstallClaudeHooks() {
         do {
             try ClaudeHookInstaller.uninstall()
-            showInfoAlert("已断开 Claude Code", "KuroCat 的 hook 已从 ~/.claude/settings.json 移除，其他配置未改动。")
+            showInfoAlert("已断开 Claude Code", "CoolCat 的 hook 已从 ~/.claude/settings.json 移除，其他配置未改动。")
         } catch {
             showInfoAlert("断开失败", error.localizedDescription)
         }
@@ -844,7 +855,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 不依赖 hook，直接给 tracker 喂一串假事件，方便预览动画
     @objc private func runClaudeDemo() {
         let tracker = ClaudeActivityTracker.shared
-        let session = "kurocat-demo"
+        let session = "coolcat-demo"
         let steps: [(TimeInterval, String, String?, String?)] = [
             (0.0, "UserPromptSubmit", nil, nil),
             (2.0, "PreToolUse", "Read", nil),
@@ -956,6 +967,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Auto Update Checker & In-App Self-Updater
 
+    /// 更新检查开关。下面的地址是上游 KuroCat 的发布站，CoolCat 有自己的发布地址后再打开并替换
+    private static let updateChecksEnabled = false
     private static let updatePageURLString = "https://kurocat-download.app.workbuddy.host/?sharecode=JVAABIVZ7L"
     private static let updateVersionJSONURLString = "https://kurocat-download.app.workbuddy.host/version.json?sharecode=JVAABIVZ7L"
     private static let defaultMacAssetURLString = "https://kurocat-download.app.workbuddy.host/downloads/KuroCat-macOS-universal.zip?sharecode=JVAABIVZ7L"
@@ -998,7 +1011,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
-        req.setValue("KuroCat/\(currentAppVersion)", forHTTPHeaderField: "User-Agent")
+        req.setValue("CoolCat/\(currentAppVersion)", forHTTPHeaderField: "User-Agent")
 
         URLSession.shared.dataTask(with: req) { [weak self] data, _, error in
             guard let self else { return }
@@ -1076,7 +1089,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "发现 KuroCat 新版本 \(latestTag)"
+        alert.messageText = "发现 CoolCat 新版本 \(latestTag)"
         alert.informativeText = "当前版本：v\(currentAppVersion)\n最新版本：\(latestTag)\n当前运行位置：\(Bundle.main.bundlePath)\n\n点击「立即更新」将在后台自动下载安装包并重启应用。"
         alert.addButton(withTitle: "立即更新")
         alert.addButton(withTitle: "打开下载页")
@@ -1096,7 +1109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isUpdating = true
 
         var req = URLRequest(url: assetURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
-        req.setValue("KuroCat/\(currentAppVersion)", forHTTPHeaderField: "User-Agent")
+        req.setValue("CoolCat/\(currentAppVersion)", forHTTPHeaderField: "User-Agent")
 
         URLSession.shared.downloadTask(with: req) { [weak self] tempURL, response, error in
             guard let self else { return }
@@ -1110,8 +1123,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
 
             let fm = FileManager.default
-            let workDir = fm.temporaryDirectory.appendingPathComponent("KuroCatUpdate-\(UUID().uuidString)")
-            let zipURL = workDir.appendingPathComponent("KuroCat-macOS-universal.zip")
+            let workDir = fm.temporaryDirectory.appendingPathComponent("CoolCatUpdate-\(UUID().uuidString)")
+            let zipURL = workDir.appendingPathComponent("CoolCat-macOS-universal.zip")
             let extractDir = workDir.appendingPathComponent("extracted")
             do {
                 try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
@@ -1119,7 +1132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let attrs = try fm.attributesOfItem(atPath: zipURL.path)
                 let fileSize = (attrs[.size] as? NSNumber)?.intValue ?? 0
                 guard fileSize > 50_000 else {
-                    throw NSError(domain: "KuroCatUpdate", code: 1)
+                    throw NSError(domain: "CoolCatUpdate", code: 1)
                 }
 
                 let unzip = Process()
@@ -1128,12 +1141,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try unzip.run()
                 unzip.waitUntilExit()
                 guard unzip.terminationStatus == 0 else {
-                    throw NSError(domain: "KuroCatUpdate", code: 2)
+                    throw NSError(domain: "CoolCatUpdate", code: 2)
                 }
 
-                let newAppURL = extractDir.appendingPathComponent("KuroCat.app")
-                guard fm.fileExists(atPath: newAppURL.appendingPathComponent("Contents/MacOS/KuroCat").path) else {
-                    throw NSError(domain: "KuroCatUpdate", code: 3)
+                let newAppURL = extractDir.appendingPathComponent("CoolCat.app")
+                guard fm.fileExists(atPath: newAppURL.appendingPathComponent("Contents/MacOS/CoolCat").path) else {
+                    throw NSError(domain: "CoolCatUpdate", code: 3)
                 }
 
                 let currentAppURL = Bundle.main.bundleURL

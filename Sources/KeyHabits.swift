@@ -17,7 +17,7 @@ enum KeyHabitEvent: Equatable {
 
 /// 纯逻辑的按键习惯识别器：不依赖 UI，便于单测。所有时间用 `CACurrentMediaTime()` 同一时基。
 struct KeyHabitDetector {
-    static let bestKPMKey = "KuroCat.BestKPM"
+    static let bestKPMKey = "CoolCat.BestKPM"
 
     /// 1.6 秒内退格 ≥ 6 次算"狂删"
     private let backspaceWindow: CFTimeInterval = 1.6

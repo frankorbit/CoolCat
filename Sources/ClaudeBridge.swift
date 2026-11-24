@@ -20,17 +20,17 @@ enum ClaudeStatus: Equatable {
     var isActive: Bool { self != .idle }
 }
 
-// MARK: - Hook Relay (runs inside the short-lived `KuroCat --claude-hook` process)
+// MARK: - Hook Relay (runs inside the short-lived `CoolCat --claude-hook` process)
 
 /// Claude Code hook → 运行中的小猫。
 ///
-/// Claude Code 每次触发 hook 都会启动 `KuroCat --claude-hook`，把事件 JSON 写进 stdin。
+/// Claude Code 每次触发 hook 都会启动 `CoolCat --claude-hook`，把事件 JSON 写进 stdin。
 /// 这里只挑出无隐私的字段（事件名、会话 ID、工具名、项目目录名），通过 DistributedNotification
 /// 广播给常驻的小猫进程后立刻退出。小猫没运行时广播无人接收，不影响 Claude Code。
 ///
 /// 注意：UserPromptSubmit 的 stdout 会被注入到对话上下文，所以这里绝不能打印任何东西。
 enum ClaudeHookRelay {
-    static let notificationName = Notification.Name("com.chanke.kurocat.claude-event")
+    static let notificationName = Notification.Name("ai.today.coolcat.claude-event")
     static let argument = "--claude-hook"
 
     static func run() -> Never {
@@ -402,16 +402,16 @@ final class ClaudeActivityTracker {
 
 // MARK: - ~/.claude/settings.json Installer
 
-/// 把 KuroCat 的 hook 写进（或移出）`~/.claude/settings.json`。
+/// 把 CoolCat 的 hook 写进（或移出）`~/.claude/settings.json`。
 ///
 /// - 只增删 command 里带 `--claude-hook` 的条目，其他 hook 和配置原样保留。
-/// - 写入前备份到 `settings.json.kurocat-backup`。
+/// - 写入前备份到 `settings.json.coolcat-backup`。
 /// - 文件不是合法 JSON（例如手写了注释）时拒绝修改，交给用户处理。
 enum ClaudeHookInstaller {
     enum InstallState: Equatable {
         case notInstalled
         case installed
-        /// 已安装，但指向的 KuroCat 路径和当前运行的不一致（App 被挪过位置）
+        /// 已安装，但指向的 CoolCat 路径和当前运行的不一致（App 被挪过位置）
         case outdated
     }
 
@@ -425,7 +425,7 @@ enum ClaudeHookInstaller {
             switch self {
             case .unreadableSettings(let detail): return "无法解析 ~/.claude/settings.json：\(detail)"
             case .writeFailed(let detail): return "写入 ~/.claude/settings.json 失败：\(detail)"
-            case .translocated: return "KuroCat 正在 macOS 的临时隔离目录里运行，路径重启后会失效。请先把 KuroCat.app 拖进「应用程序」文件夹再打开。"
+            case .translocated: return "CoolCat 正在 macOS 的临时隔离目录里运行，路径重启后会失效。请先把 CoolCat.app 拖进「应用程序」文件夹再打开。"
             case .unexpectedShape(let detail): return "~/.claude/settings.json 里的 hooks 格式不符合预期（\(detail)），为避免覆盖你的配置，已放弃修改。"
             }
         }
@@ -537,7 +537,9 @@ enum ClaudeHookInstaller {
     // MARK: Helpers
 
     private static func isOurCommand(_ command: String) -> Bool {
-        command.contains(ClaudeHookRelay.argument) && command.contains("KuroCat")
+        // 也认改名前的 KuroCat hook，这样升级后能自动替换掉旧路径
+        command.contains(ClaudeHookRelay.argument)
+            && (command.contains("CoolCat") || command.contains(LegacyMigration.legacyName))
     }
 
     private static func removingOurHooks(from hooks: [String: Any]) -> [String: Any] {
@@ -586,8 +588,11 @@ enum ClaudeHookInstaller {
         do {
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             // 只保留第一次修改前的原始文件；之后的安装/卸载不再覆盖它
-            let backup = url.appendingPathExtension("kurocat-backup")
-            if fm.fileExists(atPath: url.path) && !fm.fileExists(atPath: backup.path) {
+            let backup = url.appendingPathExtension("coolcat-backup")
+            // 改名前已经留过 KuroCat 时期的原始备份，就不再另存（那份才是最原始的）
+            let legacyBackup = url.appendingPathExtension(LegacyMigration.legacyName.lowercased() + "-backup")
+            if fm.fileExists(atPath: url.path) && !fm.fileExists(atPath: backup.path)
+                && !fm.fileExists(atPath: legacyBackup.path) {
                 try fm.copyItem(at: url, to: backup)
             }
             let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])

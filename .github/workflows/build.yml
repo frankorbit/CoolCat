@@ -62,30 +62,30 @@ jobs:
             echo "::warning::MACOS_SIGN_P12_BASE64 secret is not set: this macOS build is ad-hoc signed and users must re-enable Input Monitoring after updating."
             exit 0
           fi
-          KC="$RUNNER_TEMP/kurocat-sign.keychain-db"
+          KC="$RUNNER_TEMP/coolcat-sign.keychain-db"
           KC_PW="$(uuidgen)"
           security create-keychain -p "$KC_PW" "$KC"
           security set-keychain-settings -lut 21600 "$KC"
           security unlock-keychain -p "$KC_PW" "$KC"
-          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/kurocat-signing.p12"
-          security import "$RUNNER_TEMP/kurocat-signing.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/coolcat-signing.p12"
+          security import "$RUNNER_TEMP/coolcat-signing.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PW" "$KC"
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
-          rm -f "$RUNNER_TEMP/kurocat-signing.p12"
-          echo "KUROCAT_SIGN_IDENTITY=KuroCat Code Signing" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/coolcat-signing.p12"
+          echo "COOLCAT_SIGN_IDENTITY=CoolCat Code Signing" >> "$GITHUB_ENV"
 
-      - name: Build Universal KuroCat.app (Apple Silicon + Intel)
+      - name: Build Universal CoolCat.app (Apple Silicon + Intel)
         run: |
           chmod +x build.sh
           ./build.sh
-          ditto -c -k --sequesterRsrc --keepParent KuroCat.app KuroCat-macOS-universal.zip
-          ls -lh KuroCat-macOS-universal.zip
+          ditto -c -k --sequesterRsrc --keepParent CoolCat.app CoolCat-macOS-universal.zip
+          ls -lh CoolCat-macOS-universal.zip
 
       - name: Upload macOS universal app artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KuroCat-macOS-universal
-          path: KuroCat-macOS-universal.zip
+          name: CoolCat-macOS-universal
+          path: CoolCat-macOS-universal.zip
 
   build-linux:
     strategy:
@@ -159,7 +159,7 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            dist/KuroCat-macOS-universal.zip
+            dist/CoolCat-macOS-universal.zip
             dist/KuroCat-Windows-x64.exe
             dist/KuroCat-Linux-amd64.deb
             dist/KuroCat-Linux-x86_64.tar.gz

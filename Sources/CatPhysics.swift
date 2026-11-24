@@ -56,109 +56,109 @@ final class CatSettings {
     static let shared = CatSettings()
 
     var showKeyBadges: Bool {
-        didSet { UserDefaults.standard.set(showKeyBadges, forKey: "KuroCat.ShowKeyBadges") }
+        didSet { UserDefaults.standard.set(showKeyBadges, forKey: "CoolCat.ShowKeyBadges") }
     }
     var showMouseBadges: Bool {
-        didSet { UserDefaults.standard.set(showMouseBadges, forKey: "KuroCat.ShowMouseBadges") }
+        didSet { UserDefaults.standard.set(showMouseBadges, forKey: "CoolCat.ShowMouseBadges") }
     }
     var showKeyLegends: Bool {
-        didSet { UserDefaults.standard.set(showKeyLegends, forKey: "KuroCat.ShowKeyLegends") }
+        didSet { UserDefaults.standard.set(showKeyLegends, forKey: "CoolCat.ShowKeyLegends") }
     }
     var footEasterEgg: Bool {
-        didSet { UserDefaults.standard.set(footEasterEgg, forKey: "KuroCat.FootEasterEgg") }
+        didSet { UserDefaults.standard.set(footEasterEgg, forKey: "CoolCat.FootEasterEgg") }
     }
     var petInteraction: Bool {
-        didSet { UserDefaults.standard.set(petInteraction, forKey: "KuroCat.PetInteraction") }
+        didSet { UserDefaults.standard.set(petInteraction, forKey: "CoolCat.PetInteraction") }
     }
     var fullClickThrough: Bool {
-        didSet { UserDefaults.standard.set(fullClickThrough, forKey: "KuroCat.FullClickThrough") }
+        didSet { UserDefaults.standard.set(fullClickThrough, forKey: "CoolCat.FullClickThrough") }
     }
     var fullScreenOverlay: Bool {
-        didSet { UserDefaults.standard.set(fullScreenOverlay, forKey: "KuroCat.FullScreenOverlay") }
+        didSet { UserDefaults.standard.set(fullScreenOverlay, forKey: "CoolCat.FullScreenOverlay") }
     }
     var scale: CGFloat {
-        didSet { UserDefaults.standard.set(Double(scale), forKey: "KuroCat.Scale") }
+        didSet { UserDefaults.standard.set(Double(scale), forKey: "CoolCat.Scale") }
     }
     var coatTheme: CatCoatTheme {
-        didSet { UserDefaults.standard.set(coatTheme.rawValue, forKey: "KuroCat.CoatTheme") }
+        didSet { UserDefaults.standard.set(coatTheme.rawValue, forKey: "CoolCat.CoatTheme") }
     }
     var keyboardTheme: KeyboardTheme {
-        didSet { UserDefaults.standard.set(keyboardTheme.rawValue, forKey: "KuroCat.KeyboardTheme") }
+        didSet { UserDefaults.standard.set(keyboardTheme.rawValue, forKey: "CoolCat.KeyboardTheme") }
     }
     var eyeTheme: EyeColorTheme {
-        didSet { UserDefaults.standard.set(eyeTheme.rawValue, forKey: "KuroCat.EyeTheme") }
+        didSet { UserDefaults.standard.set(eyeTheme.rawValue, forKey: "CoolCat.EyeTheme") }
     }
     /// 听歌时戴耳机 + 跟节拍摇头
     var musicHeadphones: Bool {
-        didSet { UserDefaults.standard.set(musicHeadphones, forKey: "KuroCat.MusicHeadphones") }
+        didSet { UserDefaults.standard.set(musicHeadphones, forKey: "CoolCat.MusicHeadphones") }
     }
     /// 非音乐 App（浏览器视频、游戏等）出声时也戴耳机
     var headphonesForAnyAudio: Bool {
-        didSet { UserDefaults.standard.set(headphonesForAnyAudio, forKey: "KuroCat.HeadphonesForAnyAudio") }
+        didSet { UserDefaults.standard.set(headphonesForAnyAudio, forKey: "CoolCat.HeadphonesForAnyAudio") }
     }
     /// 切歌时头顶冒出歌名气泡
     var showTrackBubble: Bool {
-        didSet { UserDefaults.standard.set(showTrackBubble, forKey: "KuroCat.ShowTrackBubble") }
+        didSet { UserDefaults.standard.set(showTrackBubble, forKey: "CoolCat.ShowTrackBubble") }
     }
     /// 听歌时猫身后的竖直频谱墙
     var musicVisualizer: Bool {
-        didSet { UserDefaults.standard.set(musicVisualizer, forKey: "KuroCat.MusicVisualizer") }
+        didSet { UserDefaults.standard.set(musicVisualizer, forKey: "CoolCat.MusicVisualizer") }
     }
     /// 频谱/节拍跟随真实音频（需要「录制系统音频」授权）；关掉则用模拟节拍
     var realAudioAnalysis: Bool {
-        didSet { UserDefaults.standard.set(realAudioAnalysis, forKey: "KuroCat.RealAudioAnalysis") }
+        didSet { UserDefaults.standard.set(realAudioAnalysis, forKey: "CoolCat.RealAudioAnalysis") }
     }
     /// 听歌且没在打字时跳舞
     var musicDance: Bool {
-        didSet { UserDefaults.standard.set(musicDance, forKey: "KuroCat.MusicDance") }
+        didSet { UserDefaults.standard.set(musicDance, forKey: "CoolCat.MusicDance") }
     }
     /// 空闲时随机小动作（打哈欠、伸懒腰、踩奶……）
     var idleAnimations: Bool {
-        didSet { UserDefaults.standard.set(idleAnimations, forKey: "KuroCat.IdleAnimations") }
+        didSet { UserDefaults.standard.set(idleAnimations, forKey: "CoolCat.IdleAnimations") }
     }
     /// 键盘习惯小反应：⌫ 冒汗 / ⌘S 盖章 / 截图比耶 / KPM 破纪录戴皇冠
     var keyHabitReactions: Bool {
-        didSet { UserDefaults.standard.set(keyHabitReactions, forKey: "KuroCat.KeyHabitReactions") }
+        didSet { UserDefaults.standard.set(keyHabitReactions, forKey: "CoolCat.KeyHabitReactions") }
     }
     /// 开会时戴耳麦、开摄像头时整理仪容
     var meetingMode: Bool {
-        didSet { UserDefaults.standard.set(meetingMode, forKey: "KuroCat.MeetingMode") }
+        didSet { UserDefaults.standard.set(meetingMode, forKey: "CoolCat.MeetingMode") }
     }
     /// 开麦时打字太猛，小猫"嘘"你
     var keyboardNoiseReminder: Bool {
-        didSet { UserDefaults.standard.set(keyboardNoiseReminder, forKey: "KuroCat.KeyboardNoiseReminder") }
+        didSet { UserDefaults.standard.set(keyboardNoiseReminder, forKey: "CoolCat.KeyboardNoiseReminder") }
     }
     /// 是否展示 Claude Code 状态（hook 装没装由 ClaudeHookInstaller 判断）
     var claudeIntegration: Bool {
-        didSet { UserDefaults.standard.set(claudeIntegration, forKey: "KuroCat.ClaudeIntegration") }
+        didSet { UserDefaults.standard.set(claudeIntegration, forKey: "CoolCat.ClaudeIntegration") }
     }
 
     private init() {
         let d = UserDefaults.standard
-        showKeyBadges = d.object(forKey: "KuroCat.ShowKeyBadges") as? Bool ?? true
-        showMouseBadges = d.object(forKey: "KuroCat.ShowMouseBadges") as? Bool ?? true
-        showKeyLegends = d.object(forKey: "KuroCat.ShowKeyLegends") as? Bool ?? true
-        footEasterEgg = d.object(forKey: "KuroCat.FootEasterEgg") as? Bool ?? true
-        petInteraction = d.object(forKey: "KuroCat.PetInteraction") as? Bool ?? true
-        fullClickThrough = d.object(forKey: "KuroCat.FullClickThrough") as? Bool ?? false
-        fullScreenOverlay = d.object(forKey: "KuroCat.FullScreenOverlay") as? Bool ?? true
-        let savedScale = d.double(forKey: "KuroCat.Scale")
+        showKeyBadges = d.object(forKey: "CoolCat.ShowKeyBadges") as? Bool ?? true
+        showMouseBadges = d.object(forKey: "CoolCat.ShowMouseBadges") as? Bool ?? true
+        showKeyLegends = d.object(forKey: "CoolCat.ShowKeyLegends") as? Bool ?? true
+        footEasterEgg = d.object(forKey: "CoolCat.FootEasterEgg") as? Bool ?? true
+        petInteraction = d.object(forKey: "CoolCat.PetInteraction") as? Bool ?? true
+        fullClickThrough = d.object(forKey: "CoolCat.FullClickThrough") as? Bool ?? false
+        fullScreenOverlay = d.object(forKey: "CoolCat.FullScreenOverlay") as? Bool ?? true
+        let savedScale = d.double(forKey: "CoolCat.Scale")
         scale = savedScale > 0.3 ? CGFloat(savedScale) : 1.0
-        coatTheme = CatCoatTheme(rawValue: d.string(forKey: "KuroCat.CoatTheme") ?? "") ?? .classicBlack
-        keyboardTheme = KeyboardTheme(rawValue: d.string(forKey: "KuroCat.KeyboardTheme") ?? "") ?? .classicMilk
-        let savedEye = d.string(forKey: "KuroCat.EyeTheme") ?? ""
+        coatTheme = CatCoatTheme(rawValue: d.string(forKey: "CoolCat.CoatTheme") ?? "") ?? .classicBlack
+        keyboardTheme = KeyboardTheme(rawValue: d.string(forKey: "CoolCat.KeyboardTheme") ?? "") ?? .classicMilk
+        let savedEye = d.string(forKey: "CoolCat.EyeTheme") ?? ""
         eyeTheme = EyeColorTheme.saved(savedEye)
-        musicHeadphones = d.object(forKey: "KuroCat.MusicHeadphones") as? Bool ?? true
-        headphonesForAnyAudio = d.object(forKey: "KuroCat.HeadphonesForAnyAudio") as? Bool ?? true
-        showTrackBubble = d.object(forKey: "KuroCat.ShowTrackBubble") as? Bool ?? true
-        claudeIntegration = d.object(forKey: "KuroCat.ClaudeIntegration") as? Bool ?? true
-        meetingMode = d.object(forKey: "KuroCat.MeetingMode") as? Bool ?? true
-        keyHabitReactions = d.object(forKey: "KuroCat.KeyHabitReactions") as? Bool ?? true
-        musicVisualizer = d.object(forKey: "KuroCat.MusicVisualizer") as? Bool ?? true
-        realAudioAnalysis = d.object(forKey: "KuroCat.RealAudioAnalysis") as? Bool ?? true
-        musicDance = d.object(forKey: "KuroCat.MusicDance") as? Bool ?? true
-        idleAnimations = d.object(forKey: "KuroCat.IdleAnimations") as? Bool ?? true
-        keyboardNoiseReminder = d.object(forKey: "KuroCat.KeyboardNoiseReminder") as? Bool ?? true
+        musicHeadphones = d.object(forKey: "CoolCat.MusicHeadphones") as? Bool ?? true
+        headphonesForAnyAudio = d.object(forKey: "CoolCat.HeadphonesForAnyAudio") as? Bool ?? true
+        showTrackBubble = d.object(forKey: "CoolCat.ShowTrackBubble") as? Bool ?? true
+        claudeIntegration = d.object(forKey: "CoolCat.ClaudeIntegration") as? Bool ?? true
+        meetingMode = d.object(forKey: "CoolCat.MeetingMode") as? Bool ?? true
+        keyHabitReactions = d.object(forKey: "CoolCat.KeyHabitReactions") as? Bool ?? true
+        musicVisualizer = d.object(forKey: "CoolCat.MusicVisualizer") as? Bool ?? true
+        realAudioAnalysis = d.object(forKey: "CoolCat.RealAudioAnalysis") as? Bool ?? true
+        musicDance = d.object(forKey: "CoolCat.MusicDance") as? Bool ?? true
+        idleAnimations = d.object(forKey: "CoolCat.IdleAnimations") as? Bool ?? true
+        keyboardNoiseReminder = d.object(forKey: "CoolCat.KeyboardNoiseReminder") as? Bool ?? true
     }
 }
 
@@ -310,7 +310,7 @@ final class CatPhysics {
     // Petting state
     private(set) var petHeadIntensity: CGFloat = 0  // 0..1 -> happy closed lime lines
     private(set) var petBodyIntensity: CGFloat = 0  // 0..1 -> blissful half-squint
-    private(set) var totalPetSessions: Int = UserDefaults.standard.integer(forKey: "KuroCat.PetCount")
+    private(set) var totalPetSessions: Int = UserDefaults.standard.integer(forKey: "CoolCat.PetCount")
     private var petStrokeAccumulator: CGFloat = 0
     private var lastPetTime: CFTimeInterval = 0
     private var isCurrentlyPetting = false
@@ -547,7 +547,7 @@ final class CatPhysics {
         if !isCurrentlyPetting && petStrokeAccumulator > 45 {
             isCurrentlyPetting = true
             totalPetSessions += 1
-            UserDefaults.standard.set(totalPetSessions, forKey: "KuroCat.PetCount")
+            UserDefaults.standard.set(totalPetSessions, forKey: "CoolCat.PetCount")
         }
 
         // Gentle nuzzle toward cursor

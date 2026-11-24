@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APP_NAME="KuroCat"
+APP_NAME="CoolCat"
 APP_BUNDLE="$ROOT/${APP_NAME}.app"
 CONTENTS="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
@@ -95,6 +95,7 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/KeyHabits.swift"
     "$ROOT/Sources/AudioSpectrumAnalyzer.swift"
     "$ROOT/Sources/Choreography.swift"
+    "$ROOT/Sources/LegacyMigration.swift"
     "$ROOT/Sources/CatRenderer.swift"
     "$ROOT/Sources/CoatPatterns.swift"
     "$ROOT/Sources/OverlayWindow.swift"
@@ -130,18 +131,18 @@ lipo -info "$MACOS_DIR/$APP_NAME"
 
 # Keep a consistent signing identity across builds so macOS can match privacy grants.
 # Switching identities can require granting Input Monitoring again. Order of preference:
-#   1. $KUROCAT_SIGN_IDENTITY (CI imports the shared certificate and sets this)
+#   1. $COOLCAT_SIGN_IDENTITY (CI imports the shared certificate and sets this)
 #   2. Developer ID Application / Apple Development certificate in the keychain
-#   3. Self-signed "KuroCat Code Signing" certificate (create once: scripts/create-macos-signing-cert.sh)
+#   3. Self-signed "CoolCat Code Signing" certificate (create once: scripts/create-macos-signing-cert.sh)
 #   4. Ad-hoc (last resort — permission will be lost on every update)
-SIGN_IDENTITY="${KUROCAT_SIGN_IDENTITY:-}"
+SIGN_IDENTITY="${COOLCAT_SIGN_IDENTITY:-}"
 if [ -z "$SIGN_IDENTITY" ]; then
     SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application:/{print $2; exit}')"
 fi
 if [ -z "$SIGN_IDENTITY" ]; then
-    # Prefer the long-lived shared "KuroCat Code Signing" cert (matches CI so permissions survive updates)
-    if security find-identity -p codesigning 2>/dev/null | grep -q '"KuroCat Code Signing"'; then
-        SIGN_IDENTITY="KuroCat Code Signing"
+    # Prefer the long-lived shared "CoolCat Code Signing" cert (matches CI so permissions survive updates)
+    if security find-identity -p codesigning 2>/dev/null | grep -q '"CoolCat Code Signing"'; then
+        SIGN_IDENTITY="CoolCat Code Signing"
     fi
 fi
 if [ -z "$SIGN_IDENTITY" ]; then
@@ -150,26 +151,26 @@ fi
 
 if [ -n "$SIGN_IDENTITY" ]; then
     echo "==> Signing with stable certificate: $SIGN_IDENTITY"
-    if [ -n "${KUROCAT_HARDENED:-}" ]; then
+    if [ -n "${COOLCAT_HARDENED:-}" ]; then
         # 分发给他人：加固运行时 + 安全时间戳，Apple 公证的前提条件
         echo "==> Hardened runtime + secure timestamp (for notarization)"
         codesign --force --deep --options runtime --timestamp \
-            --entitlements "$ROOT/Resources/KuroCat.entitlements" \
-            --sign "$SIGN_IDENTITY" --identifier "com.chanke.kurocat" "$APP_BUNDLE"
+            --entitlements "$ROOT/Resources/CoolCat.entitlements" \
+            --sign "$SIGN_IDENTITY" --identifier "ai.today.coolcat" "$APP_BUNDLE"
     else
-        codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "com.chanke.kurocat" "$APP_BUNDLE"
+        codesign --force --deep --sign "$SIGN_IDENTITY" --identifier "ai.today.coolcat" "$APP_BUNDLE"
     fi
 else
     echo "==> WARNING: no stable signing certificate found — signing ad-hoc." >&2
     echo "    Users will have to re-enable Input Monitoring after EVERY update." >&2
     echo "    Run scripts/create-macos-signing-cert.sh once to fix this." >&2
-    if [ -n "${KUROCAT_REQUIRE_STABLE_SIGNATURE:-}" ]; then
-        echo "[ERROR] KUROCAT_REQUIRE_STABLE_SIGNATURE is set: refusing to ship an ad-hoc build." >&2
+    if [ -n "${COOLCAT_REQUIRE_STABLE_SIGNATURE:-}" ]; then
+        echo "[ERROR] COOLCAT_REQUIRE_STABLE_SIGNATURE is set: refusing to ship an ad-hoc build." >&2
         exit 1
     fi
-    codesign --force --deep --sign - --identifier "com.chanke.kurocat" "$APP_BUNDLE"
+    codesign --force --deep --sign - --identifier "ai.today.coolcat" "$APP_BUNDLE"
 fi
-echo "==> Designated requirement (what macOS uses to recognise KuroCat across updates):"
+echo "==> Designated requirement (what macOS uses to recognise CoolCat across updates):"
 codesign -d -r- "$APP_BUNDLE" 2>&1 | grep -i designated || true
 
 echo "==> Built successfully: $APP_BUNDLE"

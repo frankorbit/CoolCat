@@ -1,4 +1,41 @@
-# 🐱 KuroCat — 全状态键盘鼠标桌面萌猫 (macOS / Windows / Linux / 统信 UOS)
+# 🐱 CoolCat — 会听歌、会开会、会盯 Claude Code 的桌面小猫（macOS）
+
+> CoolCat 是基于 [chanke17/KuroCat](https://github.com/chanke17/KuroCat)（MIT）的 macOS 魔改版，感谢原作者。
+> 下方「原版 KuroCat 说明」保留了上游的完整文档；Windows / Linux 版仍是原版 KuroCat，没有下面这些新功能。
+
+## ✨ CoolCat 新增
+
+- **🎧 听歌**：检测到音乐播放器出声就戴上耳机；用系统音频 tap（macOS 14.2+，只读音乐 App 的声音、只在内存里分析）做频谱和鼓点检测。
+  - 猫身后一面竖直 LED 频谱墙，跟着鼓点跳，安静时全部落下
+  - 不打字时跳舞：7 个蹦迪舞步 + 5 个舒缓舞步，按歌曲能量感自动挑；舞步按输出设备延迟对齐到你听到的拍点
+- **🤖 Claude Code 联动**：右键 →「Claude Code 联动」一键写入 hook。气泡逐会话显示「项目 · 动作 · 耗时」，等你批准时举爪挥手，完成时撒彩带。
+- **🎙 会议模式**：开麦戴耳麦，开麦时打字太吵会"嘘"你，开摄像头先洗把脸。
+- **⌨️ 键盘习惯**：狂按退格冒汗、⌘S 盖章、截图比耶、手速破纪录戴皇冠。
+- **😺 空闲小动作**：打哈欠、伸懒腰、踩奶、舔爪、东张西望、看尾巴、慢眨眼、拍小老鼠。
+
+所有功能都能在右键菜单里单独关闭。
+
+## 🔨 构建与分发（macOS）
+
+```bash
+./build.sh && open CoolCat.app
+```
+
+打一个发给别人的包（Developer ID 签名 + 加固运行时，可选公证；zip 里附安装说明）：
+
+```bash
+COOLCAT_SIGN_IDENTITY="Developer ID Application: XXX (TEAMID)" \
+COOLCAT_NOTARY_PROFILE=<notarytool 钥匙串配置名，可省略> \
+scripts/package-macos.sh
+```
+
+从 KuroCat 升级：首次启动会自动迁移设置、开机自启和 Claude Code hook；因为包标识改为 `ai.today.coolcat`，需要重新授权「输入监控」和「录制系统音频」。
+
+---
+
+# 原版 KuroCat 说明
+
+## 🐱 KuroCat — 全状态键盘鼠标桌面萌猫 (macOS / Windows / Linux / 统信 UOS)
 
 <p align="center">
   <b>简体中文</b> | <a href="README.en.md">English</a>

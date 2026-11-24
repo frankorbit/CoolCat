@@ -5,17 +5,17 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>zh_CN</string>
     <key>CFBundleDisplayName</key>
-    <string>KuroCat</string>
+    <string>CoolCat</string>
     <key>CFBundleExecutable</key>
-    <string>KuroCat</string>
+    <string>CoolCat</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.chanke.kurocat</string>
+    <string>ai.today.coolcat</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>KuroCat</string>
+    <string>CoolCat</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -29,8 +29,8 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>KuroCat 在你听歌时分析正在播放的声音频谱和鼓点，让小猫跟着节奏跳舞、身后的光谱跟着跳动。音频只在内存里实时计算，绝不录制、保存或上传。</string>
+    <string>CoolCat 在你听歌时分析正在播放的声音频谱和鼓点，让小猫跟着节奏跳舞、身后的光谱跟着跳动。音频只在内存里实时计算，绝不录制、保存或上传。</string>
     <key>NSInputMonitoringUsageDescription</key>
-    <string>KuroCat 需要「输入监控」权限以在打字和玩游戏时实时接收全状态键盘与鼠标按键，所有输入仅用于本地驱动桌宠动画，绝不记录或上传任何内容。</string>
+    <string>CoolCat 需要「输入监控」权限以在打字和玩游戏时实时接收全状态键盘与鼠标按键，所有输入仅用于本地驱动桌宠动画，绝不记录或上传任何内容。</string>
 </dict>
 </plist>

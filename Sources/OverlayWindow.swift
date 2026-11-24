@@ -143,8 +143,8 @@ final class CatCanvasView: NSView {
         isDragging = false
         NSCursor.openHand.set()
         // Save position
-        UserDefaults.standard.set(Double(win.frame.origin.x), forKey: "KuroCat.PosX")
-        UserDefaults.standard.set(Double(win.frame.origin.y), forKey: "KuroCat.PosY")
+        UserDefaults.standard.set(Double(win.frame.origin.x), forKey: "CoolCat.PosX")
+        UserDefaults.standard.set(Double(win.frame.origin.y), forKey: "CoolCat.PosY")
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -209,22 +209,22 @@ final class OverlayWindow: NSPanel {
             y: oldFrame.minY
         )
         setFrame(CGRect(origin: newOrigin, size: newSize), display: true)
-        UserDefaults.standard.set(Double(newOrigin.x), forKey: "KuroCat.PosX")
-        UserDefaults.standard.set(Double(newOrigin.y), forKey: "KuroCat.PosY")
+        UserDefaults.standard.set(Double(newOrigin.x), forKey: "CoolCat.PosX")
+        UserDefaults.standard.set(Double(newOrigin.y), forKey: "CoolCat.PosY")
     }
 
     func resetPosition() {
         let origin = OverlayWindow.defaultOrigin(for: frame.size)
         setFrameOrigin(origin)
-        UserDefaults.standard.set(Double(origin.x), forKey: "KuroCat.PosX")
-        UserDefaults.standard.set(Double(origin.y), forKey: "KuroCat.PosY")
+        UserDefaults.standard.set(Double(origin.x), forKey: "CoolCat.PosX")
+        UserDefaults.standard.set(Double(origin.y), forKey: "CoolCat.PosY")
     }
 
     private static func initialOrigin(for size: CGSize) -> CGPoint {
         let d = UserDefaults.standard
-        if d.object(forKey: "KuroCat.PosX") != nil && d.object(forKey: "KuroCat.PosY") != nil {
-            let x = CGFloat(d.double(forKey: "KuroCat.PosX"))
-            let y = CGFloat(d.double(forKey: "KuroCat.PosY"))
+        if d.object(forKey: "CoolCat.PosX") != nil && d.object(forKey: "CoolCat.PosY") != nil {
+            let x = CGFloat(d.double(forKey: "CoolCat.PosX"))
+            let y = CGFloat(d.double(forKey: "CoolCat.PosY"))
             let saved = CGPoint(x: x, y: y)
             // Ensure saved origin is still on a connected display
             let rect = CGRect(origin: saved, size: size)

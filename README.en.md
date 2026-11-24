@@ -1,4 +1,17 @@
-# 🐱 KuroCat — Full-State Keyboard & Mouse Desktop Cat Pet (macOS / Windows / Linux / UOS)
+# 🐱 CoolCat — a desktop cat that listens to your music and watches Claude Code (macOS)
+
+> CoolCat is a macOS fork of [chanke17/KuroCat](https://github.com/chanke17/KuroCat) (MIT). Thanks to the original author.
+> The original KuroCat documentation is kept below; the Windows / Linux builds are still the original KuroCat.
+
+**Added in CoolCat:** music-reactive headphones, a vertical LED spectrum wall and beat-synced dancing (calm songs get calm moves),
+Claude Code session status via hooks, meeting mode (headset / shush / grooming), keyboard-habit reactions and idle animations.
+See the Chinese README for details. Build with `./build.sh`, package with `scripts/package-macos.sh`.
+
+---
+
+# Original KuroCat README
+
+## 🐱 KuroCat — Full-State Keyboard & Mouse Desktop Cat Pet (macOS / Windows / Linux / UOS)
 
 <p align="center">
   <a href="README.md">简体中文</a> | <b>English</b>

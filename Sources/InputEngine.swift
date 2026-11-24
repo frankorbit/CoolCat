@@ -511,13 +511,13 @@ final class InputEngine {
     private func loadStats() {
         let today = todayString()
         statsDayString = today
-        let savedDay = UserDefaults.standard.string(forKey: "KuroCat.StatsDay") ?? ""
+        let savedDay = UserDefaults.standard.string(forKey: "CoolCat.StatsDay") ?? ""
         if savedDay == today {
-            totalKeystrokesToday = UserDefaults.standard.integer(forKey: "KuroCat.TodayKeys")
+            totalKeystrokesToday = UserDefaults.standard.integer(forKey: "CoolCat.TodayKeys")
         } else {
             totalKeystrokesToday = 0
-            UserDefaults.standard.set(today, forKey: "KuroCat.StatsDay")
-            UserDefaults.standard.set(0, forKey: "KuroCat.TodayKeys")
+            UserDefaults.standard.set(today, forKey: "CoolCat.StatsDay")
+            UserDefaults.standard.set(0, forKey: "CoolCat.TodayKeys")
         }
     }
 
@@ -526,16 +526,16 @@ final class InputEngine {
         if today != statsDayString {
             statsDayString = today
             totalKeystrokesToday = 0
-            UserDefaults.standard.set(today, forKey: "KuroCat.StatsDay")
+            UserDefaults.standard.set(today, forKey: "CoolCat.StatsDay")
         }
         totalKeystrokesToday += 1
         if totalKeystrokesToday % 10 == 0 {
-            UserDefaults.standard.set(totalKeystrokesToday, forKey: "KuroCat.TodayKeys")
+            UserDefaults.standard.set(totalKeystrokesToday, forKey: "CoolCat.TodayKeys")
         }
     }
 
     func flushStats() {
-        UserDefaults.standard.set(statsDayString, forKey: "KuroCat.StatsDay")
-        UserDefaults.standard.set(totalKeystrokesToday, forKey: "KuroCat.TodayKeys")
+        UserDefaults.standard.set(statsDayString, forKey: "CoolCat.StatsDay")
+        UserDefaults.standard.set(totalKeystrokesToday, forKey: "CoolCat.TodayKeys")
     }
 }

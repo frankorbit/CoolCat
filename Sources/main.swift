@@ -11,7 +11,7 @@ if CommandLine.arguments.contains("--install-claude-hooks") || CommandLine.argum
     let installing = CommandLine.arguments.contains("--install-claude-hooks")
     do {
         if installing { try ClaudeHookInstaller.install() } else { try ClaudeHookInstaller.uninstall() }
-        print(installing ? "已连接 Claude Code：\(ClaudeHookInstaller.hookCommand)" : "已移除 KuroCat 的 Claude Code hook")
+        print(installing ? "已连接 Claude Code：\(ClaudeHookInstaller.hookCommand)" : "已移除 CoolCat 的 Claude Code hook")
         exit(0)
     } catch {
         FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
@@ -70,7 +70,7 @@ func renderMusicPreviewSheet(to path: String) {
     let poses: [(String, (CatPhysics) -> Void)] = [
         ("陶醉正脸", { p in
             p.setListening(true, musicApp: true)
-            p.showTrack(title: "猫咪狂想曲", artist: "KuroCat")
+            p.showTrack(title: "猫咪狂想曲", artist: "CoolCat")
             for _ in 0..<160 { p.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
             p.headYaw.value = 0; p.headPitch.value = 0.1; p.headTilt.value = 0.06
         }),
@@ -180,11 +180,11 @@ func renderClaudePreviewSheet(to path: String) {
             case .working:
                 physics.claudeLines = [
                     ClaudeSessionLine(project: "Faceplant", detail: "写代码", kind: .working, elapsed: 134),
-                    ClaudeSessionLine(project: "KuroCat", detail: "跑命令", kind: .working, elapsed: 35)
+                    ClaudeSessionLine(project: "CoolCat", detail: "跑命令", kind: .working, elapsed: 35)
                 ]
             case .waiting:
                 physics.claudeLines = [
-                    ClaudeSessionLine(project: "KuroCat", detail: "等你批准", kind: .waiting, elapsed: nil),
+                    ClaudeSessionLine(project: "CoolCat", detail: "等你批准", kind: .waiting, elapsed: nil),
                     ClaudeSessionLine(project: "Faceplant", detail: "读代码", kind: .working, elapsed: 252)
                 ]
             case .done:
@@ -195,7 +195,7 @@ func renderClaudePreviewSheet(to path: String) {
             if case .working(_, let n) = state.1, n == 5 {
                 physics.claudeLines = [
                     ClaudeSessionLine(project: "Faceplant", detail: "写代码", kind: .working, elapsed: 412),
-                    ClaudeSessionLine(project: "KuroCat", detail: "跑命令", kind: .working, elapsed: 95),
+                    ClaudeSessionLine(project: "CoolCat", detail: "跑命令", kind: .working, elapsed: 95),
                     ClaudeSessionLine(project: "api-server", detail: "翻文件", kind: .working, elapsed: 40),
                     ClaudeSessionLine(project: "infra", detail: "思考中", kind: .working, elapsed: 12),
                     ClaudeSessionLine(project: "docs", detail: "上网查", kind: .working, elapsed: 5)
@@ -1325,6 +1325,9 @@ func renderCustomShowcaseVideo(bgPath: String, outDir: String) {
         }
     }
 }
+
+// 从改名前的 KuroCat 迁移设置（必须早于任何 CatSettings / InputEngine 读取偏好）
+LegacyMigration.runIfNeeded()
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
