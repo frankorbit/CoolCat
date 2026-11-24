@@ -610,6 +610,18 @@ func renderCapPreviewSheet(to path: String) {
 }
 
 // 逗猫 & 喂食预览：4 皮肤 x 5 个瞬间
+if let idx = CommandLine.arguments.firstIndex(of: "--render-pets-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderPetsPreviewSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
+if let idx = CommandLine.arguments.firstIndex(of: "--render-golden"),
+   idx + 1 < CommandLine.arguments.count {
+    renderGoldenSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
 if let idx = CommandLine.arguments.firstIndex(of: "--capture-settings-shots"),
    idx + 1 < CommandLine.arguments.count {
     captureSettingsShots(toDirectory: CommandLine.arguments[idx + 1])
@@ -813,6 +825,108 @@ func renderBondPreviewSheet(to path: String) {
         try png.write(to: URL(fileURLWithPath: path))
     } catch {
         FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
+    }
+}
+
+/// 新猫总览：每只 PetSpec 猫两格（正脸 / 转头戴耳机），3 列排开
+func renderPetsPreviewSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme, settings.customPetID, settings.keyboardTheme, settings.accessory)
+    defer { (settings.coatTheme, settings.eyeTheme, settings.customPetID, settings.keyboardTheme, settings.accessory) = saved }
+    settings.keyboardTheme = .classicMilk
+    settings.accessory = .none
+    let pets = PetLibrary.builtIns
+    let poses: [(CatPhysics) -> Void] = [
+        { _ in },
+        { p in p.headphonesOn.value = 1; p.headYaw.value = -0.7; p.headPitch.value = -0.2; p.headTilt.value = -0.08 }
+    ]
+    let cellW = 360, cellH = 320, scale = 2, perRow = 3
+    let cols = perRow * poses.count, rows = (pets.count + perRow - 1) / perRow
+    guard let ctx = CGContext(
+        data: nil, width: cellW * cols * scale, height: cellH * rows * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(cellH * rows * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.66, green: 0.70, blue: 0.68, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: cellW * cols, height: cellH * rows))
+    for (i, pet) in pets.enumerated() {
+        PetLibrary.shared.select(pet)
+        for (j, pose) in poses.enumerated() {
+            let physics = CatPhysics()
+            pose(physics)
+            let col = (i % perRow) * poses.count + j, row = i / perRow
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(col * cellW), y: CGFloat(row * cellH))
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.25).cgColor)
+            ctx.stroke(CGRect(x: 0.5, y: 0.5, width: CGFloat(cellW) - 1, height: CGFloat(cellH) - 1))
+            CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: false)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            NSAttributedString(string: j == 0 ? pet.name : "", attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .bold), .foregroundColor: NSColor.white
+            ]).draw(at: CGPoint(x: 10, y: 294))
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
+    }
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+    } catch {
+        FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
+    }
+}
+
+/// 回归基准图：不跑物理（没有随机眨眼/粒子），直接摆姿态，保证每次逐像素一致。
+/// 改渲染前后各渲染一张对比，确认内置毛色的画面没被改坏。
+func renderGoldenSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme, settings.accessory, settings.keyboardTheme)
+    defer { (settings.coatTheme, settings.eyeTheme, settings.accessory, settings.keyboardTheme) = saved }
+    settings.keyboardTheme = .classicMilk
+    let coats: [(CatCoatTheme, EyeColorTheme)] = [
+        (.classicBlack, .neonChartreuse), (.siamese, .siameseBlue),
+        (.shorthair, .referenceHazel), (.orangeWhite, .warmAmber)
+    ]
+    let poses: [(CatAccessory, (CatPhysics) -> Void)] = [
+        (.none, { _ in }),
+        (.bell, { p in p.headYaw.value = -0.8; p.headPitch.value = -0.3; p.headTilt.value = -0.08 }),
+        (.scarf, { p in p.headYaw.value = 0.7; p.headPitch.value = 0.5; p.earFold.value = 0.6 }),
+        (.bow, { p in p.headphonesOn.value = 1; p.headTilt.value = 0.1 }),
+        (.shades, { p in p.nightCap.value = 1; p.bodySquash.value = 0.9; p.hindFootActive.value = 1 })
+    ]
+    let cellW = 360, cellH = 320, scale = 2
+    guard let ctx = CGContext(
+        data: nil, width: cellW * poses.count * scale, height: cellH * coats.count * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(cellH * coats.count * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.66, green: 0.70, blue: 0.68, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: cellW * poses.count, height: cellH * coats.count))
+    for (row, coat) in coats.enumerated() {
+        settings.coatTheme = coat.0
+        settings.eyeTheme = coat.1
+        for (col, pose) in poses.enumerated() {
+            settings.accessory = pose.0
+            let physics = CatPhysics()
+            pose.1(physics)
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(col * cellW), y: CGFloat(row * cellH))
+            CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: false)
+            ctx.restoreGState()
+        }
+    }
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+    } catch {
+        FileHandle.standardError.write(Data("写入基准图失败: \(error)\n".utf8))
     }
 }
 

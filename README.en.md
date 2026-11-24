@@ -28,6 +28,7 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
 - 🪶 **Cursor play** — move the cursor slowly in front of the cat: it locks on, wiggles, and swats.
 - 🐟 **Fish treats** — it holds the treat with both paws, nibbles, drops crumbs and burps (6 per day).
 - 💞 **Bond levels** — every interaction builds affection (capped per day, never decays). Level up to unlock a bell collar, knitted scarf, bow and sunglasses; at higher levels it nuzzles your resting cursor and brings you a daily gift.
+- 🐱 **13 cats** — the classic black, Siamese, shorthair and orange-white, plus orange tabby, Dragon Li, tuxedo, calico, British Blue, Scottish Fold, Ragdoll, white and golden.
 - ⌨️ **Keyboard habits** and 😺 **idle animations**.
 
 ## ⚙️ Settings window

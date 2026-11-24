@@ -1036,13 +1036,11 @@ extension AppDelegate: SettingsHost {
 
     func selectCoat(_ coat: CatCoatTheme) {
         let settings = CatSettings.shared
+        // 选回经典猫：清掉新猫的选择
+        PetLibrary.shared.select(nil)
         settings.coatTheme = coat
         // 换毛色时配上招牌瞳色（之后仍可单独改）
-        switch coat {
-        case .classicBlack: settings.eyeTheme = .neonChartreuse
-        case .siamese: settings.eyeTheme = .siameseBlue
-        case .shorthair, .orangeWhite: settings.eyeTheme = .softAmber
-        }
+        settings.eyeTheme = coat.signatureEye
     }
 
     func resetPetPosition() { resetPosition() }

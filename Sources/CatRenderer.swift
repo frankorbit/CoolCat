@@ -15,20 +15,57 @@ enum CatRenderer {
         NSColor(calibratedRed: CGFloat((hex >> 16) & 255)/255,
                 green: CGFloat((hex >> 8) & 255)/255, blue: CGFloat(hex & 255)/255, alpha: alpha)
     }
+    // MARK: Custom Pet
+
+    /// 当前自定义宠物：每次 draw 开头取一次（nil = 内置猫，走原来的配色，画面逐像素不变）
+    private(set) static var pet: PetSpec?
+    /// 身体宽度系数（自定义体型）
+    private static var bodyScale: CGFloat { CGFloat(pet?.shape.bodyWidth ?? 1) }
+
+    /// 斑纹/尾巴条纹里写死的几种颜色，按自定义宠物的配色重映射
+    /// 三花额外色块的占位色：画的时候换成 pet.accentColor
+    private static let tricolorPatchRGB = 0x010203
+
+    private static func coatRGB(_ hex: Int, _ alpha: CGFloat = 1) -> NSColor {
+        guard let pet else { return rgb(hex, alpha) }
+        if hex == tricolorPatchRGB { return pet.accentColor.withAlphaComponent(alpha) }
+        switch (pet.style, hex) {
+        case (.tabby, 0x363536), (.tabby, 0x55595A), (.bicolor, 0xA57543):
+            return pet.accentColor.withAlphaComponent(alpha)
+        case (.tabby, 0xF2EEE4), (.bicolor, 0xF2EEE4):
+            return pet.secondaryColor.withAlphaComponent(alpha)
+        case (.tabby, 0xC2C5C1), (.bicolor, 0xD8AA73):
+            return pet.mainColor.withAlphaComponent(alpha)
+        default:
+            return rgb(hex, alpha)
+        }
+    }
+
     private static func bodyColor(_ coat: CatCoatTheme) -> NSColor {
-        coat == .shorthair ? rgb(0xC2C5C1) : (coat == .orangeWhite ? rgb(0xF2EEE4) : catBlack)
+        if let pet {
+            return pet.style == .solid || pet.style == .tabby ? pet.mainColor : pet.secondaryColor
+        }
+        return coat == .shorthair ? rgb(0xC2C5C1) : (coat == .orangeWhite ? rgb(0xF2EEE4) : catBlack)
     }
     private static func limbColor(_ coat: CatCoatTheme) -> NSColor {
-        coat == .orangeWhite ? rgb(0xD8AA73) : bodyColor(coat)
+        if let pet { return pet.style == .colorpoint ? pet.secondaryColor : pet.mainColor }
+        return coat == .orangeWhite ? rgb(0xD8AA73) : bodyColor(coat)
     }
     private static func pawColor(_ coat: CatCoatTheme) -> NSColor {
-        patterned(coat) ? rgb(0xF2EEE4) : (coat == .siamese ? siamesePoint : catBlack)
+        if let pet { return pet.style == .colorpoint ? pet.mainColor : pet.secondaryColor }
+        return patterned(coat) ? rgb(0xF2EEE4) : (coat == .siamese ? siamesePoint : catBlack)
     }
     private static func earTailColor(_ coat: CatCoatTheme) -> NSColor {
-        coat == .siamese ? siamesePoint : limbColor(coat)
+        if let pet, pet.style == .colorpoint { return pet.mainColor }
+        return coat == .siamese ? siamesePoint : limbColor(coat)
     }
     private static func creaseColor(_ coat: CatCoatTheme) -> NSColor {
-        patterned(coat) ? rgb(0x8B8171, 0.60) : contourMint
+        if pet != nil {
+            // 深色身体用浅色描线，浅色身体用加深的同色系描线
+            let body = bodyColor(coat)
+            return HexColor.luminance(body) < 0.35 ? contourMint : HexColor.mix(body, .black, 0.45, alpha: 0.6)
+        }
+        return patterned(coat) ? rgb(0x8B8171, 0.60) : contourMint
     }
 
     static let catBlack = NSColor(calibratedRed: 0.085, green: 0.085, blue: 0.095, alpha: 1.0)
@@ -36,14 +73,25 @@ enum CatRenderer {
     static let whiskerColor = NSColor(calibratedRed: 0.88, green: 0.90, blue: 0.92, alpha: 0.72)
 
     // Siamese Seal-Point Palette (小豆泥风暖奶白躯干 + 柔和丝绒焦糖可可重点色)
-    static let siameseCream    = NSColor(calibratedRed: 0.965, green: 0.937, blue: 0.894, alpha: 1.0) // #F6EFE4
-    static let siameseLatte    = NSColor(calibratedRed: 0.918, green: 0.859, blue: 0.784, alpha: 1.0) // #EADBC8
-    static let siameseMocha    = NSColor(calibratedRed: 0.416, green: 0.314, blue: 0.255, alpha: 1.0) // #6A5041
-    static let siamesePoint    = NSColor(calibratedRed: 0.208, green: 0.149, blue: 0.122, alpha: 1.0) // #35261F
-    static let siameseInnerEar = NSColor(calibratedRed: 0.365, green: 0.275, blue: 0.228, alpha: 1.0) // #5D463A
-    static let siameseOutline  = NSColor(calibratedRed: 0.68,  green: 0.59,  blue: 0.50,  alpha: 0.42) // soft plush rim
-    static let siameseCrease   = NSColor(calibratedRed: 0.553, green: 0.471, blue: 0.404, alpha: 0.54) // #8D7867
-    static let siameseWhisker  = NSColor(calibratedRed: 0.478, green: 0.388, blue: 0.325, alpha: 0.62) // #7A6353
+    static let siameseCreamBase    = NSColor(calibratedRed: 0.965, green: 0.937, blue: 0.894, alpha: 1.0) // #F6EFE4
+    static let siameseLatteBase    = NSColor(calibratedRed: 0.918, green: 0.859, blue: 0.784, alpha: 1.0) // #EADBC8
+    static let siameseMochaBase    = NSColor(calibratedRed: 0.416, green: 0.314, blue: 0.255, alpha: 1.0) // #6A5041
+    static let siamesePointBase    = NSColor(calibratedRed: 0.208, green: 0.149, blue: 0.122, alpha: 1.0) // #35261F
+    static let siameseInnerEarBase = NSColor(calibratedRed: 0.365, green: 0.275, blue: 0.228, alpha: 1.0) // #5D463A
+    static let siameseOutlineBase  = NSColor(calibratedRed: 0.68,  green: 0.59,  blue: 0.50,  alpha: 0.42) // soft plush rim
+    static let siameseCreaseBase   = NSColor(calibratedRed: 0.553, green: 0.471, blue: 0.404, alpha: 0.54) // #8D7867
+    static let siameseWhiskerBase  = NSColor(calibratedRed: 0.478, green: 0.388, blue: 0.325, alpha: 0.62) // #7A6353
+
+    /// 自定义的重点色宠物：身体 = secondary，重点色 = main，其余由两者混出来
+    private static var pointPet: PetSpec? { pet?.style == .colorpoint ? pet : nil }
+    static var siameseCream: NSColor { pointPet?.secondaryColor ?? siameseCreamBase }
+    static var siameseLatte: NSColor { pointPet.map { HexColor.mix($0.secondaryColor, .black, 0.07) } ?? siameseLatteBase }
+    static var siameseMocha: NSColor { pointPet.map { HexColor.mix($0.mainColor, $0.secondaryColor, 0.3) } ?? siameseMochaBase }
+    static var siamesePoint: NSColor { pointPet?.mainColor ?? siamesePointBase }
+    static var siameseInnerEar: NSColor { pointPet.map { HexColor.mix($0.mainColor, $0.secondaryColor, 0.14) } ?? siameseInnerEarBase }
+    static var siameseOutline: NSColor { pointPet.map { HexColor.mix($0.secondaryColor, $0.mainColor, 0.4, alpha: 0.42) } ?? siameseOutlineBase }
+    static var siameseCrease: NSColor { pointPet.map { HexColor.mix($0.secondaryColor, $0.mainColor, 0.5, alpha: 0.54) } ?? siameseCreaseBase }
+    static var siameseWhisker: NSColor { pointPet.map { HexColor.mix($0.mainColor, $0.secondaryColor, 0.35, alpha: 0.62) } ?? siameseWhiskerBase }
 
     static let permissionPillRect = CGRect(x: 92, y: 294, width: 176, height: 22)
 
@@ -90,6 +138,7 @@ enum CatRenderer {
 
         let settings = CatSettings.shared
         let coat = settings.coatTheme
+        pet = PetLibrary.shared.active.flatMap { $0.style.baseCoat == coat ? $0 : nil }
         let breath = sin(physics.time * 2.1) * 1.6
         let seatX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
         let seatY = CatPhysics.seatAnchor.y
@@ -510,7 +559,8 @@ enum CatRenderer {
         ctx.saveGState()
         let tailColor = earTailColor(coat)
         ctx.setStrokeColor(tailColor.cgColor)
-        ctx.setLineWidth(coat == .siamese ? 9.5 : 11.0)
+        let tailScale = CGFloat(pet?.shape.tailWidth ?? 1)
+        ctx.setLineWidth((coat == .siamese ? 9.5 : 11.0) * tailScale)
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
         ctx.move(to: root)
@@ -519,10 +569,10 @@ enum CatRenderer {
         ctx.strokePath()
         if patterned(coat), let line = tailLine {
             ctx.saveGState()
-            ctx.addPath(line.copy(strokingWithWidth: 11, lineCap: .round, lineJoin: .round, miterLimit: 10))
+            ctx.addPath(line.copy(strokingWithWidth: 11 * tailScale, lineCap: .round, lineJoin: .round, miterLimit: 10))
             ctx.clip()
-            ctx.setStrokeColor(rgb(coat == .shorthair ? 0x55595A : 0xA57543, 0.50).cgColor)
-            ctx.setLineWidth(3.5); ctx.setLineCap(.butt)
+            ctx.setStrokeColor(coatRGB(coat == .shorthair ? 0x55595A : 0xA57543, 0.50).cgColor)
+            ctx.setLineWidth(3.5 * tailScale); ctx.setLineCap(.butt)
             for t: CGFloat in [0.50, 0.78] {
                 let u = 1-t
                 let p = CGPoint(x: u*u*u*root.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*tip.x,
@@ -563,7 +613,7 @@ enum CatRenderer {
 
         let cB = cos(bTilt), sB = sin(bTilt)
         let sy = physics.bodySquash.value
-        let sx = 1.0 + (1.0 - sy) * 0.55
+        let sx = (1.0 + (1.0 - sy) * 0.55) * bodyScale
         func B(_ lx: CGFloat, _ ly: CGFloat) -> CGPoint {
             let rx = lx * sx
             let ry = ly * sy
@@ -749,14 +799,17 @@ enum CatRenderer {
             return CGPoint(x: head.x + projected.x*c - projected.y*s,
                            y: head.y + projected.x*s + projected.y*c)
         }
-        let sy = physics.bodySquash.value, sx = 1 + (1 - sy) * 0.55
+        let sy = physics.bodySquash.value, sx = (1 + (1 - sy) * 0.55) * bodyScale
         let c = cos(physics.bodyTilt.value), s = sin(physics.bodyTilt.value)
         return CGPoint(x: seatX + p.x*sx*c - p.y*sy*s,
                        y: seatY + p.x*sx*s + p.y*sy*c)
     }
     private static func drawCoatMarks(in ctx: CGContext, seatX: CGFloat, seatY: CGFloat,
                                       head: CGPoint, physics: CatPhysics, coat: CatCoatTheme) {
-        let marks = CoatPatterns.marks(for: coat)
+        var marks = CoatPatterns.marks(for: coat)
+        if pet?.tricolor == true, coat == .orangeWhite {
+            marks = tricolorMarks(from: marks)
+        }
         func markPath(_ mark: CoatMark) -> CGMutablePath {
             let path = CGMutablePath()
             for (i, point) in mark.points.enumerated() {
@@ -769,7 +822,7 @@ enum CatRenderer {
         for mark in marks {
             ctx.saveGState()
             let path = markPath(mark)
-            let color = rgb(mark.rgb, mark.alpha)
+            let color = coatRGB(mark.rgb, mark.alpha)
             if mark.width == 0 {
                 path.closeSubpath(); ctx.setFillColor(color.cgColor); ctx.addPath(path); ctx.fillPath()
             } else {
@@ -778,6 +831,25 @@ enum CatRenderer {
             }
             ctx.restoreGState()
         }
+    }
+
+    /// 三花：在橘白的色块基础上，把左半边脸（阴阳脸）和左侧身上那块色块换成黑色。
+    /// 黑色脸块插在头顶色块之后、白色口鼻之前，口鼻的白色照样盖在上面
+    private static func tricolorMarks(from marks: [CoatMark]) -> [CoatMark] {
+        var result = marks
+        let leftFace = CoatMark(head: true, skull: true, width: 0, rgb: tricolorPatchRGB, alpha: 1, points: [
+            CGPoint(x: -100, y: -100), CGPoint(x: -2, y: -100), CGPoint(x: -2, y: -44), CGPoint(x: -8, y: -26),
+            CGPoint(x: -18, y: -8), CGPoint(x: -30, y: 8), CGPoint(x: -38, y: 24), CGPoint(x: -100, y: 30)
+        ])
+        if let skullIndex = result.firstIndex(where: { $0.skull }) {
+            result.insert(leftFace, at: skullIndex + 1)
+        }
+        // 左侧身体那块色块（起点 -31, -39.5）
+        if let i = result.firstIndex(where: { !$0.head && $0.points.first == CGPoint(x: -31, y: -39.5) }) {
+            let m = result[i]
+            result[i] = CoatMark(head: m.head, skull: m.skull, width: m.width, rgb: tricolorPatchRGB, alpha: m.alpha, points: m.points)
+        }
+        return result
     }
 
     // MARK: - 3rd Key Hind Foot Easter Egg
@@ -942,9 +1014,18 @@ enum CatRenderer {
     ) {
         let sign: CGFloat = isLeft ? -1.0 : 1.0
         let isSiamese = (coat == .siamese)
+        let earStyle = pet?.shape.earStyle ?? .pointed
+        if earStyle == .floppy {
+            drawFloppyEar(in: ctx, sign: sign, yawRad: yawRad, pitchRad: pitchRad, fold: fold, twitch: twitch, coat: coat)
+            return
+        }
+        // 自定义耳朵：大小系数；折耳更短并向外压下去；圆耳又短又圆
+        let earScale = CGFloat(pet?.shape.earSize ?? 1)
+            * (earStyle == .folded ? 0.52 : (earStyle == .round ? 0.5 : 1))
+        let styleFold: CGFloat = earStyle == .folded ? 0.62 : 0
         // Siamese (小豆泥 style): cute, compact, softly-rounded triangular cat ears
-        let foldAngle = sign * ((isSiamese ? 0.14 : 0.06) + fold * 0.34) + twitch
-        let earLen: CGFloat = isSiamese ? 29.5 : 32.0
+        let foldAngle = sign * ((isSiamese ? 0.14 : 0.06) + fold * 0.34 + styleFold) + twitch
+        let earLen: CGFloat = (isSiamese ? 29.5 : 32.0) * earScale
 
         let tipDx = sin(foldAngle) * earLen
         let tipDy = -cos(foldAngle) * earLen
@@ -955,7 +1036,7 @@ enum CatRenderer {
         let tip3D       = projectHead3D(x: sign * (isSiamese ? 25.0 : 24.5) + tipDx, y: (isSiamese ? -18.5 : -20.0) + tipDy, z: -3.0, yawRad: yawRad, pitchRad: pitchRad).pt
 
         // Soft plush rounded-tip feline ear
-        let tipSpread: CGFloat = isSiamese ? 4.2 : 3.8
+        let tipSpread: CGFloat = (isSiamese ? 4.2 : 3.8) * (earStyle == .round ? 2.4 : (earStyle == .folded ? 1.5 : 1))
         let tipLeft  = CGPoint(x: tip3D.x - sign * tipSpread, y: tip3D.y + 2.8)
         let tipRight = CGPoint(x: tip3D.x + sign * tipSpread, y: tip3D.y + 3.2)
 
@@ -997,6 +1078,40 @@ enum CatRenderer {
         ctx.restoreGState()
     }
 
+    /// 垂耳（狗、垂耳兔）：从头顶两侧垂下来的软耳片，画在头后面，只露出脸颊外侧的部分；
+    /// 摸头时（fold）往后贴，跟着 twitch 轻轻甩
+    private static func drawFloppyEar(in ctx: CGContext, sign: CGFloat, yawRad: CGFloat, pitchRad: CGFloat,
+                                      fold: CGFloat, twitch: CGFloat, coat: CatCoatTheme) {
+        let size = CGFloat(pet?.shape.earSize ?? 1)
+        let swing = twitch * 6 - fold * 4
+        let root1 = projectHead3D(x: sign * 14, y: -27, z: 4, yawRad: yawRad, pitchRad: pitchRad).pt
+        let root2 = projectHead3D(x: sign * 34, y: -18, z: -4, yawRad: yawRad, pitchRad: pitchRad).pt
+        let tip = projectHead3D(x: sign * (48 + 6 * size) + swing * sign, y: 8 + 22 * size, z: -6,
+                                yawRad: yawRad, pitchRad: pitchRad).pt
+        let ear = CGMutablePath()
+        ear.move(to: root1)
+        ear.addCurve(to: tip,
+                     control1: CGPoint(x: root1.x + sign * 26 * size, y: root1.y - 10),
+                     control2: CGPoint(x: tip.x + sign * 10 * size, y: tip.y - 14 * size))
+        ear.addCurve(to: root2,
+                     control1: CGPoint(x: tip.x - sign * 12 * size, y: tip.y + 8 * size),
+                     control2: CGPoint(x: root2.x + sign * 2, y: root2.y + 14))
+        ear.closeSubpath()
+        ctx.saveGState()
+        ctx.setFillColor(earTailColor(coat).cgColor)
+        ctx.addPath(ear)
+        ctx.fillPath()
+        // 耳片内侧一道柔和的暗部，做出厚度
+        ctx.addPath(ear)
+        ctx.clip()
+        ctx.setStrokeColor(HexColor.mix(earTailColor(coat), .black, 0.25, alpha: 0.5).cgColor)
+        ctx.setLineWidth(3)
+        ctx.move(to: CGPoint(x: (root1.x + root2.x) / 2, y: (root1.y + root2.y) / 2 + 4))
+        ctx.addQuadCurve(to: CGPoint(x: tip.x - sign * 4, y: tip.y - 6), control: CGPoint(x: tip.x + sign * 2, y: (root2.y + tip.y) / 2))
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
     private static func drawEye3D(
         in ctx: CGContext,
         isLeft: Bool,
@@ -1007,7 +1122,9 @@ enum CatRenderer {
         coat: CatCoatTheme
     ) {
         let sign: CGFloat = isLeft ? -1.0 : 1.0
-        let eyeColor = eyeTheme.primaryColor
+        let eyeColor = pet?.eyeColor ?? eyeTheme.primaryColor
+        // 自定义瞳色不走暹罗蓝的专用渐变
+        let eyeTheme = (pet != nil && eyeTheme == .siameseBlue) ? EyeColorTheme.iceCyan : eyeTheme
 
         // Eye sits on the front surface of the 3D head sphere at (±17.5, -2.0, +28.0)
         let proj = projectHead3D(x: sign * 17.2, y: -2.0, z: 27.5, yawRad: yawRad, pitchRad: pitchRad)
@@ -1159,7 +1276,12 @@ enum CatRenderer {
     ) {
         let wiggle = sin(physics.time * 4.5) * (max(physics.petHeadIntensity, physics.petBodyIntensity) * 1.2)
         ctx.saveGState()
-        let wColor = (coat == .siamese) ? siameseWhisker : (patterned(coat) ? rgb(0x8D8170) : whiskerColor).withAlphaComponent(0.68)
+        var wColor = (coat == .siamese) ? siameseWhisker : (patterned(coat) ? rgb(0x8D8170) : whiskerColor).withAlphaComponent(0.68)
+        if pet != nil && coat != .siamese {
+            // 自定义毛色：胡须跟脸的深浅反着来，保证看得见
+            let face = bodyColor(coat)
+            wColor = HexColor.luminance(face) < 0.35 ? whiskerColor.withAlphaComponent(0.68) : HexColor.mix(face, .black, 0.5, alpha: 0.68)
+        }
         ctx.setStrokeColor(wColor.cgColor)
         ctx.setLineWidth(1.0)
         ctx.setLineCap(.round)

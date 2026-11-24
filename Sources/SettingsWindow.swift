@@ -516,17 +516,19 @@ private struct AppearancePane: View {
         VStack(alignment: .leading, spacing: 18) {
             CatPreviewCard(preview: preview)
             SettingsCard(title: "小猫") {
-                SettingsRow(title: "毛色") {
-                    Picker("", selection: Binding(
-                        get: { CatSettings.shared.coatTheme },
-                        set: { store.host.selectCoat($0); store.refresh() })) {
-                        ForEach(CatCoatTheme.allCases, id: \.self) { Text($0.shortName).tag($0) }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(SegmentedPickerStyle())
-                    .frame(width: 320)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("猫咪").font(.system(size: 13))
+                    CoatGallery(store: store)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
                 RowDivider()
+                if let pet = PetLibrary.shared.active {
+                    SettingsRow(title: "瞳色", subtitle: "\(pet.name)有自己的招牌瞳色") {
+                        Circle().fill(Color(pet.eyeColor)).frame(width: 20, height: 20)
+                            .overlay(Circle().stroke(Color.primary.opacity(0.25), lineWidth: 0.5))
+                    }
+                } else {
                 SettingsRow(title: "瞳色", subtitle: CatSettings.shared.eyeTheme.rawValue) {
                     HStack(spacing: 8) {
                         ForEach(EyeColorTheme.allCases, id: \.self) { eye in
@@ -546,6 +548,7 @@ private struct AppearancePane: View {
                             .help(eye.rawValue)
                         }
                     }
+                }
                 }
                 RowDivider()
                 SettingsRow(title: "装扮", subtitle: "在「亲密度」里随等级解锁") {
@@ -568,7 +571,120 @@ private struct AppearancePane: View {
     }
 }
 
+/// 可选的猫：4 只经典猫 + PetLibrary 里的新猫
+enum CoatOption: Hashable {
+    case classic(CatCoatTheme)
+    case pet(String)
+
+    static var all: [CoatOption] {
+        CatCoatTheme.allCases.map { .classic($0) } + PetLibrary.shared.all.map { .pet($0.id) }
+    }
+
+    static var current: CoatOption {
+        if let pet = PetLibrary.shared.active { return .pet(pet.id) }
+        return .classic(CatSettings.shared.coatTheme)
+    }
+
+    var name: String {
+        switch self {
+        case .classic(let coat): return coat.shortName
+        case .pet(let id): return PetLibrary.shared.pet(id: id)?.name ?? id
+        }
+    }
+}
+
+/// 猫咪缩略图：离屏画一只静止的猫，裁出头和上半身；每种只画一次
+final class CoatThumbnails {
+    static let shared = CoatThumbnails()
+    private var cache: [CoatOption: CGImage] = [:]
+    /// 画布里头和上半身的范围
+    private let crop = CGRect(x: 110, y: 58, width: 148, height: 156)
+
+    func image(for option: CoatOption) -> CGImage? {
+        if let cached = cache[option] { return cached }
+        let settings = CatSettings.shared
+        let saved = (settings.coatTheme, settings.eyeTheme, settings.customPetID, settings.accessory)
+        defer { (settings.coatTheme, settings.eyeTheme, settings.customPetID, settings.accessory) = saved }
+        settings.accessory = .none
+        switch option {
+        case .classic(let coat):
+            settings.customPetID = nil
+            settings.coatTheme = coat
+            settings.eyeTheme = coat.signatureEye
+        case .pet(let id):
+            guard let pet = PetLibrary.shared.pet(id: id) else { return nil }
+            PetLibrary.shared.select(pet)
+        }
+        let scale: CGFloat = 2
+        guard let ctx = CGContext(
+            data: nil, width: Int(crop.width * scale), height: Int(crop.height * scale),
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        ctx.translateBy(x: 0, y: crop.height * scale)
+        ctx.scaleBy(x: scale, y: -scale)
+        ctx.translateBy(x: -crop.minX, y: -crop.minY)
+        CatRenderer.draw(in: ctx, physics: CatPhysics(), showPermissionPill: false)
+        let image = ctx.makeImage()
+        cache[option] = image
+        return image
+    }
+}
+
+private struct CoatGallery: View {
+    @ObservedObject var store: SettingsStore
+    private let columns = [GridItem(.adaptive(minimum: 84, maximum: 110), spacing: 10)]
+
+    var body: some View {
+        let current = CoatOption.current
+        LazyVGrid(columns: columns, spacing: 10) {
+            ForEach(CoatOption.all, id: \.self) { option in
+                let selected = option == current
+                Button {
+                    switch option {
+                    case .classic(let coat): store.host.selectCoat(coat)
+                    case .pet(let id): PetLibrary.shared.select(PetLibrary.shared.pet(id: id))
+                    }
+                    store.refresh()
+                } label: {
+                    VStack(spacing: 4) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color(red: 0.70, green: 0.74, blue: 0.72))
+                            if let image = CoatThumbnails.shared.image(for: option) {
+                                Image(decorative: image, scale: 2)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .padding(.top, 4)
+                            }
+                        }
+                        .frame(height: 84)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(selected ? Color.accentColor : Color.clear, lineWidth: 2.5)
+                        )
+                        Text(option.name)
+                            .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                            .foregroundColor(selected ? .accentColor : .primary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+        }
+    }
+}
+
 extension CatCoatTheme {
+    /// 每只经典猫的招牌瞳色（换毛色时自动配上）
+    var signatureEye: EyeColorTheme {
+        switch self {
+        case .classicBlack: return .neonChartreuse
+        case .siamese: return .siameseBlue
+        case .shorthair, .orangeWhite: return .softAmber
+        }
+    }
+
     var shortName: String {
         switch self {
         case .classicBlack: return "小黑猫"

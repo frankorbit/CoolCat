@@ -231,7 +231,7 @@ enum ShowcaseArt {
         ctx.setFillColor(rgb(0xFAFAFC).cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
         text("CoolCat 特色功能", at: CGPoint(x: margin, y: 30), size: 30, weight: .heavy, color: rgb(0x1D1D24), in: ctx)
-        text("全部由 CoreGraphics 程序化绘制，弹簧物理驱动，4 种毛色通用",
+        text("全部由 CoreGraphics 程序化绘制，弹簧物理驱动，13 只猫咪通用",
              at: CGPoint(x: margin + 268, y: 42), size: 14, weight: .regular, color: rgb(0x7A7D88), in: ctx)
 
         for (i, scene) in featureScenes.enumerated() {

@@ -124,6 +124,10 @@ final class CatSettings {
     var cursorPlay: Bool {
         didSet { UserDefaults.standard.set(cursorPlay, forKey: "CoolCat.CursorPlay") }
     }
+    /// 正在用的自定义宠物（PetLibrary 里的 id）；nil = 内置猫
+    var customPetID: String? {
+        didSet { UserDefaults.standard.set(customPetID, forKey: "CoolCat.CustomPetID") }
+    }
     /// 亲密度解锁的装扮
     var accessory: CatAccessory {
         didSet { UserDefaults.standard.set(accessory.rawValue, forKey: "CoolCat.Accessory") }
@@ -203,6 +207,7 @@ final class CatSettings {
         lifeNight = d.object(forKey: "CoolCat.LifeNight") as? Bool ?? true
         cursorPlay = d.object(forKey: "CoolCat.CursorPlay") as? Bool ?? true
         accessory = CatAccessory(rawValue: d.string(forKey: "CoolCat.Accessory") ?? "") ?? .none
+        customPetID = d.string(forKey: "CoolCat.CustomPetID")
         lifeMorning = d.object(forKey: "CoolCat.LifeMorning") as? Bool ?? true
         lifeBattery = d.object(forKey: "CoolCat.LifeBattery") as? Bool ?? true
         lifeWorkBreak = d.object(forKey: "CoolCat.LifeWorkBreak") as? Bool ?? true

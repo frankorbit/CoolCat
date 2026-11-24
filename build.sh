@@ -101,6 +101,7 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/CatPlay.swift"
     "$ROOT/Sources/CatBond.swift"
     "$ROOT/Sources/CatAccessories.swift"
+    "$ROOT/Sources/PetSpec.swift"
     "$ROOT/Sources/SettingsWindow.swift"
     "$ROOT/Sources/ShowcaseArt.swift"
     "$ROOT/Sources/CatRenderer.swift"
