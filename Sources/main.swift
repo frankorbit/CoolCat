@@ -834,13 +834,23 @@ func renderPetsPreviewSheet(to path: String) {
     let saved = (settings.coatTheme, settings.eyeTheme, settings.customPetID, settings.keyboardTheme, settings.accessory)
     defer { (settings.coatTheme, settings.eyeTheme, settings.customPetID, settings.keyboardTheme, settings.accessory) = saved }
     settings.keyboardTheme = .classicMilk
-    settings.accessory = .none
-    let pets = PetLibrary.builtIns
+    // COOLCAT_ACCESSORY=bell 等：检查装扮在各只猫身上是否合身
+    settings.accessory = CatAccessory(rawValue: ProcessInfo.processInfo.environment["COOLCAT_ACCESSORY"] ?? "") ?? .none
+    // COOLCAT_PET=<id> 只画这一只，方便细调
+    let only = ProcessInfo.processInfo.environment["COOLCAT_PET"]
+    let pets = PetLibrary.builtIns.filter { only == nil || $0.id == only }
     let poses: [(CatPhysics) -> Void] = [
         { _ in },
-        { p in p.headphonesOn.value = 1; p.headYaw.value = -0.7; p.headPitch.value = -0.2; p.headTilt.value = -0.08 }
+        { p in p.headphonesOn.value = 1; p.headYaw.value = -0.7; p.headPitch.value = -0.2; p.headTilt.value = -0.08 },
+        { p in
+            // 打字：两只前爪伸到键盘上
+            let l = KeyboardLayout.canvasPoint(for: .f), r = KeyboardLayout.canvasPoint(for: .j)
+            p.leftPaw.x.value = l.x; p.leftPaw.y.value = l.y
+            p.rightPaw.x.value = r.x; p.rightPaw.y.value = r.y
+            p.headPitch.value = 0.5
+        }
     ]
-    let cellW = 360, cellH = 320, scale = 2, perRow = 3
+    let cellW = 360, cellH = 320, scale = 2, perRow = only == nil ? 3 : 1
     let cols = perRow * poses.count, rows = (pets.count + perRow - 1) / perRow
     guard let ctx = CGContext(
         data: nil, width: cellW * cols * scale, height: cellH * rows * scale,

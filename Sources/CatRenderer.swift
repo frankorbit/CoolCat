@@ -26,6 +26,43 @@ enum CatRenderer {
     /// 三花额外色块的占位色：画的时候换成 pet.accentColor
     private static let tricolorPatchRGB = 0x010203
 
+    /// 浅色/花色猫的「可爱化」：粉鼻子 ω 嘴、腮红、粉耳朵、圆瞳高光、描边和下巴分界、小口鼻白斑。
+    /// 经典小黑猫（剪影风）和暹罗系（自带面罩）保持原样
+    private static func isCute(_ coat: CatCoatTheme) -> Bool {
+        if let pet { return pet.style != .colorpoint }
+        return coat == .shorthair || coat == .orangeWhite
+    }
+
+    /// 口鼻处的底色（决定嘴线的深浅）
+    private static func muzzleColor(_ coat: CatCoatTheme) -> NSColor {
+        patterned(coat) ? coatRGB(0xF2EEE4) : bodyColor(coat)
+    }
+
+    /// 可爱化描边：比身体深一截的同色系，浅色猫轮廓清楚、深色猫也不突兀
+    private static func cuteOutline(_ coat: CatCoatTheme, alpha: CGFloat = 0.7) -> NSColor {
+        let body = bodyColor(coat)
+        return HexColor.luminance(body) < 0.2
+            ? HexColor.mix(body, .white, 0.22, alpha: alpha)
+            : HexColor.mix(body, .black, 0.38, alpha: alpha)
+    }
+
+    /// 可爱化的口鼻白斑：嘴边一小块 + 额头一道细白线（代替从额头贯穿到胸口的大白条）
+    /// 大白脸：额头一道细白线，往下在两眼之间张开，盖住眼睛下方、两颊和下巴
+    private static let whiteFaceMask: [CGPoint] = [
+        CGPoint(x: 0, y: -31), CGPoint(x: 3.2, y: -22), CGPoint(x: 6, y: -12), CGPoint(x: 10, y: -6),
+        CGPoint(x: 19, y: 1), CGPoint(x: 30, y: 3), CGPoint(x: 38, y: 9), CGPoint(x: 37, y: 18),
+        CGPoint(x: 29, y: 29), CGPoint(x: 18, y: 42), CGPoint(x: 0, y: 48), CGPoint(x: -18, y: 42),
+        CGPoint(x: -29, y: 29), CGPoint(x: -37, y: 18), CGPoint(x: -38, y: 9), CGPoint(x: -30, y: 3),
+        CGPoint(x: -19, y: 1), CGPoint(x: -10, y: -6), CGPoint(x: -6, y: -12), CGPoint(x: -3.2, y: -22)
+    ]
+
+    private static let cuteMuzzle: [CGPoint] = [
+        CGPoint(x: 0, y: -24), CGPoint(x: 2.6, y: -14), CGPoint(x: 4.5, y: -6), CGPoint(x: 10.5, y: -2.5),
+        CGPoint(x: 16.5, y: 3), CGPoint(x: 20, y: 11), CGPoint(x: 18, y: 20), CGPoint(x: 10, y: 27),
+        CGPoint(x: 0, y: 30), CGPoint(x: -10, y: 27), CGPoint(x: -18, y: 20), CGPoint(x: -20, y: 11),
+        CGPoint(x: -16.5, y: 3), CGPoint(x: -10.5, y: -2.5), CGPoint(x: -4.5, y: -6), CGPoint(x: -2.6, y: -14)
+    ]
+
     private static func coatRGB(_ hex: Int, _ alpha: CGFloat = 1) -> NSColor {
         guard let pet else { return rgb(hex, alpha) }
         if hex == tricolorPatchRGB { return pet.accentColor.withAlphaComponent(alpha) }
@@ -162,6 +199,7 @@ enum CatRenderer {
         let headCenter = CGPoint(
             x: seatX + physics.bodyTilt.value * 36 + physics.headYaw.value * 7.5,
             y: 126 + siameseLift + physics.headOffsetY.value + physics.headPitch.value * 4.8 + breath * 1.1
+                - (1 - headSize) * 40   // 小脑袋往上抬，露出细脖子
         )
         drawEarsLayer(in: ctx, center: headCenter, physics: physics, coat: coat)
 
@@ -604,10 +642,11 @@ enum CatRenderer {
         let bTilt = physics.bodyTilt.value
 
         let cH = cos(hTilt), sH = sin(hTilt)
+        let hk = headSize
         func H(_ lx: CGFloat, _ ly: CGFloat) -> CGPoint {
             CGPoint(
-                x: headCenter.x + lx * cH - ly * sH,
-                y: headCenter.y + lx * sH + ly * cH
+                x: headCenter.x + (lx * cH - ly * sH) * hk,
+                y: headCenter.y + (lx * sH + ly * cH) * hk
             )
         }
 
@@ -626,11 +665,17 @@ enum CatRenderer {
         let isSiamese = (coat == .siamese)
         let cheekShift = yaw * 3.0
         let crownDrop = pitch * 2.0
-        let cheekHalfW: CGFloat = isSiamese ? 42.5 : 42.5
-        let crownCtrlW: CGFloat = isSiamese ? 25.0 : 26.0
-        let crownBaseY: CGFloat = isSiamese ? -29.5 : -30.0
-        let cheekY: CGFloat = isSiamese ? 6.5 : 5.0
-        let neckPinchX: CGFloat = isSiamese ? 6.5 : 2.5
+        // 自定义脸宽：胖脸猫（英短、大橘）两颊更鼓
+        let headScale = CGFloat(pet?.shape.headWidth ?? 1)
+        // 楔形头（德文）：头顶平而宽，颧骨在眼睛高度最宽，往下急收成小尖下巴
+        let wedge = pet?.shape.headShape == .wedge
+        // 楔形头另画一块（见下方 wedgeHead），这里身体轮廓的「头」只是藏在它后面的细脖子
+        let cheekHalfW: CGFloat = wedge ? 24 : (isSiamese ? 42.5 : 42.5) * headScale
+        let crownCtrlW: CGFloat = wedge ? 14 : (isSiamese ? 25.0 : 26.0) * headScale
+        let crownBaseY: CGFloat = isSiamese ? -29.5 : (wedge ? -10.0 : -30.0)
+        let cheekY: CGFloat = isSiamese ? 6.5 : (wedge ? 14.0 : 5.0)
+        // 可爱化：脖子收一点，头从身体上鼓出来，不再是一整块墓碑形
+        let neckPinchX: CGFloat = isSiamese ? 6.5 : (wedge ? 2.0 : (isCute(coat) ? 8.5 : 2.5))
         let neckCtrlY: CGFloat = isSiamese ? 27.5 : 24.0
         let hipHalfW: CGFloat = isSiamese ? 44.5 : 49.0
         let waistCtrlW: CGFloat = isSiamese ? 41.0 : 51.5
@@ -650,7 +695,7 @@ enum CatRenderer {
         let lHip   = B(-hipHalfW, -14)
         let lCheek = H(leftCheekX, cheekY)
 
-        let cheekCtrlTopY: CGFloat = isSiamese ? -13.0 : -14.0
+        let cheekCtrlTopY: CGFloat = isSiamese ? -13.0 : (wedge ? 0.0 : -14.0)
         let path = CGMutablePath()
         path.move(to: crown)
         path.addCurve(to: rCheek, control1: H(crownCtrlW + cheekShift * 0.3, crownBaseY + crownDrop), control2: H(rightCheekX + 1.5, cheekCtrlTopY))
@@ -661,6 +706,23 @@ enum CatRenderer {
         path.addCurve(to: lCheek, control1: B(-waistCtrlW, waistCtrlY + breath * 0.5), control2: H(leftCheekX + neckPinchX, neckCtrlY))
         path.addCurve(to: crown,  control1: H(leftCheekX - 1.5, cheekCtrlTopY), control2: H(-crownCtrlW + cheekShift * 0.3, crownBaseY + crownDrop))
         path.closeSubpath()
+
+        // 楔形头（德文）：头顶平、两侧颧骨在眼睛高度最宽，往下收成小尖下巴；和身体合成一块填色
+        let bodyOnly = path.copy() ?? path
+        var wedgeHead: CGPath?
+        if wedge {
+            let sx = cheekShift * 0.4
+            let head = CGMutablePath()
+            head.move(to: H(cheekShift * 0.2, -31 + crownDrop))
+            head.addCurve(to: H(44 + sx, -4), control1: H(27, -32 + crownDrop), control2: H(43 + sx, -22))
+            head.addCurve(to: H(8 + sx, 31), control1: H(45 + sx, 10), control2: H(22 + sx, 26))
+            head.addQuadCurve(to: H(-8 + sx, 31), control: H(sx, 35))
+            head.addCurve(to: H(-44 + sx, -4), control1: H(-22 + sx, 26), control2: H(-45 + sx, 10))
+            head.addCurve(to: H(cheekShift * 0.2, -31 + crownDrop), control1: H(-43 + sx, -22), control2: H(-27, -32 + crownDrop))
+            head.closeSubpath()
+            path.addPath(head)
+            wedgeHead = head
+        }
 
         ctx.saveGState()
         if coat != .siamese {
@@ -743,6 +805,58 @@ enum CatRenderer {
         }
         ctx.restoreGState()
 
+        // 可爱化：下巴下面一道柔和的阴影把头和身体分开，再描一圈同色系轮廓
+        if isCute(coat) {
+            ctx.saveGState()
+            ctx.addPath(path)
+            ctx.clip()
+            ctx.setStrokeColor(cuteOutline(coat, alpha: 0.42).cgColor)
+            ctx.setLineWidth(2.2)
+            ctx.setLineCap(.round)
+            // 楔形头自带下巴轮廓线，不用再画分界阴影
+            if !wedge {
+                ctx.move(to: H(-27 * headScale, 27))
+                ctx.addQuadCurve(to: H(27 * headScale, 27), control: H(0, 38))
+                ctx.strokePath()
+            }
+            if pet?.shape.wavyCoat == true {
+                // 卷毛：胸口和两侧一串串小波浪，颜色只比毛色深一点
+                ctx.setStrokeColor(cuteOutline(coat, alpha: 0.26).cgColor)
+                ctx.setLineWidth(1.2)
+                let waves: [(CGFloat, CGFloat)] = [(-20, -66), (6, -60), (-30, -44), (18, -42), (-8, -36),
+                                                   (-34, -20), (28, -20), (-14, -14), (12, -10)]
+                for (x, y) in waves {
+                    ctx.move(to: B(x - 6, y))
+                    ctx.addQuadCurve(to: B(x, y), control: B(x - 3, y - 3.2))
+                    ctx.addQuadCurve(to: B(x + 6, y), control: B(x + 3, y + 3.2))
+                }
+                ctx.strokePath()
+            }
+            ctx.restoreGState()
+            if pet?.shape.fluffy == true {
+                drawCheekFluff(in: ctx, H: H, cheekHalfW: cheekHalfW, cheekY: cheekY, coat: coat)
+            }
+            ctx.saveGState()
+            ctx.setStrokeColor(cuteOutline(coat).cgColor)
+            ctx.setLineWidth(1.6)
+            ctx.setLineJoin(.round)
+            if let head = wedgeHead {
+                // 身体只描头外面的部分（脸上不能有身体的线），头整圈描（带出下巴）
+                ctx.saveGState()
+                ctx.addRect(CGRect(x: -1000, y: -1000, width: 3000, height: 3000))
+                ctx.addPath(head)
+                ctx.clip(using: .evenOdd)
+                ctx.addPath(bodyOnly)
+                ctx.strokePath()
+                ctx.restoreGState()
+                ctx.addPath(head)
+            } else {
+                ctx.addPath(path)
+            }
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
+
         // Ultra-soft plush rim on Siamese cream body (never a harsh dark outline)
         if coat == .siamese {
             ctx.saveGState()
@@ -787,12 +901,38 @@ enum CatRenderer {
         ctx.restoreGState()
     }
 
+    /// 长毛猫（金渐层）两颊的蓬毛：脸颊外侧几撮尖尖的毛，盖住描边，只描外缘
+    private static func drawCheekFluff(in ctx: CGContext, H: (CGFloat, CGFloat) -> CGPoint,
+                                       cheekHalfW: CGFloat, cheekY: CGFloat, coat: CatCoatTheme) {
+        for sign: CGFloat in [-1, 1] {
+            let edge: [CGPoint] = [
+                H(sign * (cheekHalfW - 3), cheekY - 9), H(sign * (cheekHalfW + 6), cheekY - 3),
+                H(sign * (cheekHalfW + 1), cheekY + 1), H(sign * (cheekHalfW + 8), cheekY + 6),
+                H(sign * (cheekHalfW + 1), cheekY + 9), H(sign * (cheekHalfW + 5), cheekY + 15),
+                H(sign * (cheekHalfW - 5), cheekY + 16)
+            ]
+            let fill = CGMutablePath()
+            fill.addLines(between: edge + [H(sign * (cheekHalfW - 9), cheekY + 4)])
+            fill.closeSubpath()
+            ctx.saveGState()
+            ctx.setFillColor(bodyColor(coat).cgColor)
+            ctx.addPath(fill)
+            ctx.fillPath()
+            ctx.setStrokeColor(cuteOutline(coat).cgColor)
+            ctx.setLineWidth(1.4)
+            ctx.setLineJoin(.round)
+            ctx.addLines(between: edge)
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
+    }
+
     private static func coatMarkPoint(_ p: CGPoint, headSurface: Bool, skull: Bool, coat: CatCoatTheme, seatX: CGFloat, seatY: CGFloat,
                                       head: CGPoint, physics: CatPhysics) -> CGPoint {
         if headSurface {
             let depth: CGFloat = coat == .orangeWhite
                 ? 29.6 * sqrt(max(0, 1 - pow(p.x / 46, 2) - pow(p.y / 40, 2))) : 27.5
-            let projected = skull ? p : projectHead3D(x: p.x, y: p.y, z: depth,
+            let projected = skull ? CGPoint(x: p.x * headSize, y: p.y * headSize) : projectHead3D(x: p.x, y: p.y, z: depth,
                                           yawRad: physics.headYaw.value * 0.50,
                                           pitchRad: physics.headPitch.value * 0.36).pt
             let c = cos(physics.headTilt.value), s = sin(physics.headTilt.value)
@@ -809,6 +949,11 @@ enum CatRenderer {
         var marks = CoatPatterns.marks(for: coat)
         if pet?.tricolor == true, coat == .orangeWhite {
             marks = tricolorMarks(from: marks)
+        }
+        if isCute(coat), let i = marks.firstIndex(where: { $0.head && $0.rgb == 0xF2EEE4 }) {
+            let m = marks[i]
+            marks[i] = CoatMark(head: true, skull: false, width: 0, rgb: m.rgb, alpha: m.alpha,
+                                points: pet?.whiteFace == true ? whiteFaceMask : cuteMuzzle)
         }
         func markPath(_ mark: CoatMark) -> CGMutablePath {
             let path = CGMutablePath()
@@ -895,8 +1040,13 @@ enum CatRenderer {
         let y2 = y * cp + z1 * sp
         let z2 = -y * sp + z1 * cp
 
-        return (CGPoint(x: x1, y: y2), z2)
+        // 头部大小：头上画的所有东西（五官、耳朵、花纹、装扮）都按它等比缩放；z 不缩，遮挡判断不变
+        let k = headSize
+        return (CGPoint(x: x1 * k, y: y2 * k), z2)
     }
+
+    /// 头部大小系数（德文这种小脑袋 < 1）；经典猫恒为 1
+    static var headSize: CGFloat { CGFloat(pet?.shape.headSize ?? 1) }
 
     // MARK: - 2.5D Ears Layer (drawn behind unified silhouette so Siamese seal-point ears emerge organically!)
 
@@ -971,8 +1121,13 @@ enum CatRenderer {
             ctx.restoreGState()
         }
 
-        // 1c. 张嘴：唱歌 / 打哈欠 / 舔爪子
+        // 1b'. 可爱化：腮红 + 粉色小鼻子 + ω 嘴
         let open = max(0, min(1, physics.mouthOpen.value))
+        if isCute(coat) {
+            drawCuteFace(in: ctx, yawRad: yawRad, pitchRad: pitchRad, coat: coat, mouthOpen: open)
+        }
+
+        // 1c. 张嘴：唱歌 / 打哈欠 / 舔爪子
         if open > 0.04 {
             let mouth = projectHead3D(x: 0, y: 13.5, z: 28.2, yawRad: yawRad, pitchRad: pitchRad).pt
             let w = 4.5 + open * 5.5
@@ -1024,19 +1179,24 @@ enum CatRenderer {
             * (earStyle == .folded ? 0.52 : (earStyle == .round ? 0.5 : 1))
         let styleFold: CGFloat = earStyle == .folded ? 0.62 : 0
         // Siamese (小豆泥 style): cute, compact, softly-rounded triangular cat ears
-        let foldAngle = sign * ((isSiamese ? 0.14 : 0.06) + fold * 0.34 + styleFold) + twitch
+        let flare = CGFloat(pet?.shape.earFlare ?? 0)
+        let foldAngle = sign * ((isSiamese ? 0.14 : 0.06) + fold * 0.34 + styleFold + flare) + twitch
         let earLen: CGFloat = (isSiamese ? 29.5 : 32.0) * earScale
 
         let tipDx = sin(foldAngle) * earLen
         let tipDy = -cos(foldAngle) * earLen
 
         // Bases anchored comfortably inside the upper skull contour so they merge seamlessly at every yaw/pitch!
-        let innerBase3D = projectHead3D(x: sign * (isSiamese ? 10.0 : 9.0), y: isSiamese ? -16.5 : -16.0, z: 0.0, yawRad: yawRad, pitchRad: pitchRad).pt
-        let outerBase3D = projectHead3D(x: sign * (isSiamese ? 35.5 : 35.0), y: isSiamese ? -4.5 : -5.0, z: -2.0, yawRad: yawRad, pitchRad: pitchRad).pt
+        // 大耳朵（德文）耳根更宽：内侧往头顶中间靠、外侧往脸颊压低
+        let wideBase = earScale > 1.2
+        let innerBase3D = projectHead3D(x: sign * (isSiamese ? 10.0 : (wideBase ? 5.5 : 9.0)), y: isSiamese ? -16.5 : (wideBase ? -19.0 : -16.0), z: 0.0, yawRad: yawRad, pitchRad: pitchRad).pt
+        let outerBase3D = projectHead3D(x: sign * (isSiamese ? 35.5 : (wideBase ? 37.5 : 35.0)), y: isSiamese ? -4.5 : (wideBase ? 0.5 : -5.0), z: -2.0, yawRad: yawRad, pitchRad: pitchRad).pt
         let tip3D       = projectHead3D(x: sign * (isSiamese ? 25.0 : 24.5) + tipDx, y: (isSiamese ? -18.5 : -20.0) + tipDy, z: -3.0, yawRad: yawRad, pitchRad: pitchRad).pt
 
         // Soft plush rounded-tip feline ear
-        let tipSpread: CGFloat = (isSiamese ? 4.2 : 3.8) * (earStyle == .round ? 2.4 : (earStyle == .folded ? 1.5 : 1))
+        // 大耳朵（德文）耳尖也跟着圆润，不然像两把尖刀
+        let bigEarRound: CGFloat = earScale > 1.2 ? 2.3 : 1
+        let tipSpread: CGFloat = (isSiamese ? 4.2 : 3.8) * (earStyle == .round ? 2.4 : (earStyle == .folded ? 1.5 : 1)) * bigEarRound
         let tipLeft  = CGPoint(x: tip3D.x - sign * tipSpread, y: tip3D.y + 2.8)
         let tipRight = CGPoint(x: tip3D.x + sign * tipSpread, y: tip3D.y + 3.2)
 
@@ -1059,19 +1219,23 @@ enum CatRenderer {
         ctx.fillPath()
 
         // Cute warm dusty-cocoa inner ear hollow on Siamese so big ears look soft & unmistakably cat-like
-        if isSiamese {
-            let inI = CGPoint(x: innerBase3D.x + (tip3D.x - innerBase3D.x) * 0.24 + sign * 3.0,
-                              y: innerBase3D.y + (tip3D.y - innerBase3D.y) * 0.16)
-            let outI = CGPoint(x: outerBase3D.x + (tip3D.x - outerBase3D.x) * 0.20 - sign * 3.8,
-                               y: outerBase3D.y + (tip3D.y - outerBase3D.y) * 0.18)
-            let tipI = CGPoint(x: (innerBase3D.x + outerBase3D.x) * 0.16 + tip3D.x * 0.68,
-                               y: (innerBase3D.y + outerBase3D.y) * 0.14 + tip3D.y * 0.72 + 2.5)
+        // （可爱化的猫画粉色耳内）
+        if isSiamese || (isCute(coat) && earStyle != .folded) {
+            // 大耳朵（德文）的粉色耳内几乎占满整只耳朵
+            let big = earScale > 1.2
+            let inI = CGPoint(x: innerBase3D.x + (tip3D.x - innerBase3D.x) * (big ? 0.12 : 0.24) + sign * (big ? 2.0 : 3.0),
+                              y: innerBase3D.y + (tip3D.y - innerBase3D.y) * (big ? 0.08 : 0.16))
+            let outI = CGPoint(x: outerBase3D.x + (tip3D.x - outerBase3D.x) * (big ? 0.12 : 0.20) - sign * (big ? 2.4 : 3.8),
+                               y: outerBase3D.y + (tip3D.y - outerBase3D.y) * (big ? 0.10 : 0.18))
+            let tipW: CGFloat = big ? 0.8 : 0.68
+            let tipI = CGPoint(x: (innerBase3D.x + outerBase3D.x) * (1 - tipW) / 2 + tip3D.x * tipW,
+                               y: (innerBase3D.y + outerBase3D.y) * (big ? 0.09 : 0.14) + tip3D.y * (big ? 0.82 : 0.72) + 2.5)
             let inner = CGMutablePath()
             inner.move(to: inI)
             inner.addQuadCurve(to: tipI, control: CGPoint(x: (inI.x + tipI.x) * 0.5 - sign * 0.8, y: (inI.y + tipI.y) * 0.5))
             inner.addQuadCurve(to: outI, control: CGPoint(x: (outI.x + tipI.x) * 0.5 + sign * 1.2, y: (outI.y + tipI.y) * 0.5))
             inner.closeSubpath()
-            ctx.setFillColor(siameseInnerEar.cgColor)
+            ctx.setFillColor((isSiamese ? siameseInnerEar : HexColor.mix(rgb(0xF4ABAE), earTailColor(coat), 0.22)).cgColor)
             ctx.addPath(inner)
             ctx.fillPath()
         }
@@ -1122,7 +1286,8 @@ enum CatRenderer {
         coat: CatCoatTheme
     ) {
         let sign: CGFloat = isLeft ? -1.0 : 1.0
-        let eyeColor = pet?.eyeColor ?? eyeTheme.primaryColor
+        let eyeColor = (isLeft ? pet?.secondEyeColor : nil) ?? pet?.eyeColor ?? eyeTheme.primaryColor
+        let cute = isCute(coat)
         // 自定义瞳色不走暹罗蓝的专用渐变
         let eyeTheme = (pet != nil && eyeTheme == .siameseBlue) ? EyeColorTheme.iceCyan : eyeTheme
 
@@ -1174,8 +1339,10 @@ enum CatRenderer {
 
         // Eyes grow rounder & slightly larger in full hunting focus!
         let isSiameseEye = (coat == .siamese && eyeTheme == .siameseBlue)
-        let rx: CGFloat = (isSiameseEye ? 11.4 + hunt * 1.3 : 12.0 + hunt * 1.1)
-        let ry: CGFloat = (isSiameseEye ? 9.8 + hunt * 2.0 : 10.8 + hunt * 1.8)
+        // 可爱化：眼睛更圆一点
+        let eyeScale = CGFloat(pet?.shape.eyeScale ?? 1)
+        let rx: CGFloat = ((isSiameseEye ? 11.4 + hunt * 1.3 : 12.0 + hunt * 1.1) + (cute ? 0.6 : 0)) * eyeScale
+        let ry: CGFloat = ((isSiameseEye ? 9.8 + hunt * 2.0 : 10.8 + hunt * 1.8) + (cute ? 1.4 : 0)) * eyeScale
         let eyeRect = CGRect(x: -rx, y: -ry, width: rx * 2, height: ry * 2)
 
         // Clip to the visible opening before painting any iris/pupil pixels.
@@ -1220,8 +1387,9 @@ enum CatRenderer {
         let px = gaze.x * (4.2 - hunt * 1.2)
         let py = gaze.y * (3.6 - hunt * 1.0)
         let pScale = physics.pupilScale.value
-        let normalW: CGFloat = 5.0 * pScale
-        let normalH: CGFloat = 13.5 * min(1.12, pScale)
+        // 可爱化：平时就是圆圆的大瞳孔（不是细竖瞳）
+        let normalW: CGFloat = (cute ? 10.5 : 5.0) * pScale * eyeScale
+        let normalH: CGFloat = (cute ? 13.0 : 13.5) * min(1.12, pScale) * eyeScale
         let huntDiameter: CGFloat = 18.8 // huge round boba pupil leaving an electric chartreuse ring!
         let pupilW = normalW + (huntDiameter - normalW) * hunt
         let pupilH = normalH + (huntDiameter - normalH) * hunt
@@ -1252,6 +1420,12 @@ enum CatRenderer {
                 width: glintR * 2,
                 height: glintR * 2
             ))
+        } else if cute {
+            // 一大一小两颗高光，眼睛立刻有神
+            ctx.setFillColor(NSColor(calibratedWhite: 1.0, alpha: 0.95).cgColor)
+            ctx.fillEllipse(in: CGRect(x: px - 5.6 * eyeScale, y: py - 6.4 * eyeScale, width: 5.2 * eyeScale, height: 5.2 * eyeScale))
+            ctx.setFillColor(NSColor(calibratedWhite: 1.0, alpha: 0.8).cgColor)
+            ctx.fillEllipse(in: CGRect(x: px + 1.6 * eyeScale, y: py + 2.2 * eyeScale, width: 2.4 * eyeScale, height: 2.4 * eyeScale))
         } else if eyeTheme == .siameseBlue {
             ctx.setFillColor(NSColor(calibratedWhite: 1.0, alpha: 0.86).cgColor)
             let glintR: CGFloat = 1.65
@@ -1264,6 +1438,50 @@ enum CatRenderer {
         }
 
         ctx.restoreGState()
+        ctx.restoreGState()
+    }
+
+    private static func drawCuteFace(in ctx: CGContext, yawRad: CGFloat, pitchRad: CGFloat,
+                                     coat: CatCoatTheme, mouthOpen: CGFloat) {
+        ctx.saveGState()
+        // 腮红：转头时远侧的那颗被挡住
+        for sign: CGFloat in [-1, 1] {
+            let blush = projectHead3D(x: sign * 22, y: 9.5, z: 24, yawRad: yawRad, pitchRad: pitchRad)
+            guard blush.z > 8 else { continue }
+            let w: CGFloat = 10 * max(0.4, cos(yawRad + sign * 0.6))
+            ctx.setFillColor(rgb(0xF58C9E, 0.32).cgColor)
+            ctx.fillEllipse(in: CGRect(x: blush.pt.x - w / 2, y: blush.pt.y - 2.8, width: w, height: 5.6))
+        }
+        // 粉色小鼻子（圆角倒三角 + 一点高光）
+        let nose = projectHead3D(x: 0, y: 7.6, z: 29.2, yawRad: yawRad, pitchRad: pitchRad).pt
+        let n = CGMutablePath()
+        n.move(to: CGPoint(x: nose.x - 3.1, y: nose.y - 1.6))
+        n.addQuadCurve(to: CGPoint(x: nose.x + 3.1, y: nose.y - 1.6), control: CGPoint(x: nose.x, y: nose.y - 2.6))
+        n.addQuadCurve(to: CGPoint(x: nose.x, y: nose.y + 2.0), control: CGPoint(x: nose.x + 2.6, y: nose.y + 0.6))
+        n.addQuadCurve(to: CGPoint(x: nose.x - 3.1, y: nose.y - 1.6), control: CGPoint(x: nose.x - 2.6, y: nose.y + 0.6))
+        n.closeSubpath()
+        ctx.setFillColor(rgb(0xE9808F).cgColor)
+        ctx.addPath(n)
+        ctx.fillPath()
+        ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.55).cgColor)
+        ctx.fillEllipse(in: CGRect(x: nose.x - 1.6, y: nose.y - 1.7, width: 1.6, height: 1.0))
+        // ω 嘴（张嘴时由下面的张嘴画法接管）
+        if mouthOpen < 0.04 {
+            let l = projectHead3D(x: -5, y: 12.6, z: 28.2, yawRad: yawRad, pitchRad: pitchRad).pt
+            let m = projectHead3D(x: 0, y: 10.4, z: 28.9, yawRad: yawRad, pitchRad: pitchRad).pt
+            let r = projectHead3D(x: 5, y: 12.6, z: 28.2, yawRad: yawRad, pitchRad: pitchRad).pt
+            let face = muzzleColor(coat)
+            let lineColor = HexColor.luminance(face) < 0.3 ? HexColor.mix(face, .white, 0.5, alpha: 0.8) : HexColor.mix(face, .black, 0.55, alpha: 0.75)
+            ctx.setStrokeColor(lineColor.cgColor)
+            ctx.setLineWidth(1.2)
+            ctx.setLineCap(.round)
+            ctx.move(to: CGPoint(x: nose.x, y: nose.y + 1.8))
+            ctx.addLine(to: m)
+            ctx.move(to: l)
+            ctx.addQuadCurve(to: m, control: CGPoint(x: (l.x + m.x) / 2, y: l.y + 2.2))
+            ctx.addQuadCurve(to: r, control: CGPoint(x: (m.x + r.x) / 2, y: r.y + 2.2))
+            ctx.strokePath()
+        }
         ctx.restoreGState()
     }
 
@@ -1296,6 +1514,16 @@ enum CatRenderer {
             ]
             for (y0, xEnd, yEnd) in rows {
                 let p0 = projectHead3D(x: sign * 24.0, y: y0, z: 23.0, yawRad: yawRad, pitchRad: pitchRad).pt
+                if pet?.shape.curlyWhiskers == true {
+                    // 卷胡须：只留上下两根，短一点，轻轻弯成一个 S
+                    guard y0 != 14.2 else { continue }
+                    let p2 = projectHead3D(x: sign * (xEnd - 3), y: yEnd + 1, z: 15.0, yawRad: yawRad, pitchRad: pitchRad).pt
+                    let mid = CGPoint(x: (p0.x + p2.x) * 0.5, y: (p0.y + p2.y) * 0.5)
+                    ctx.move(to: p0)
+                    ctx.addQuadCurve(to: mid, control: CGPoint(x: (p0.x + mid.x) * 0.5, y: (p0.y + mid.y) * 0.5 - 1.7))
+                    ctx.addQuadCurve(to: p2, control: CGPoint(x: (mid.x + p2.x) * 0.5, y: (mid.y + p2.y) * 0.5 + 1.7))
+                    continue
+                }
                 let p2 = projectHead3D(x: sign * xEnd, y: yEnd, z: 14.0, yawRad: yawRad, pitchRad: pitchRad).pt
                 let ctrl = CGPoint(x: (p0.x + p2.x) * 0.5, y: (p0.y + p2.y) * 0.5 - 0.8)
                 ctx.move(to: p0)
@@ -1328,11 +1556,14 @@ enum CatRenderer {
         let idleTopY: CGFloat = isSiamese ? seatY - 31 : seatY - 30
         let idleTopX: CGFloat = isSiamese ? 16.5 : 18.0
         let idleBotX: CGFloat = isSiamese ? 15.0 : 16.0
-        let shX: CGFloat = isSiamese ? 18.5 : 20.0
+        // 细身板（德文）的肩膀跟着身宽往里收
+        let shX: CGFloat = (isSiamese ? 18.5 : 20.0) * bodyScale
         func shoulder(_ x: CGFloat) -> CGPoint {
             let sy = physics.bodySquash.value, sx = 1 + (1 - sy) * 0.55
             let c = cos(physics.bodyTilt.value), s = sin(physics.bodyTilt.value)
-            let faceBottom = 126 + siameseLift + physics.headOffsetY.value + physics.headPitch.value * 4.8 + breath * 1.1 + 52
+            // 小脑袋的猫头抬高了、脸也小了，肩膀跟着脸的下沿走
+            let faceBottom = 126 + siameseLift + physics.headOffsetY.value + physics.headPitch.value * 4.8 + breath * 1.1
+                - (1 - headSize) * 40 + 52 * headSize
             return CGPoint(x: seatX + x*sx*c + 43*sy*s,
                            y: max(seatY + x*sx*s - 43*sy*c, faceBottom))
         }
@@ -1422,6 +1653,25 @@ enum CatRenderer {
         ctx.setLineWidth(1.45)
         ctx.setLineCap(.round)
 
+        // 可爱化：只画腿下半截的分界线 + 两道趾缝，不再是四根贯穿全身的长竖线
+        if isCute(coat) {
+            let midY = top.y + (bottom.y - top.y) * 0.5
+            ctx.setStrokeColor(cuteOutline(coat, alpha: 0.55).cgColor)
+            ctx.move(to: CGPoint(x: bottom.x + sign * 8.2, y: midY))
+            ctx.addQuadCurve(to: CGPoint(x: bottom.x + sign * 7.5, y: bottom.y - 1),
+                             control: CGPoint(x: bottom.x + sign * 8.8, y: (midY + bottom.y) * 0.5))
+            ctx.move(to: CGPoint(x: bottom.x - sign * 6.6, y: midY + 4))
+            ctx.addQuadCurve(to: CGPoint(x: bottom.x - sign * 6.0, y: bottom.y - 1),
+                             control: CGPoint(x: bottom.x - sign * 7.0, y: (midY + bottom.y) * 0.5))
+            for dx: CGFloat in [-2.4, 2.4] {
+                ctx.move(to: CGPoint(x: bottom.x + dx, y: bottom.y - 4.5))
+                ctx.addLine(to: CGPoint(x: bottom.x + dx, y: bottom.y - 0.5))
+            }
+            ctx.strokePath()
+            ctx.restoreGState()
+            return
+        }
+
         // Outer separation crease
         ctx.move(to: CGPoint(x: top.x + sign * 8.5, y: top.y))
         ctx.addQuadCurve(
@@ -1450,6 +1700,9 @@ enum CatRenderer {
         outlineAlpha: CGFloat,
         coat: CatCoatTheme
     ) {
+        // 自定义腿粗细（细身板的猫腿也要细）
+        let limbScale = CGFloat(pet?.shape.limbWidth ?? 1)
+        let startWidth = startWidth * limbScale, endWidth = endWidth * limbScale
         let steps = 14
         var leftEdge: [CGPoint] = []
         var rightEdge: [CGPoint] = []
@@ -1481,6 +1734,31 @@ enum CatRenderer {
         let pawRect = CGRect(x: end.x - pawR, y: end.y - pawR * 0.85, width: pawR * 2, height: pawR * 1.7)
 
         ctx.saveGState()
+        if pet?.whiteLegs == true {
+            // 白腿：整条腿和爪子都是浅色，描一圈同色系轮廓（不画黑→白渐变，避免脏脏的灰）
+            let leg = pet?.secondaryColor ?? pawColor(coat)
+            ctx.setFillColor(leg.cgColor)
+            ctx.addPath(limbPath)
+            ctx.fillPath()
+            ctx.fillEllipse(in: pawRect)
+            ctx.setStrokeColor(cuteOutline(coat, alpha: 0.6).cgColor)
+            ctx.setLineWidth(1.3)
+            ctx.setLineCap(.round)
+            ctx.setLineJoin(.round)
+            ctx.addLines(between: Array(leftEdge.dropFirst(2)))
+            ctx.addLines(between: Array(rightEdge.dropFirst(2)))
+            ctx.strokePath()
+            ctx.addEllipse(in: pawRect)
+            ctx.strokePath()
+            // 两道趾缝
+            for dx: CGFloat in [-pawR * 0.32, pawR * 0.32] {
+                ctx.move(to: CGPoint(x: end.x + dx, y: end.y + pawR * 0.25))
+                ctx.addLine(to: CGPoint(x: end.x + dx, y: end.y + pawR * 0.8))
+            }
+            ctx.strokePath()
+            ctx.restoreGState()
+            return
+        }
         if coat != .siamese {
             ctx.setFillColor(limbColor(coat).cgColor)
             ctx.addPath(limbPath)

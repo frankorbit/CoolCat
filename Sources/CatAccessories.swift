@@ -19,6 +19,8 @@ extension CatRenderer {
         ctx.translateBy(x: center.x, y: center.y)
         // 脖子介于头和身体之间：只跟一半的歪头
         ctx.rotate(by: physics.headTilt.value * 0.5)
+        // 小脑袋的猫（德文）脖子也细，项圈、围巾跟着头一起缩
+        ctx.scaleBy(x: headSize, y: headSize)
 
         var top: [CGPoint] = [], bottom: [CGPoint] = []
         let samples = 24
