@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lifeCompanion = LifeCompanion(lastCoffeeDay: UserDefaults.standard.string(forKey: "CoolCat.LastCoffeeDay"))
     private var lifeTimer: Timer?
     private var isPetVisible = true
+    private var settingsController: SettingsWindowController?
     private var availableUpdateVersion: String?
     private var availableUpdateURL: URL?
     private var availableAssetURL: URL?
@@ -27,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         overlayWindow = OverlayWindow()
         overlayWindow.orderFrontRegardless()
+        // `open -a CoolCat --args --open-settings`：启动后直接打开设置面板
+        if CommandLine.arguments.contains("--open-settings") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.openSettings() }
+        }
 
         let catView = overlayWindow.catView
         catView.onRequestPermission = { [weak self] in
@@ -322,206 +327,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        // Visibility & Interactive modes
-        let visItem = NSMenuItem(title: isPetVisible ? "隐藏小黑猫" : "显示小黑猫", action: #selector(toggleVisibility), keyEquivalent: "")
+        // 常用操作留在菜单里，其余开关都在「设置…」面板
+        let visItem = NSMenuItem(title: isPetVisible ? "隐藏小猫" : "显示小猫", action: #selector(toggleVisibility), keyEquivalent: "")
         visItem.target = self
         menu.addItem(visItem)
 
-        let clickThroughItem = NSMenuItem(title: "完全鼠标穿透 (按住 ⌥Option 可临时右键/拖动)", action: #selector(toggleClickThrough), keyEquivalent: "")
-        clickThroughItem.target = self
-        clickThroughItem.state = settings.fullClickThrough ? .on : .off
-        menu.addItem(clickThroughItem)
-
-        let fullscreenItem = NSMenuItem(title: "全屏游戏/应用置顶显示", action: #selector(toggleFullScreenOverlay), keyEquivalent: "")
-        fullscreenItem.target = self
-        fullscreenItem.state = settings.fullScreenOverlay ? .on : .off
-        menu.addItem(fullscreenItem)
-
-        let autoStartItem = NSMenuItem(title: "开机自动启动", action: #selector(toggleAutoStart), keyEquivalent: "")
-        autoStartItem.target = self
-        autoStartItem.state = isAutoStartEnabled() ? .on : .off
-        menu.addItem(autoStartItem)
-
-        menu.addItem(.separator())
-
-        // Features
-        let badgesItem = NSMenuItem(title: "显示按键气泡 ([S] [W] [⇧])", action: #selector(toggleKeyBadges), keyEquivalent: "")
-        badgesItem.target = self
-        badgesItem.state = settings.showKeyBadges ? .on : .off
-        menu.addItem(badgesItem)
-
-        let mouseBadgesItem = NSMenuItem(title: "显示鼠标点击气泡 ([左键] [右键])", action: #selector(toggleMouseBadges), keyEquivalent: "")
-        mouseBadgesItem.target = self
-        mouseBadgesItem.state = settings.showMouseBadges ? .on : .off
-        menu.addItem(mouseBadgesItem)
-
-        let legendsItem = NSMenuItem(title: "显示键盘字符", action: #selector(toggleKeyLegends), keyEquivalent: "")
-        legendsItem.target = self
-        legendsItem.state = settings.showKeyLegends ? .on : .off
-        menu.addItem(legendsItem)
-
-        let footItem = NSMenuItem(title: "3键同时按「用脚按」彩蛋 🐾", action: #selector(toggleFootEgg), keyEquivalent: "")
-        footItem.target = self
-        footItem.state = settings.footEasterEgg ? .on : .off
-        menu.addItem(footItem)
-
-        let petItem = NSMenuItem(title: "摸头/摸背闭眼互动", action: #selector(togglePetInteraction), keyEquivalent: "")
-        petItem.target = self
-        petItem.state = settings.petInteraction ? .on : .off
-        menu.addItem(petItem)
-
-        let habitItem = NSMenuItem(title: "键盘习惯小反应（⌫冒汗 / ⌘S盖章 / 截图比耶 / KPM皇冠）", action: #selector(toggleKeyHabits), keyEquivalent: "")
-        habitItem.target = self
-        habitItem.state = settings.keyHabitReactions ? .on : .off
-        menu.addItem(habitItem)
-
-        let fed = overlayWindow.catView.physics.feedLog
+        let fed = physics.feedLog
         let feedItem = NSMenuItem(title: "🐟 喂小鱼干（今天 \(fed.count)/\(FeedLog.dailyLimit)）", action: #selector(feedCat), keyEquivalent: "")
         feedItem.target = self
         menu.addItem(feedItem)
-        let playItem = NSMenuItem(title: "🪶 光标逗猫（在小猫身边慢慢晃光标）", action: #selector(toggleCursorPlay), keyEquivalent: "")
-        playItem.target = self
-        playItem.state = settings.cursorPlay ? .on : .off
-        menu.addItem(playItem)
 
-        menu.addItem(buildBondMenuItem())
-        menu.addItem(buildLifeMenuItem())
-
-        let idleItem = NSMenuItem(title: "空闲时的小动作（打哈欠 / 伸懒腰 / 踩奶 / 慢眨眼……）", action: #selector(toggleIdleAnimations), keyEquivalent: "")
-        idleItem.target = self
-        idleItem.state = settings.idleAnimations ? .on : .off
-        menu.addItem(idleItem)
-
-        let musicMenu = NSMenu()
-        let headphonesItem = NSMenuItem(title: "听歌时戴耳机摇头 🎧", action: #selector(toggleMusicHeadphones), keyEquivalent: "")
-        headphonesItem.target = self
-        headphonesItem.state = settings.musicHeadphones ? .on : .off
-        musicMenu.addItem(headphonesItem)
-        let anyAudioItem = NSMenuItem(title: "看视频/玩游戏有声音时也戴", action: #selector(toggleHeadphonesForAnyAudio), keyEquivalent: "")
-        anyAudioItem.target = self
-        anyAudioItem.state = settings.headphonesForAnyAudio ? .on : .off
-        musicMenu.addItem(anyAudioItem)
-        let bubbleItem = NSMenuItem(title: "切歌时显示歌名气泡", action: #selector(toggleTrackBubble), keyEquivalent: "")
-        bubbleItem.target = self
-        bubbleItem.state = settings.showTrackBubble ? .on : .off
-        musicMenu.addItem(bubbleItem)
-        musicMenu.addItem(.separator())
-        let haloItem = NSMenuItem(title: "猫身后的频谱墙 🎛", action: #selector(toggleMusicVisualizer), keyEquivalent: "")
-        haloItem.target = self
-        haloItem.state = settings.musicVisualizer ? .on : .off
-        musicMenu.addItem(haloItem)
-        let danceItem = NSMenuItem(title: "没在打字时跟着节奏跳舞 💃", action: #selector(toggleMusicDance), keyEquivalent: "")
-        danceItem.target = self
-        danceItem.state = settings.musicDance ? .on : .off
-        musicMenu.addItem(danceItem)
-        let realItem = NSMenuItem(title: "跟随真实音频节拍（需「录制系统音频」授权）", action: #selector(toggleRealAudio), keyEquivalent: "")
-        realItem.target = self
-        realItem.state = settings.realAudioAnalysis ? .on : .off
-        musicMenu.addItem(realItem)
-        let analyzerText: String
-        switch AudioSpectrumAnalyzer.shared.state {
-        case .off: analyzerText = settings.realAudioAnalysis ? "实时音频：等音乐响起时启动" : "实时音频：已关闭，使用模拟节拍"
-        case .starting: analyzerText = "实时音频：启动中…"
-        case .running:
-            let bpm = AudioSpectrumAnalyzer.shared.snapshot().bpm.map { "，约 \(Int($0)) BPM" } ?? ""
-            analyzerText = "实时音频：分析中\(bpm)"
-        case .silentNoPermission: analyzerText = "⚠️ 实时音频：只收到静音。在「隐私与安全性 → 录屏与系统录音」允许 CoolCat 后，重新勾选上一项"
-        case .unsupported: analyzerText = "实时音频：需要 macOS 14.2+，当前使用模拟节拍"
-        case .failed(let reason): analyzerText = "实时音频启动失败：\(reason)"
-        }
-        let analyzerItem = NSMenuItem(title: analyzerText, action: nil, keyEquivalent: "")
-        analyzerItem.isEnabled = false
-        musicMenu.addItem(analyzerItem)
-        let nowItem: NSMenuItem
-        switch MusicMonitor.shared.activity {
-        case .music(let app): nowItem = NSMenuItem(title: "正在听：\(app)", action: nil, keyEquivalent: "")
-        case .otherAudio: nowItem = NSMenuItem(title: "检测到其他 App 在出声", action: nil, keyEquivalent: "")
-        case .silent: nowItem = NSMenuItem(title: "当前没有声音", action: nil, keyEquivalent: "")
-        }
-        nowItem.isEnabled = false
-        musicMenu.addItem(.separator())
-        musicMenu.addItem(nowItem)
-        let musicParent = NSMenuItem(title: "音乐 🎵", action: nil, keyEquivalent: "")
-        musicParent.submenu = musicMenu
-        menu.addItem(musicParent)
-
-        menu.addItem(buildMeetingMenuItem())
-        menu.addItem(buildClaudeMenuItem())
+        let bond = physics.bond
+        let bondText = bond.nextLevel.map { "💞 Lv\(bond.level.level) \(bond.level.title) · \(bond.points)/\($0.threshold)" }
+            ?? "💞 Lv\(bond.level.level) \(bond.level.title) · 满级"
+        let bondItem = NSMenuItem(title: bondText, action: nil, keyEquivalent: "")
+        bondItem.isEnabled = false
+        menu.addItem(bondItem)
 
         menu.addItem(.separator())
 
-        // Scale submenu
-        let scaleMenu = NSMenu()
-        let scales: [(String, CGFloat)] = [
-            ("迷你 (0.65x)", 0.65),
-            ("偏小 (0.85x)", 0.85),
-            ("标准 (1.0x)", 1.0),
-            ("偏大 (1.25x)", 1.25),
-            ("超大 (1.5x)", 1.5)
-        ]
-        for (title, val) in scales {
-            let item = NSMenuItem(title: title, action: #selector(selectScale(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = NSNumber(value: Double(val))
-            item.state = abs(settings.scale - val) < 0.05 ? .on : .off
-            scaleMenu.addItem(item)
-        }
-        let scaleParent = NSMenuItem(title: "尺寸大小", action: nil, keyEquivalent: "")
-        scaleParent.submenu = scaleMenu
-        menu.addItem(scaleParent)
-
-        // Cat coat submenu: original skins plus approved shorthair and orange-white.
-        let coatMenu = NSMenu()
-        for coat in CatCoatTheme.allCases {
-            let item = NSMenuItem(title: coat.rawValue, action: #selector(selectCoatTheme(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = coat.rawValue
-            item.state = settings.coatTheme == coat ? .on : .off
-            coatMenu.addItem(item)
-        }
-        let coatParent = NSMenuItem(title: "猫咪皮肤 🐱", action: nil, keyEquivalent: "")
-        coatParent.submenu = coatMenu
-        menu.addItem(coatParent)
-
-        // Keyboard Theme submenu
-        let kbMenu = NSMenu()
-        for theme in KeyboardTheme.allCases {
-            let item = NSMenuItem(title: theme.rawValue, action: #selector(selectKeyboardTheme(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = theme.rawValue
-            item.state = settings.keyboardTheme == theme ? .on : .off
-            kbMenu.addItem(item)
-        }
-        let kbParent = NSMenuItem(title: "键盘配色", action: nil, keyEquivalent: "")
-        kbParent.submenu = kbMenu
-        menu.addItem(kbParent)
-
-        // Eye Color submenu
-        let eyeMenu = NSMenu()
-        for eye in EyeColorTheme.allCases {
-            let item = NSMenuItem(title: eye.rawValue, action: #selector(selectEyeTheme(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = eye.rawValue
-            item.state = settings.eyeTheme == eye ? .on : .off
-            eyeMenu.addItem(item)
-        }
-        let eyeParent = NSMenuItem(title: "瞳色切换", action: nil, keyEquivalent: "")
-        eyeParent.submenu = eyeMenu
-        menu.addItem(eyeParent)
-
-        menu.addItem(.separator())
-
-        let demoItem = NSMenuItem(title: "🎬 演示打字 + 摸猫动画", action: #selector(runDemoBurst), keyEquivalent: "")
-        demoItem.target = self
-        menu.addItem(demoItem)
+        let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
 
         let resetPosItem = NSMenuItem(title: "重置位置到右下角", action: #selector(resetPosition), keyEquivalent: "")
         resetPosItem.target = self
         menu.addItem(resetPosItem)
 
-        let relaunchItem = NSMenuItem(title: "重启 CoolCat (授权后刷新)", action: #selector(relaunchApp), keyEquivalent: "")
-        relaunchItem.target = self
-        menu.addItem(relaunchItem)
+        menu.addItem(.separator())
 
         if !Self.updateChecksEnabled {
             // CoolCat 暂无自己的发布地址：不检查更新，只显示版本号
@@ -539,8 +372,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             checkItem.target = self
             menu.addItem(checkItem)
         }
-
-        menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "退出 CoolCat", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
@@ -570,6 +401,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         InputEngine.shared.requestPermissionsAndOpenSettings()
     }
 
+    @objc private func openSettings() {
+        if settingsController == nil { settingsController = SettingsWindowController(host: self) }
+        settingsController?.present()
+    }
+
+    @objc private func feedCat() { overlayWindow.catView.physics.feed() }
+
     @objc private func toggleVisibility() {
         isPetVisible.toggle()
         if isPetVisible {
@@ -577,15 +415,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             overlayWindow.orderOut(nil)
         }
-    }
-
-    @objc private func toggleClickThrough() {
-        CatSettings.shared.fullClickThrough.toggle()
-    }
-
-    @objc private func toggleFullScreenOverlay() {
-        CatSettings.shared.fullScreenOverlay.toggle()
-        overlayWindow.applyWindowLevelAndBehavior()
     }
 
     // MARK: - Launch at Login (macOS LaunchAgent — works reliably for signed & ad-hoc builds)
@@ -632,43 +461,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func toggleAutoStart() {
-        _ = setAutoStartEnabled(!isAutoStartEnabled())
-    }
-
-    @objc private func toggleKeyBadges() {
-        CatSettings.shared.showKeyBadges.toggle()
-    }
-
-    @objc private func toggleMouseBadges() {
-        CatSettings.shared.showMouseBadges.toggle()
-    }
-
-    @objc private func toggleKeyLegends() {
-        CatSettings.shared.showKeyLegends.toggle()
-    }
-
-    @objc private func toggleFootEgg() {
-        CatSettings.shared.footEasterEgg.toggle()
-    }
-
-    @objc private func togglePetInteraction() {
-        CatSettings.shared.petInteraction.toggle()
-    }
-
-    @objc private func toggleKeyHabits() {
-        CatSettings.shared.keyHabitReactions.toggle()
-    }
-
-    @objc private func toggleMusicHeadphones() {
-        CatSettings.shared.musicHeadphones.toggle()
-    }
-
-    @objc private func toggleHeadphonesForAnyAudio() {
-        CatSettings.shared.headphonesForAnyAudio.toggle()
-        applyAudioActivity(MusicMonitor.shared.activity)
-    }
-
     // MARK: - 生活陪伴
 
     /// 每 5 秒看一眼时间、电量、键鼠活动，把该触发的事件交给小猫
@@ -700,81 +492,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tick()
     }
 
-    private func buildLifeMenuItem() -> NSMenuItem {
-        let sub = NSMenu()
-        let settings = CatSettings.shared
-        func toggle(_ title: String, _ on: Bool, _ action: Selector) {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            item.target = self
-            item.state = on ? .on : .off
-            sub.addItem(item)
-        }
-        toggle("🌙 深夜戴睡帽、提醒早点睡", settings.lifeNight, #selector(toggleLifeNight))
-        toggle("☀️ 早上第一次开工端咖啡", settings.lifeMorning, #selector(toggleLifeMorning))
-        toggle("🪫 低电量没精神 / ⚡ 插电喝奶", settings.lifeBattery, #selector(toggleLifeBattery))
-        toggle("💧 连续工作 50 分钟提醒喝水", settings.lifeWorkBreak, #selector(toggleLifeWorkBreak))
-        sub.addItem(.separator())
-        let demo = NSMenuItem(title: "🎬 演示：睡帽 → 咖啡 → 没电 → 插电 → 喝水", action: #selector(runLifeDemo), keyEquivalent: "")
-        demo.target = self
-        sub.addItem(demo)
-        let parent = NSMenuItem(title: "生活陪伴 🌙", action: nil, keyEquivalent: "")
-        parent.submenu = sub
-        return parent
-    }
-
-    /// 猫咪档案：亲密度等级、相处统计、装扮
-    private func buildBondMenuItem() -> NSMenuItem {
-        let physics = overlayWindow.catView.physics
-        let bond = physics.bond
-        let sub = NSMenu()
-        sub.autoenablesItems = false
-        func info(_ title: String) {
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            sub.addItem(item)
-        }
-        let level = bond.level
-        if let next = bond.nextLevel {
-            info("💞 Lv\(level.level) \(level.title) · \(bond.points) / \(next.threshold)（下一级：\(next.title)）")
-        } else {
-            info("💞 Lv\(level.level) \(level.title) · \(bond.points) 分（满级啦）")
-        }
-        info("认识第 \(bond.daysKnown()) 天 · 摸摸 \(bond.pets) 次 · 抓到 \(bond.catches) 次 · 小鱼干 \(bond.fish) 条")
-        info("今天 +\(bond.todayBySource.values.reduce(0, +)) · 摸摸、逗猫、喂鱼、听歌、陪 Claude 干活都会加")
-        if level.level >= 2 { info("🫶 光标停在它头上不动，它会主动蹭你") }
-        if level.level >= 3 { info("🎁 每天会送你一次小礼物（用光标碰一下收下）") }
-        sub.addItem(.separator())
-        info("装扮")
-        for accessory in CatAccessory.allCases {
-            let unlocked = bond.isUnlocked(accessory)
-            var title = "    " + accessory.title
-            if !unlocked, let need = BondLog.levels.first(where: { $0.unlock == accessory }) {
-                title += "（🔒 Lv\(need.level) \(need.title)解锁）"
-            }
-            let item = NSMenuItem(title: title, action: #selector(chooseAccessory(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = accessory.rawValue
-            item.isEnabled = unlocked
-            item.state = CatSettings.shared.accessory == accessory ? .on : .off
-            sub.addItem(item)
-        }
-        let parent = NSMenuItem(title: "猫咪档案 💞（Lv\(level.level) \(level.title)）", action: nil, keyEquivalent: "")
-        parent.submenu = sub
-        return parent
-    }
-
-    @objc private func chooseAccessory(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let accessory = CatAccessory(rawValue: raw) else { return }
-        CatSettings.shared.accessory = accessory
-    }
-
-    @objc private func toggleLifeNight() { CatSettings.shared.lifeNight.toggle() }
-    @objc private func feedCat() { overlayWindow.catView.physics.feed() }
-    @objc private func toggleCursorPlay() { CatSettings.shared.cursorPlay.toggle() }
-    @objc private func toggleLifeMorning() { CatSettings.shared.lifeMorning.toggle() }
-    @objc private func toggleLifeBattery() { CatSettings.shared.lifeBattery.toggle() }
-    @objc private func toggleLifeWorkBreak() { CatSettings.shared.lifeWorkBreak.toggle() }
-
     /// 不改真实状态，直接驱动 physics 演示一遍（约 30 秒）
     @objc private func runLifeDemo() {
         let physics = overlayWindow.catView.physics
@@ -793,43 +510,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - 会议模式
-
-    private func buildMeetingMenuItem() -> NSMenuItem {
-        let sub = NSMenu()
-        let state = MeetingMonitor.shared.state
-        var parts: [String] = []
-        if state.micActive { parts.append("🎙 " + (state.micApp ?? "麦克风") + " 在用") }
-        if state.cameraActive { parts.append("📷 摄像头开着") }
-        let statusItem = NSMenuItem(title: parts.isEmpty ? "当前没有在开会" : parts.joined(separator: " · "), action: nil, keyEquivalent: "")
-        statusItem.isEnabled = false
-        sub.addItem(statusItem)
-        sub.addItem(.separator())
-
-        let modeItem = NSMenuItem(title: "开麦戴耳麦、开摄像头先洗脸", action: #selector(toggleMeetingMode), keyEquivalent: "")
-        modeItem.target = self
-        modeItem.state = CatSettings.shared.meetingMode ? .on : .off
-        sub.addItem(modeItem)
-        let noiseItem = NSMenuItem(title: "开麦时打字太猛提醒「嘘」🤫", action: #selector(toggleKeyboardNoiseReminder), keyEquivalent: "")
-        noiseItem.target = self
-        noiseItem.state = CatSettings.shared.keyboardNoiseReminder ? .on : .off
-        sub.addItem(noiseItem)
-        sub.addItem(.separator())
-        let demoItem = NSMenuItem(title: "🎬 演示：开摄像头 → 开麦 → 打字太吵", action: #selector(runMeetingDemo), keyEquivalent: "")
-        demoItem.target = self
-        sub.addItem(demoItem)
-
-        let parent = NSMenuItem(title: "会议模式 🎙", action: nil, keyEquivalent: "")
-        parent.submenu = sub
-        return parent
-    }
-
-    @objc private func toggleMeetingMode() {
-        CatSettings.shared.meetingMode.toggle()
-    }
-
-    @objc private func toggleKeyboardNoiseReminder() {
-        CatSettings.shared.keyboardNoiseReminder.toggle()
-    }
 
     /// 不碰真实设备，直接驱动 physics 演示一遍
     @objc private func runMeetingDemo() {
@@ -863,7 +543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard FileManager.default.fileExists(atPath: claudeDir), ClaudeHookInstaller.state() == .notInstalled else { return }
         UserDefaults.standard.set(true, forKey: key)
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            self?.overlayWindow.catView.physics.showNotice("🤖 发现 Claude Code：右键我 →「Claude Code 联动」→ 连接")
+            self?.overlayWindow.catView.physics.showNotice("🤖 发现 Claude Code：右键我 →「设置…」→ Claude Code → 连接")
         }
     }
 
@@ -900,63 +580,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static func frontmostIsClaudeHost() -> Bool {
         guard let id = NSWorkspace.shared.frontmostApplication?.bundleIdentifier?.lowercased() else { return false }
         return claudeHostTokens.contains { id.contains($0) }
-    }
-
-    private func buildClaudeMenuItem() -> NSMenuItem {
-        let sub = NSMenu()
-        let state = ClaudeHookInstaller.state()
-
-        let statusText: String
-        switch state {
-        case .notInstalled: statusText = "未连接 Claude Code"
-        case .outdated: statusText = "⚠️ hook 指向旧的 CoolCat 位置，需要重新连接"
-        case .installed: statusText = "已连接 Claude Code"
-        }
-        let statusItem = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
-        statusItem.isEnabled = false
-        sub.addItem(statusItem)
-        // 逐会话列出：项目 · 动作 · 耗时
-        let now = CACurrentMediaTime()
-        let lines = ClaudeActivityTracker.shared.lines(now: now)
-        if state == .installed && lines.isEmpty {
-            let idleItem = NSMenuItem(title: "    所有会话都空闲", action: nil, keyEquivalent: "")
-            idleItem.isEnabled = false
-            sub.addItem(idleItem)
-        }
-        for line in lines {
-            let elapsed = line.elapsed.map { " · " + ClaudeActivityTracker.formatElapsed($0) } ?? ""
-            let item = NSMenuItem(title: "    \(line.project) · \(line.detail)\(elapsed)", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            sub.addItem(item)
-        }
-        sub.addItem(.separator())
-
-        let enabledItem = NSMenuItem(title: "显示 Claude 状态气泡与动作", action: #selector(toggleClaudeIntegration), keyEquivalent: "")
-        enabledItem.target = self
-        enabledItem.state = CatSettings.shared.claudeIntegration ? .on : .off
-        sub.addItem(enabledItem)
-
-        let installTitle = state == .notInstalled ? "连接 Claude Code（写入 ~/.claude/settings.json）..." : "重新连接 Claude Code"
-        let installItem = NSMenuItem(title: installTitle, action: #selector(installClaudeHooks), keyEquivalent: "")
-        installItem.target = self
-        sub.addItem(installItem)
-        if state != .notInstalled {
-            let uninstallItem = NSMenuItem(title: "断开 Claude Code（移除 hook）", action: #selector(uninstallClaudeHooks), keyEquivalent: "")
-            uninstallItem.target = self
-            sub.addItem(uninstallItem)
-        }
-        sub.addItem(.separator())
-        let demoItem = NSMenuItem(title: "🎬 演示：思考 → 等批准 → 搞定", action: #selector(runClaudeDemo), keyEquivalent: "")
-        demoItem.target = self
-        sub.addItem(demoItem)
-
-        let parent = NSMenuItem(title: "Claude Code 联动 🤖", action: nil, keyEquivalent: "")
-        parent.submenu = sub
-        return parent
-    }
-
-    @objc private func toggleClaudeIntegration() {
-        CatSettings.shared.claudeIntegration.toggle()
     }
 
     @objc private func installClaudeHooks() {
@@ -1017,63 +640,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.informativeText = message
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
-    }
-
-    @objc private func toggleTrackBubble() {
-        CatSettings.shared.showTrackBubble.toggle()
-    }
-
-    @objc private func toggleMusicVisualizer() {
-        CatSettings.shared.musicVisualizer.toggle()
-        updateAudioAnalyzer()
-    }
-
-    @objc private func toggleMusicDance() {
-        CatSettings.shared.musicDance.toggle()
-        updateAudioAnalyzer()
-    }
-
-    @objc private func toggleRealAudio() {
-        CatSettings.shared.realAudioAnalysis.toggle()
-        // 重新打开 = 用户想再试一次（可能刚在系统设置里授了权）
-        if CatSettings.shared.realAudioAnalysis { AudioSpectrumAnalyzer.shared.resetPermissionMemory() }
-        updateAudioAnalyzer()
-    }
-
-    @objc private func toggleIdleAnimations() {
-        CatSettings.shared.idleAnimations.toggle()
-    }
-
-    @objc private func selectScale(_ sender: NSMenuItem) {
-        guard let num = sender.representedObject as? NSNumber else { return }
-        overlayWindow.applyScale(CGFloat(num.doubleValue))
-    }
-
-    @objc private func selectCoatTheme(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let coat = CatCoatTheme(rawValue: raw) else { return }
-        CatSettings.shared.coatTheme = coat
-        // Auto-pair signature eye color (still freely overridable via 瞳色切换!)
-        switch coat {
-        case .classicBlack:
-            CatSettings.shared.eyeTheme = .neonChartreuse
-        case .siamese:
-            CatSettings.shared.eyeTheme = .siameseBlue
-        case .shorthair, .orangeWhite:
-            CatSettings.shared.eyeTheme = .softAmber
-        }
-    }
-
-    @objc private func selectKeyboardTheme(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let theme = KeyboardTheme(rawValue: raw) else { return }
-        CatSettings.shared.keyboardTheme = theme
-    }
-
-    @objc private func selectEyeTheme(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let theme = EyeColorTheme(rawValue: raw) else { return }
-        CatSettings.shared.eyeTheme = theme
     }
 
     @objc private func resetPosition() {
@@ -1415,5 +981,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         img.isTemplate = true
         return img
+    }
+}
+
+// MARK: - Settings Host
+
+extension AppDelegate: SettingsHost {
+    var physics: CatPhysics { overlayWindow.catView.physics }
+
+    var petVisible: Bool {
+        get { isPetVisible }
+        set { if newValue != isPetVisible { toggleVisibility() } }
+    }
+
+    var autoStartEnabled: Bool {
+        get { isAutoStartEnabled() }
+        set { setAutoStartEnabled(newValue) }
+    }
+
+    func applyScale(_ scale: CGFloat) { overlayWindow.applyScale(scale) }
+
+    func applyWindowBehavior() { overlayWindow.applyWindowLevelAndBehavior() }
+
+    func audioSettingsChanged(resetPermission: Bool) {
+        // 重新打开实时音频 = 用户想再试一次（可能刚在系统设置里授了权）
+        if resetPermission { AudioSpectrumAnalyzer.shared.resetPermissionMemory() }
+        applyAudioActivity(MusicMonitor.shared.activity)
+    }
+
+    func selectCoat(_ coat: CatCoatTheme) {
+        let settings = CatSettings.shared
+        settings.coatTheme = coat
+        // 换毛色时配上招牌瞳色（之后仍可单独改）
+        switch coat {
+        case .classicBlack: settings.eyeTheme = .neonChartreuse
+        case .siamese: settings.eyeTheme = .siameseBlue
+        case .shorthair, .orangeWhite: settings.eyeTheme = .softAmber
+        }
+    }
+
+    func resetPetPosition() { resetPosition() }
+    func relaunch() { relaunchApp() }
+    func openInputMonitoring() { openInputMonitoringSettings() }
+    func installClaude() { installClaudeHooks() }
+    func uninstallClaude() { uninstallClaudeHooks() }
+
+    func runDemo(_ demo: SettingsDemo) {
+        switch demo {
+        case .typing: runDemoBurst()
+        case .life: runLifeDemo()
+        case .meeting: runMeetingDemo()
+        case .claude: runClaudeDemo()
+        case .gift: physics.offerGift()
+        }
     }
 }

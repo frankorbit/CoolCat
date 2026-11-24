@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import SwiftUI
 
 // Claude Code hook 中继：必须最先处理，读完 stdin 立即退出，不启动任何 UI
 if CommandLine.arguments.contains(ClaudeHookRelay.argument) {
@@ -587,6 +588,24 @@ func renderCapPreviewSheet(to path: String) {
 }
 
 // 逗猫 & 喂食预览：4 皮肤 x 5 个瞬间
+if let idx = CommandLine.arguments.firstIndex(of: "--capture-settings-shots"),
+   idx + 1 < CommandLine.arguments.count {
+    captureSettingsShots(toDirectory: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
+if let idx = CommandLine.arguments.firstIndex(of: "--render-readme-art"),
+   idx + 1 < CommandLine.arguments.count {
+    ShowcaseArt.render(toDirectory: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
+if let idx = CommandLine.arguments.firstIndex(of: "--render-settings-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderSettingsPreview(toDirectory: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
 if let idx = CommandLine.arguments.firstIndex(of: "--render-bond-preview"),
    idx + 1 < CommandLine.arguments.count {
     renderBondPreviewSheet(to: CommandLine.arguments[idx + 1])
@@ -773,6 +792,115 @@ func renderBondPreviewSheet(to path: String) {
     } catch {
         FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
     }
+}
+
+/// 设置面板预览：不弹窗，离屏渲染每一页到 PNG
+private final class PreviewSettingsHost: SettingsHost {
+    let physics = CatPhysics()
+    var petVisible = true
+    var autoStartEnabled = true
+    func applyScale(_ scale: CGFloat) {}
+    func applyWindowBehavior() {}
+    func audioSettingsChanged(resetPermission: Bool) {}
+    func selectCoat(_ coat: CatCoatTheme) {}
+    func resetPetPosition() {}
+    func relaunch() {}
+    func openInputMonitoring() {}
+    func installClaude() {}
+    func uninstallClaude() {}
+    func runDemo(_ demo: SettingsDemo) {}
+}
+
+/// README 用的设置截图：在屏幕上开真实窗口（侧栏毛玻璃、选中态都正确），用 screencapture 按窗口截取
+func captureSettingsShots(toDirectory dir: String) {
+    _ = NSApplication.shared
+    // 普通 App 才能被激活成前台，窗口才是"活跃"配色（选中蓝、开关蓝）
+    NSApp.setActivationPolicy(.regular)
+    NSApp.finishLaunching()
+    let settings = CatSettings.shared
+    let savedAccessory = settings.accessory
+    defer { settings.accessory = savedAccessory }
+    settings.accessory = .scarf
+    let host = PreviewSettingsHost()
+    let suite = "coolcat.readme.settings"
+    if let store = UserDefaults(suiteName: suite) {
+        store.removePersistentDomain(forName: suite)
+        store.set(520, forKey: "CoolCat.Bond.Points")
+        store.set("2026-11-03", forKey: "CoolCat.Bond.FirstDay")
+        store.set(146, forKey: "CoolCat.Bond.Pets")
+        store.set(87, forKey: "CoolCat.Bond.Catches")
+        store.set(64, forKey: "CoolCat.Bond.Fish")
+        host.physics.debugBond = BondLog(store: store, today: "2026-11-24")
+    }
+    // Claude 页：喂两条假会话
+    let tracker = ClaudeActivityTracker.shared
+    let now = CACurrentMediaTime()
+    tracker.apply(event: "UserPromptSubmit", session: "a", tool: nil, notificationType: nil, project: "CoolCat", now: now - 134)
+    tracker.apply(event: "PreToolUse", session: "a", tool: "Edit", notificationType: nil, project: "CoolCat", now: now - 3)
+    tracker.apply(event: "UserPromptSubmit", session: "b", tool: nil, notificationType: nil, project: "api-server", now: now - 35)
+    tracker.apply(event: "PreToolUse", session: "b", tool: "Bash", notificationType: nil, project: "api-server", now: now - 2)
+    let store = SettingsStore(host: host)
+    let preview = CatPreviewModel()
+    preview.start()
+    for pane in [SettingsPane.general, .appearance, .bond, .music, .claude] {
+        let hosting = NSHostingController(rootView: SettingsRootView(store: store, preview: preview, initial: pane))
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.setContentSize(NSSize(width: 860, height: 640))
+        window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        window.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+        // App 自己没有屏幕录制权限：把窗口号写出去，由有权限的终端截图，截完放一个 .done 文件
+        let base = URL(fileURLWithPath: dir).appendingPathComponent("settings-\(pane.rawValue)")
+        do {
+            try "\(window.windowNumber)".write(to: base.appendingPathExtension("wid"), atomically: true, encoding: .utf8)
+        } catch {
+            FileHandle.standardError.write(Data("写窗口号失败: \(error)\n".utf8))
+        }
+        let done = base.appendingPathExtension("done").path
+        let deadline = Date().addingTimeInterval(20)
+        while !FileManager.default.fileExists(atPath: done) && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
+        window.orderOut(nil)
+    }
+    preview.stop()
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+}
+
+func renderSettingsPreview(toDirectory dir: String) {
+    _ = NSApplication.shared
+    NSApp.setActivationPolicy(.prohibited)
+    let host = PreviewSettingsHost()
+    let store = SettingsStore(host: host)
+    let preview = CatPreviewModel()
+    preview.start()
+    for pane in SettingsPane.allCases {
+        let view = SettingsRootView(store: store, preview: preview, initial: pane)
+        let hosting = NSHostingView(rootView: view)
+        let size = NSSize(width: 860, height: 640)
+        let window = NSWindow(contentRect: NSRect(origin: CGPoint(x: -4000, y: -4000), size: size),
+                              styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.contentView = hosting
+        window.orderFrontRegardless()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        hosting.layoutSubtreeIfNeeded()
+        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { continue }
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        let url = URL(fileURLWithPath: dir).appendingPathComponent("settings-\(pane.rawValue).png")
+        do {
+            try rep.representation(using: .png, properties: [:])?.write(to: url)
+        } catch {
+            FileHandle.standardError.write(Data("写入失败: \(error)\n".utf8))
+        }
+        window.orderOut(nil)
+    }
+    preview.stop()
 }
 
 /// 预览用：键鼠长时间无操作的脚本输入
@@ -982,7 +1110,7 @@ private func drawDemoBackdrop(in ctx: CGContext, width: CGFloat, height: CGFloat
     }
 }
 
-private func drawMacCursor(in ctx: CGContext, at pt: CGPoint, clicking: Bool) {
+func drawMacCursor(in ctx: CGContext, at pt: CGPoint, clicking: Bool) {
     ctx.saveGState()
     ctx.translateBy(x: pt.x, y: pt.y)
     if clicking {

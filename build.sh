@@ -101,6 +101,8 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/CatPlay.swift"
     "$ROOT/Sources/CatBond.swift"
     "$ROOT/Sources/CatAccessories.swift"
+    "$ROOT/Sources/SettingsWindow.swift"
+    "$ROOT/Sources/ShowcaseArt.swift"
     "$ROOT/Sources/CatRenderer.swift"
     "$ROOT/Sources/CoatPatterns.swift"
     "$ROOT/Sources/OverlayWindow.swift"
@@ -119,6 +121,7 @@ COMMON_FLAGS=(
     -framework CoreMediaIO
     -framework Accelerate
     -framework ApplicationServices
+    -framework SwiftUI
 )
 
 TMP_BIN_DIR="$(mktemp -d)"
