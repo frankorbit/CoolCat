@@ -83,6 +83,8 @@ struct RoamScanReport {
     var tooNarrow = 0
     /// 窗口顶上方至少要留出多少点
     var neededRoom: CGFloat = 0
+    /// 这次看到的所有窗口的位置（窗口号 → 屏幕坐标）：积雪用来判断窗口挪没挪、关没关
+    var frames: [Int: CGRect] = [:]
 
     var summary: String {
         if !surfaces.isEmpty {
@@ -159,6 +161,7 @@ enum RoamSurfaceScanner {
             let rect = CGRect(x: cg.minX, y: primary.frame.maxY - cg.maxY, width: cg.width, height: cg.height)
             guard rect.width >= 40, rect.height >= 40 else { continue }
             rects.append((id, rect))
+            report.frames[id] = rect
         }
         for (index, item) in rects.enumerated() {
             let top = item.rect.maxY

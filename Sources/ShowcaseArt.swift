@@ -144,6 +144,186 @@ enum ShowcaseArt {
         write(renderRoamPlay(english: true), to: dir + "/roam-play.en.png")
         write(renderAgentSign(english: false), to: dir + "/agent-sign.png")
         write(renderAgentSign(english: true), to: dir + "/agent-sign.en.png")
+        write(renderSnowpack(english: false), to: dir + "/snowpack.png")
+        write(renderSnowpack(english: true), to: dir + "/snowpack.en.png")
+    }
+
+    // MARK: Snowpack
+
+    /// 积雪配图里侧身小猫的大小
+    private static let snowArtScale: CGFloat = 0.9
+
+    /// 窗口积雪配图：左边窗口顶积雪、一串脚印、抬爪抖雪；右边拖动窗口雪滑下来、小猫在地上甩身子
+    private static func renderSnowpack(english: Bool) -> CGImage? {
+        let width: CGFloat = 1280, height: CGFloat = 460
+        guard let ctx = makeContext(width: width, height: height) else { return nil }
+        CatSettings.shared.accessory = .none
+        ctx.setFillColor(rgb(0xFAFAFC).cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let left = CGRect(x: 40, y: 40, width: 590, height: 380)
+        let right = CGRect(x: 650, y: 40, width: 590, height: 380)
+        let panels = [
+            (left, english ? "Snow piles up on your windows" : "窗口顶会积雪",
+             english ? "Dec–Feb, window tops gather snow; the cat leaves paw prints and shakes its paws"
+                     : "12 月到 2 月，窗口顶慢慢积一层雪；小猫走过留下一串脚印，走久了抬起爪子抖一抖",
+             (rgb(0x2C3A57), rgb(0x3B3A5E))),
+            (right, english ? "Drag a window and the snow slides off" : "拖动窗口，雪整块滑下来",
+             english ? "Back on the ground after a snowy walk, it shakes its whole body from head to tail"
+                     : "从积雪的窗口下到地上，从头到尾巴甩一甩全身的雪",
+             (rgb(0x2E3D5A), rgb(0x40395F)))
+        ]
+        for (rect, title, subtitle, colors) in panels {
+            fillGradient(rect, radius: 18, colors: colors, in: ctx)
+            // 冬夜的深蓝底：白雪才看得清
+            text(title, at: CGPoint(x: rect.minX + 22, y: rect.minY + 18), size: 20, weight: .heavy, color: .white,
+                 in: ctx)
+            text(subtitle, at: CGPoint(x: rect.minX + 22, y: rect.minY + 50), size: 13, weight: .regular,
+                 color: rgb(0xC5CEE0), in: ctx, maxWidth: rect.width - 44)
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.18).cgColor)
+            ctx.setLineWidth(1.5)
+            ctx.move(to: CGPoint(x: rect.minX + 18, y: rect.maxY - 30))
+            ctx.addLine(to: CGPoint(x: rect.maxX - 18, y: rect.maxY - 30))
+            ctx.strokePath()
+        }
+        PetLibrary.shared.select(nil)
+        CatSettings.shared.coatTheme = .siamese
+        CatSettings.shared.eyeTheme = .siameseBlue
+        let seq = SeededRandom(seed: 7)
+        drawSnowWalkPanel(in: ctx, panel: left, canvasHeight: height, english: english, seq: seq)
+        drawSnowDragPanel(in: ctx, panel: right, canvasHeight: height, english: english, seq: seq)
+        PetLibrary.shared.select(nil)
+        return ctx.makeImage()
+    }
+
+    /// 积雪配图左半：窗口顶积满雪，从左往右走出一串脚印，停下来抖爪子
+    private static func drawSnowWalkPanel(in ctx: CGContext, panel left: CGRect, canvasHeight height: CGFloat,
+                                          english: Bool, seq: SeededRandom) {
+        let k = snowArtScale
+        /// 画布是 y 向下的；积雪逻辑是 y 向上的屏幕坐标：换算一下
+        func up(_ y: CGFloat) -> CGFloat { height - y }
+        let win = CGRect(x: left.minX + 60, y: left.maxY - 150, width: 470, height: 120)
+        drawFakeWindow(win, title: english ? "Notes" : "备忘录", in: ctx)
+        var pack = Snowpack(random: { seq.next() })
+        let top = RoamSurface(id: 1 * 8 + 1, minX: win.minX, maxX: win.maxX, y: up(win.minY))
+        let frame = CGRect(x: win.minX, y: up(win.maxY), width: win.width, height: win.height)
+        for _ in 0..<60 {
+            pack.update(dt: 0.1, snowing: true, growTime: 3, surfaces: [top], frames: [1: frame], floorY: 0)
+        }
+        let catX = win.minX + 330
+        var phase: CGFloat = 0
+        var x = win.minX + 40
+        while x < catX {
+            // 和 App 里一样：走路一个步态周期约 40 画布点
+            phase += 6 / (40 * k) * 2 * .pi
+            x += 6
+            pack.track(Snowpack.Walker(pos: CGPoint(x: x, y: top.y), surfaceID: top.id, moving: true, running: false,
+                                       gaitPhase: phase, facing: 1), k: k)
+        }
+        pack.shakeOff(.paw, at: CGPoint(x: catX, y: top.y), facing: 1, k: k)
+        for _ in 0..<5 {
+            pack.update(dt: 0.03, snowing: true, growTime: 3, surfaces: [top], frames: [1: frame], floorY: 0)
+        }
+        drawSnowpack(pack, canvasHeight: height, in: ctx)
+        drawWalker(.init(pose: .pawShake, phase: 0, facing: 1, air: 0, time: 0.1, blink: false, santaHat: true,
+                         shake: 0.5, pawSnow: 0.8),
+                   feet: CGPoint(x: catX, y: win.minY), k: k, alpha: 1, in: ctx)
+    }
+
+    /// 积雪配图右半：窗口被拖走，原来位置上的雪碎成雪块往下掉；小猫在地上甩身子
+    private static func drawSnowDragPanel(in ctx: CGContext, panel right: CGRect, canvasHeight height: CGFloat,
+                                          english: Bool, seq: SeededRandom) {
+        let k = snowArtScale
+        func up(_ y: CGFloat) -> CGFloat { height - y }
+        let oldWin = CGRect(x: right.minX + 40, y: right.minY + 96, width: 250, height: 110)
+        let newWin = oldWin.offsetBy(dx: 290, dy: 20)
+        var pack2 = Snowpack(random: { seq.next() })
+        let oldTop = RoamSurface(id: 2 * 8 + 1, minX: oldWin.minX, maxX: oldWin.maxX, y: up(oldWin.minY))
+        let oldFrame = CGRect(x: oldWin.minX, y: up(oldWin.maxY), width: oldWin.width, height: oldWin.height)
+        for _ in 0..<60 {
+            pack2.update(dt: 0.1, snowing: true, growTime: 3, surfaces: [oldTop], frames: [2: oldFrame], floorY: 0)
+        }
+        let newTop = RoamSurface(id: 2 * 8 + 1, minX: newWin.minX, maxX: newWin.maxX, y: up(newWin.minY))
+        let newFrame = CGRect(x: newWin.minX, y: up(newWin.maxY), width: newWin.width, height: newWin.height)
+        for _ in 0..<7 {
+            pack2.update(dt: 0.03, snowing: true, growTime: 30, surfaces: [newTop], frames: [2: newFrame], floorY: 0)
+        }
+        // 原来的位置：虚线框 + 拖动箭头
+        ctx.saveGState()
+        ctx.setStrokeColor(rgb(0xAEB8CC).cgColor)
+        ctx.setLineWidth(1.5)
+        ctx.setLineDash(phase: 0, lengths: [6, 5])
+        ctx.addPath(CGPath(roundedRect: oldWin, cornerWidth: 12, cornerHeight: 12, transform: nil))
+        ctx.strokePath()
+        ctx.restoreGState()
+        drawFakeWindow(newWin, title: english ? "Terminal" : "终端", in: ctx)
+        ctx.saveGState()
+        ctx.setStrokeColor(rgb(0xD5DCEA).cgColor)
+        ctx.setLineWidth(2.5)
+        ctx.setLineCap(.round)
+        let arrowFrom = CGPoint(x: oldWin.minX + 90, y: oldWin.midY + 6)
+        let arrowTo = CGPoint(x: newWin.minX - 12, y: oldWin.midY + 16)
+        ctx.move(to: arrowFrom)
+        ctx.addLine(to: arrowTo)
+        ctx.move(to: CGPoint(x: arrowTo.x - 10, y: arrowTo.y - 9))
+        ctx.addLine(to: arrowTo)
+        ctx.addLine(to: CGPoint(x: arrowTo.x - 12, y: arrowTo.y + 6))
+        ctx.strokePath()
+        ctx.restoreGState()
+        let floorY = right.maxY - 30
+        let shakeX = right.minX + 150
+        PetLibrary.shared.select(PetLibrary.shared.pet(id: "orange-tabby"))
+        pack2.shakeOff(.body, at: CGPoint(x: shakeX, y: up(floorY)), facing: 1, k: k)
+        for _ in 0..<4 {
+            pack2.update(dt: 0.03, snowing: true, growTime: 30, surfaces: [newTop], frames: [2: newFrame], floorY: 0)
+        }
+        drawSnowpack(pack2, canvasHeight: height, in: ctx)
+        drawWalker(.init(pose: .bodyShake, phase: 0, facing: 1, air: 0, time: 0.046, blink: false, santaHat: true,
+                         shake: 0.5),
+                   feet: CGPoint(x: shakeX, y: floorY), k: k, alpha: 1, in: ctx)
+    }
+
+    /// 画积雪（和 App 里 SnowOverlayWindow 一样的路径和配色）。积雪逻辑是 y 向上的，画布是 y 向下的
+    private static func drawSnowpack(_ pack: Snowpack, canvasHeight: CGFloat, in ctx: CGContext) {
+        ctx.saveGState()
+        ctx.translateBy(x: 0, y: canvasHeight)
+        ctx.scaleBy(x: 1, y: -1)
+        let caps = pack.capPath(origin: .zero)
+        ctx.saveGState()
+        let shadow = NSColor(calibratedWhite: 0, alpha: 0.16).cgColor
+        ctx.setShadow(offset: CGSize(width: 0, height: -1.5), blur: 2.5, color: shadow)
+        ctx.setFillColor(NSColor(calibratedRed: 0.985, green: 0.99, blue: 1, alpha: 1).cgColor)
+        ctx.addPath(caps)
+        ctx.fillPath()
+        ctx.restoreGState()
+        ctx.setStrokeColor(CatRenderer.rgb(0xAFC0D6, 0.9).cgColor)
+        ctx.setLineWidth(0.8)
+        ctx.addPath(caps)
+        ctx.strokePath()
+        ctx.setFillColor(CatRenderer.rgb(0xDCE5F0, 0.9).cgColor)
+        ctx.addPath(pack.capShadePath(origin: .zero))
+        ctx.fillPath()
+        ctx.setFillColor(CatRenderer.rgb(0x9FB4CC, 0.8).cgColor)
+        ctx.addPath(pack.printPath(origin: .zero))
+        ctx.fillPath()
+        let clumps = pack.clumpPath(origin: .zero)
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.addPath(clumps)
+        ctx.fillPath()
+        ctx.setStrokeColor(CatRenderer.rgb(0xAFC0D6, 0.7).cgColor)
+        ctx.setLineWidth(0.6)
+        ctx.addPath(clumps)
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
+    /// 配图用的可复现随机数：每次渲染出来一样
+    private final class SeededRandom {
+        private var state: UInt64
+        init(seed: UInt64) { state = seed &* 6364136223846793005 &+ 1 }
+        func next() -> Double {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Double(state >> 11) / Double(1 << 53)
+        }
     }
 
     // MARK: Agent sign

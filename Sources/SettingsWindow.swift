@@ -558,10 +558,10 @@ private struct AppearancePane: View {
                 }
             }
             SettingsCard(title: "节日") {
-                ToggleRow(title: "节日装扮 🎄", subtitle: "12 月戴圣诞帽、送圣诞礼物，冬天下小雪；平安夜和圣诞节会跟你打招呼",
+                ToggleRow(title: "节日装扮 🎄", subtitle: "12 月戴圣诞帽、送圣诞礼物；冬天下小雪、窗口顶积雪，小猫踩出脚印；平安夜和圣诞节会打招呼",
                           isOn: store.binding(\.holidayDecor))
                 RowDivider()
-                ActionRow(title: "预览 30 秒", subtitle: "现在不是 12 月也能先看看", button: "看看") {
+                ActionRow(title: "预览 30 秒", subtitle: "现在不是 12 月也能先看看（窗口顶几秒就积满雪）", button: "看看") {
                     store.host.runDemo(.holiday)
                 }
             }

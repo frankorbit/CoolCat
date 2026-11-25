@@ -92,6 +92,8 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/MusicMonitor.swift"
     "$ROOT/Sources/BeatCalibration.swift"
     "$ROOT/Sources/Holiday.swift"
+    "$ROOT/Sources/Snowpack.swift"
+    "$ROOT/Sources/SnowOverlay.swift"
     "$ROOT/Sources/ClaudeBridge.swift"
     "$ROOT/Sources/MeetingMonitor.swift"
     "$ROOT/Sources/KeyHabits.swift"

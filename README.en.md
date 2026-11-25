@@ -26,6 +26,7 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
 - ⌨️ **Codex integration** — one-click hooks in `~/.codex/hooks.json` (trust them once via `/hooks` in Codex); Codex sessions share the bubble with Claude Code, marked by a blue spinner.
 - 🎙 **Meeting mode** — headset when the mic is on, a "shh" when you type too loudly, a quick face wash before the camera turns on.
 - 🌙 **Life companion** — nightcap late at night, morning coffee, sleepy on low battery, a water reminder after 50 minutes of work.
+- ❄️ **Winter & Christmas** — a santa hat and Christmas gifts in December, light snow all winter, and [snow piling up on your windows](#-winter--christmas) for the cat to leave paw prints in.
 - 🪶 **Cursor play** — move the cursor slowly in front of the cat: it locks on, wiggles, and swats.
 - 🐟 **Fish treats** — it holds the treat with both paws, nibbles, drops crumbs and burps (6 per day).
 - 💞 **Bond levels** — every interaction builds affection (capped per day, never decays). Level up to unlock a bell collar, knitted scarf, bow and sunglasses; at higher levels it nuzzles your resting cursor and brings you a daily gift.
@@ -74,6 +75,21 @@ When Claude Code or Codex stops to wait for your approval or reply while you're 
 - It only reads window positions and sizes, never their contents, and needs no screen-recording permission.
 
 Turn it off under *Settings → Interaction*; the *Sign preview* button pretends an agent is waiting for 20 seconds so you can see it right away.
+
+## 🎄 Winter & Christmas
+
+<p align="center">
+  <img src="assets/coolcat/snowpack.en.png" alt="Snow on window tops: paw prints, paw shakes, snow sliding off a dragged window, a full-body shake" />
+</p>
+
+- **Christmas season (Dec 1–26)** — a santa hat whether sitting, walking, galloping, climbing or napping (no nightcap stacked on top late at night), and daily gifts become red presents with gold ribbon or candy canes. On Christmas Eve and Christmas Day it greets you with confetti the first time it sees you.
+- **Light snow (Dec–Feb)** — a few flakes drift behind the cat.
+- **Snow on your windows** — window tops the cat can stand on slowly gather a layer of snow (full after about 4 minutes) that drapes over the rounded corners; parts hidden behind other windows aren't drawn. Walking leaves a trail of paw prints that fresh snow fills in; running kicks up powder and landing sends up a puff.
+- **Shaking it off** — after a while in the snow it stops, lifts a front paw and flicks the snow off its whitened paws; back on snow-free ground it shakes its whole body from head to tail. No shaking when it's rushing home, delivering a sign or chasing your cursor.
+- **Drag a window and the snow slides off** — moving or resizing a window breaks its snow into falling clumps, and it starts piling up again in the new spot. Switch Spaces and come back: the snow is still there.
+- It only reads window positions, never contents, and draws in a click-through transparent overlay.
+
+Turn it off under *Settings → Appearance → Holiday*; *Preview 30 s* shows it any time of year (window tops fill up in a few seconds).
 
 ## 🎚 Hitting the beat
 

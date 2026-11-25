@@ -34,6 +34,10 @@ extension CatRenderer {
         var santaHat = false
         /// 举牌提醒：牌子上的字（第一行粗体，第二行小字）
         var signLines: [String] = []
+        /// 抖雪的进度 0...1（抖爪子 / 甩身子）
+        var shake: CGFloat = 0
+        /// 0...1：爪子上沾的雪（爪子发白）
+        var pawSnow: CGFloat = 0
     }
 
     /// 侧身小猫的配色：从主画面的取色工具里推出来，保证和坐着时是同一只猫
@@ -217,6 +221,14 @@ extension CatRenderer {
             stretch = 1.1
         case .stand, .sit, .peek, .curl, .sign:
             lift += sin(pose.time * 2.1) * 0.8
+        case .pawShake:
+            // 抬一只前爪甩：重心往后移一点
+            tilt = -0.04 * sin(.pi * pose.shake)
+        case .bodyShake:
+            // 甩身子：整个身子快速左右拧，起伏一下
+            let env = sin(.pi * pose.shake)
+            tilt = sin(pose.time * 34) * 0.07 * env
+            lift += abs(sin(pose.time * 34)) * 1.6 * env
         }
         let center = CGPoint(x: feet.x - 6, y: ground - lift)
         let halfLen = bodyLen * stretch
@@ -305,6 +317,11 @@ extension CatRenderer {
                 let len = groundY - joint.y
                 let raise = max(0, cos(p + offset)) * (pose.pose == .run ? 9 : (pose.pose == .stalk ? 2.5 : 5.5))
                 return CGPoint(x: joint.x + sin(a) * len, y: joint.y + cos(a) * len - raise)
+            case .pawShake where front && offset == 0:
+                // 近侧前爪抬到胸前快速甩：抬起 → 甩几下 → 放下
+                let env = sin(.pi * min(1, pose.shake * 1.15))
+                let flick = sin(pose.time * 42) * env
+                return CGPoint(x: joint.x + 10 + flick * 4, y: groundY - 24 * env + cos(pose.time * 42) * 2 * env)
             default:
                 return CGPoint(x: joint.x + (front ? 2 : -3), y: groundY)
             }
@@ -327,7 +344,9 @@ extension CatRenderer {
             let shade: CGFloat = far ? 0.16 : 0
             ctx.setFillColor(HexColor.mix(pal.legs, .black, shade).cgColor)
             ctx.addPath(l.limb); ctx.fillPath()
-            ctx.setFillColor(HexColor.mix(pal.paws, .black, shade).cgColor)
+            // 在雪里走过：爪子沾了雪发白
+            let paws = pose.pawSnow > 0.01 ? HexColor.mix(pal.paws, .white, pose.pawSnow * 0.75) : pal.paws
+            ctx.setFillColor(HexColor.mix(paws, .black, shade).cgColor)
             ctx.addPath(l.paw); ctx.fillPath()
         }
 
@@ -337,6 +356,11 @@ extension CatRenderer {
             if galloping {
                 let g = gallopLeg(joint, front: front, near: near)
                 return leg(top, g.end, front: front, fold: g.fold)
+            }
+            if pose.pose == .pawShake && front && near {
+                // 抬起来的那只前爪：腕关节弯着，爪尖朝下甩
+                let env = sin(.pi * min(1, pose.shake * 1.15))
+                return leg(top, legEnd(joint, offset: offset, front: front), front: true, fold: 0.75 * env)
             }
             if pose.pose == .climb {
                 // 后腿深深弯着（膝盖、跗关节收起来蹬墙），前腿伸直往上够
@@ -356,7 +380,10 @@ extension CatRenderer {
         // 尾巴：从屁股往上翘，走路时左右甩
         let hunting = pose.pose == .stalk || pose.pose == .wiggle
         // 盯上猎物时尾巴放低，只有尾巴尖在快速抽动
-        let sway = hunting ? sin(pose.time * 18) * 7 : sin(pose.time * 3.2 + p * 0.5) * 6
+        let shakeEnv = pose.pose == .bodyShake ? sin(.pi * pose.shake) : 0
+        // 甩身子时尾巴跟着身子慢半拍地甩
+        let sway = hunting ? sin(pose.time * 18) * 7
+            : sin(pose.time * 3.2 + p * 0.5) * 6 + sin(pose.time * 34 - 1.2) * 9 * shakeEnv
         let tailRoot = CGPoint(x: -halfLen * 0.92 + wiggleX, y: -bodyH * 0.25 - wiggleUp)
         // 爬窗框时尾巴顺着墙往下垂（转过来后"往后"就是往下）
         let tailUp: CGFloat = pose.pose == .air ? 0.45 : (hunting ? 0.25 : (pose.pose == .climb ? 0.1 : 1))
@@ -455,10 +482,34 @@ extension CatRenderer {
         let bodyCTM = ctx.ctm
         ctx.saveGState()
         ctx.translateBy(x: headCenter.x, y: headCenter.y)
-        ctx.rotate(by: galloping || hunting ? -tilt * 0.9 : 0)
+        // 甩身子从头开始：头甩得比身子更猛、更早
+        ctx.rotate(by: (galloping || hunting ? -tilt * 0.9 : 0) + sin(pose.time * 34 + 0.7) * 0.28 * shakeEnv)
         drawWalkerHead(in: ctx, center: .zero, pose: pose, pal: pal, lookDown: pose.pose == .crouch,
                        fuse: bodyParts, fuseCTM: bodyCTM)
         ctx.restoreGState()
+        if shakeEnv > 0.05 {
+            drawShakeLines(in: ctx, head: headCenter, body: CGSize(width: halfLen, height: bodyH), env: shakeEnv,
+                           color: pal.outline)
+        }
+        ctx.restoreGState()
+    }
+
+    /// 甩身子的漫画速度线：头两侧、背上几道短弧，表示甩得很快
+    /// - Parameter body: 半身长 × 身体半高（身体坐标）
+    private static func drawShakeLines(in ctx: CGContext, head: CGPoint, body: CGSize, env: CGFloat, color: NSColor) {
+        ctx.saveGState()
+        ctx.setStrokeColor(color.withAlphaComponent(0.6 * env).cgColor)
+        ctx.setLineWidth(1.6)
+        ctx.setLineCap(.round)
+        func arc(_ center: CGPoint, _ radius: CGFloat, _ angles: ClosedRange<CGFloat>) {
+            ctx.addArc(center: center, radius: radius, startAngle: angles.lowerBound, endAngle: angles.upperBound,
+                       clockwise: false)
+            ctx.strokePath()
+        }
+        arc(head, 36, -0.5...0.2)                 // 头前面
+        arc(head, 43, -0.4...0.1)
+        arc(head, 38, (.pi + 0.45)...(.pi + 0.95))  // 头后上方
+        arc(CGPoint(x: -body.width * 0.3, y: 0), body.height + 11, (-.pi * 0.74)...(-.pi * 0.54))   // 背上
         ctx.restoreGState()
     }
 

@@ -71,6 +71,8 @@ struct RoamWorld {
     var walls: [RoamWall] = []
     /// 举牌提醒：有值时小猫放下手头的事，跑过去坐下举牌，直到它变回 nil
     var signTarget: RoamSignTarget?
+    /// 积雪够厚的窗口上沿（在上面走久了会抖爪子，下来时甩身子）
+    var snowySurfaces: Set<Int> = []
 
     var surfaces: [RoamSurface] { [floor] + windowTops }
 
@@ -93,6 +95,10 @@ enum RoamPose: Equatable {
     case sign
     /// 蜷成一团睡觉（趴下 → 蜷起来 → 醒来伸展）
     case curl
+    /// 在雪里走久了：站住抬起一只前爪甩一甩
+    case pawShake
+    /// 从积雪的窗口下来：从头到尾巴甩一甩全身的雪
+    case bodyShake
 }
 
 /// 屏幕的哪条边
@@ -200,6 +206,18 @@ struct RoamDirector {
         private func ease(_ x: CGFloat) -> CGFloat { x * x * (3 - 2 * x) }
     }
 
+    /// 抖雪：抬爪甩一甩（短），或者全身从头甩到尾（长一点）
+    struct Shake: Equatable {
+        var paw: Bool
+        var t: CGFloat = 0
+        var duration: CGFloat
+    }
+
+    /// 在积雪的窗口顶上走了这么久就停下来抖抖爪子
+    static let snowWalkBeforePawShake: CGFloat = 1.6
+    /// 这一趟在雪里待了这么久，下到没雪的地方时甩一甩全身
+    static let snowBeforeBodyShake: CGFloat = 2.5
+
     enum Activity: Equatable {
         case walk(toX: CGFloat, run: Bool)
         case peek(Peek)
@@ -214,6 +232,8 @@ struct RoamDirector {
         case climb(Climb)
         /// 坐着举牌，直到 signTarget 没了
         case sign
+        /// 抖掉爪子上 / 身上的雪
+        case shake(Shake)
         case land(remaining: CGFloat)
         case sit(remaining: CGFloat)
         case fall(vy: CGFloat)
@@ -226,6 +246,10 @@ struct RoamDirector {
     private(set) var gaitPhase: CGFloat = 0
     private(set) var surfaceID: Int?
     private(set) var activity: Activity?
+    /// 这次在积雪上连着走了多久（抖完爪子清零）
+    private var snowWalk: CGFloat = 0
+    /// 这一趟在雪里一共走了多久（甩完身子清零）
+    private var snowTrip: CGFloat = 0
     private(set) var returning = false
     /// 这趟回家是急着跑回去的（你在打字、要开会……）；慢悠悠往回走时一有急事就改成飞奔
     private(set) var returningUrgently = false
@@ -277,6 +301,7 @@ struct RoamDirector {
         case .nap: return .curl
         case .climb: return .climb
         case .sign: return .sign
+        case .shake(let shake): return shake.paw ? .pawShake : .bodyShake
         case nil: return .stand
         }
     }
@@ -335,6 +360,12 @@ struct RoamDirector {
     var isNapping: Bool {
         if case .nap = activity { return true }
         return false
+    }
+
+    /// 抖雪的进度 0...1
+    var shakeProgress: CGFloat {
+        if case .shake(let shake) = activity { return min(1, shake.t / shake.duration) }
+        return 0
     }
 
     /// 跳跃进度 0...1（腾空时身体前倾 → 后仰）
@@ -465,6 +496,10 @@ struct RoamDirector {
             pos.x += step * facing
             // 一个步态周期：走路约 40 个画布点；飞奔一步跨得远（约 75），步频约 3 次/秒，和真猫差不多
             gaitPhase += step / ((run ? 75 : 40) * k) * .pi * 2
+            if let id = surfaceID, world.snowySurfaces.contains(id) {
+                snowWalk += dt
+                snowTrip += dt
+            }
             if abs(toX - pos.x) < 0.5 {
                 // 疯跑到地方：压低身子急刹一下（往家跑时不刹，直接接着跳）
                 activity = run && !returning ? .land(remaining: 0.3) : nil
@@ -551,6 +586,9 @@ struct RoamDirector {
             } else {
                 activity = .pounce(pounce)
             }
+        case .shake(var shake):
+            shake.t += dt
+            activity = shake.t >= shake.duration ? nil : .shake(shake)
         case .land(let remaining):
             activity = remaining - dt <= 0 ? nil : .land(remaining: remaining - dt)
         case .sit(let remaining):
@@ -587,6 +625,9 @@ struct RoamDirector {
             break
         }
 
+        if activity == nil, pendingJump == nil, pendingPeek == nil, pendingClimb == nil, !resumeStalk {
+            considerShakingOffSnow(world: world)
+        }
         if activity == nil, let climb = pendingClimb {
             pendingClimb = nil
             beginClimb(climb, world: world)
@@ -623,9 +664,24 @@ struct RoamDirector {
         return events
     }
 
+    /// 一件事做完、下一件还没开始：在雪里走久了就站住抖抖爪子；从积雪的窗口下来就甩甩全身。
+    /// 急着回家、送牌、逗猫时不抖
+    private mutating func considerShakingOffSnow(world: RoamWorld) {
+        guard !returningUrgently, !delivering, !playSession, let id = surfaceID else { return }
+        if world.snowySurfaces.contains(id) {
+            guard snowWalk >= Self.snowWalkBeforePawShake else { return }
+            snowWalk = 0
+            if random() < 0.65 { activity = .shake(Shake(paw: true, duration: 0.9)) }
+        } else if snowTrip >= Self.snowBeforeBodyShake {
+            snowTrip = 0
+            snowWalk = 0
+            activity = .shake(Shake(paw: false, duration: 1.1))
+        }
+    }
+
     private func isGrounded(_ a: Activity) -> Bool {
         switch a {
-        case .walk, .sit, .land, .crouch, .nap, .stalk, .sign: return true
+        case .walk, .sit, .land, .crouch, .nap, .stalk, .sign, .shake: return true
         case .jump, .fall, .peek, .pounce, .climb: return false
         }
     }
@@ -1286,6 +1342,8 @@ struct RoamDirector {
 
     private mutating func arriveHome() {
         isHome = true
+        snowWalk = 0
+        snowTrip = 0
         returning = false
         returningUrgently = false
         activity = nil
