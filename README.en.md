@@ -20,7 +20,7 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
   <img src="assets/coolcat/features.png" alt="CoolCat features" />
 </p>
 
-- 🎧 **Dances to your music** — headphones on when a music player is playing, a vertical LED spectrum wall behind the cat, real beat tracking via a system audio tap (macOS 14.2+) aligned to your output latency. Strong beats get head-bobs, calm songs get slow sways. While music plays it stays at the keyboard instead of wandering off.
+- 🎧 **Dances to your music** — headphones on when a music player is playing, a vertical LED spectrum wall behind the cat, real beat tracking via a system audio tap (macOS 14.2+) aligned to your output latency, with tap-along calibration. Moves hit the beat and accent the downbeat ([more](#-hitting-the-beat)). Strong beats get head-bobs, calm songs get slow sways. While music plays it stays at the keyboard instead of wandering off.
 - 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, gallops around like a cheetah, treats window tops like tables to jump between, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
 - 🤖 **Claude Code integration** — one-click hooks; a bubble shows *project · action · elapsed* per session, the cat waves when a session needs your approval and throws confetti when it is done.
 - ⌨️ **Codex integration** — one-click hooks in `~/.codex/hooks.json` (trust them once via `/hooks` in Codex); Codex sessions share the bubble with Claude Code, marked by a blue spinner.
@@ -53,6 +53,17 @@ After 30 seconds without typing the cat leaves its keyboard and wanders around i
 
 Turn roaming off under *Settings → Interaction*, where preview buttons trigger a walk, a peek, window hops or a nap on demand.
 
+## 🎚 Hitting the beat
+
+<p align="center">
+  <img src="assets/coolcat/beat-snap.en.png" alt="Hit curves: arrive fast, stop on the beat" />
+</p>
+
+- **On the beat** — nods, bounces, head-bangs and raised paws arrive fast and stop dead on the beat, then ease back, instead of a constant sine sway. Measured through the actual dance springs, the peak lands right on the beat.
+- **Feels the bar** — the downbeat is found from kick-drum weight per beat position; beat 1 is accented and moves change at bar starts.
+- **Soft when unsure** — while the tempo is still being found it only does calm sways; once the tempo is stable it dances rhythmic moves, kept soft until the phase locks and snappy after. Songs in 6/8 or with a triplet feel no longer flip between 140, 93 and 70 BPM readings.
+- **Tap-along calibration** — Bluetooth headphones often misreport their latency. In *Settings → Music → Beat calibration*, play a song with a clear kick and tap space on the beat 12 times; the offset is measured, applied and remembered per output device. A slider and a beat light let you fine-tune by eye.
+
 ## ⚙️ Settings window
 
 A System Settings–style window (menu bar icon / right-click the cat → *Settings…*, or ⌘,) with a live-rendered preview cat.
@@ -73,6 +84,8 @@ macOS 11+ (real-time beat tracking needs macOS 14.2+).
 ```
 
 Requires *Input Monitoring*; *Screen & System Audio Recording* is optional and only used to analyze the music player's audio in memory. Package with `scripts/package-macos.sh`. The UI is in Simplified Chinese.
+
+For beat diagnostics, launch with `open -a CoolCat --args --beat-log <file>` to log lock stats, tempo candidates and track titles every 5 seconds.
 
 ## 🔒 Privacy
 
