@@ -214,7 +214,8 @@ final class CatSettings {
         let savedEye = d.string(forKey: "CoolCat.EyeTheme") ?? ""
         eyeTheme = EyeColorTheme.saved(savedEye)
         musicHeadphones = d.object(forKey: "CoolCat.MusicHeadphones") as? Bool ?? true
-        headphonesForAnyAudio = d.object(forKey: "CoolCat.HeadphonesForAnyAudio") as? Bool ?? true
+        // 默认关：飞书、微信、浏览器这类 App 不出声也常占着声音通道，开着会误戴耳机
+        headphonesForAnyAudio = d.object(forKey: "CoolCat.HeadphonesForAnyAudio") as? Bool ?? false
         showTrackBubble = d.object(forKey: "CoolCat.ShowTrackBubble") as? Bool ?? true
         claudeIntegration = d.object(forKey: "CoolCat.ClaudeIntegration") as? Bool ?? true
         codexIntegration = d.object(forKey: "CoolCat.CodexIntegration") as? Bool ?? true
@@ -517,8 +518,18 @@ final class CatPhysics {
         return nil
     }
 
-    /// 在听歌（戴着耳机）：和戴耳机用的是同一个判断，设置里关掉「听歌戴耳机」就不算
-    var isEnjoyingMusic: Bool { isListening && CatSettings.shared.musicHeadphones }
+    /// 在听歌：音乐播放器在出声、戴着耳机（设置里关掉「听歌戴耳机」就不算）。
+    /// 其他 App 出声（看视频等）只戴耳机，不算听歌：不守在键盘前、不出频谱墙、不跳舞
+    var isEnjoyingMusic: Bool { wearsMusicHeadphones && isListeningToMusicApp }
+
+    /// 戴听歌耳机：有 App 在出声；拿到了真实音频、却已经安静了 6 秒以上就摘掉
+    /// （有的播放器暂停后、有的 App 不出声也一直占着声音通道）
+    var wearsMusicHeadphones: Bool {
+        isListening && CatSettings.shared.musicHeadphones && !(audio.isLive && quietTime > Self.confirmedSilence)
+    }
+
+    /// 真实音频安静这么久：确认没在放东西
+    static let confirmedSilence: CGFloat = 6
 
     /// 在开会（麦克风 / 摄像头开着）：举牌提醒也不出门
     var isInMeeting: Bool { micActive || cameraActive }
@@ -1526,15 +1537,17 @@ final class CatPhysics {
         let hunt = max(0, min(1, huntIntensity.value))
 
         // 2c. 听歌：戴/摘耳机、节拍、陶醉闭眼、音符粒子
-        let wantMusic = isListening && CatSettings.shared.musicHeadphones
+        let wantMusic = wearsMusicHeadphones
+        // 只有音乐播放器在放歌才跟拍子动、出频谱墙、跳舞；别的声音只戴耳机
+        let playingMusic = wantMusic && isListeningToMusicApp
         let wantHeadset = micActive && CatSettings.shared.meetingMode
         headphonesOn.target = (wantMusic || wantHeadset) ? 1 : 0
         headphonesOn.step(dt: dt, stiffness: 170, damping: 13)
         boomMic.target = wantHeadset ? 1 : 0
         boomMic.step(dt: dt, stiffness: 150, damping: 14)
         // 只有听歌才跟拍子动；开会只戴耳麦不摇头
-        let music = wantMusic ? max(0, min(1, headphonesOn.value)) : 0
-        if wantMusic {
+        let music = playingMusic ? max(0, min(1, headphonesOn.value)) : 0
+        if playingMusic {
             beatPhase += clockDt * beatsPerMinute / 60 * 2 * .pi
             updateBarEstimate()
             steadiness.update(time: Double(time), bpm: Double(beatsPerMinute), live: audio.isLive && isBeatLocked)
@@ -1551,7 +1564,7 @@ final class CatPhysics {
         }
         // 2g. 频谱：真实音频优先，否则按节拍合成
         beatKick = max(0, beatKick - dt * 5)
-        spectrumVisibility.target = (wantMusic && CatSettings.shared.musicVisualizer) ? 1 : 0
+        spectrumVisibility.target = (playingMusic && CatSettings.shared.musicVisualizer) ? 1 : 0
         spectrumVisibility.step(dt: dt, stiffness: 90, damping: 14)
         // 真实音频在跑：完全以它为准，安静就是安静（不再退回模拟节拍）
         let liveAudio = audio.isLive
@@ -1586,7 +1599,7 @@ final class CatPhysics {
         let userIdleShort = now - max(curLastKeyTime, curLastMouseMove) > 2.5
         let busyElsewhere = shushTimer > 0 || groomTimer > 0 || peaceTimer > 0 || claudeStatusIsWaiting
             || petHeadIntensity > 0.3 || petBodyIntensity > 0.3
-        let canDance = wantMusic && CatSettings.shared.musicDance && music > 0.5 && userIdleShort && !isAudioQuiet
+        let canDance = playingMusic && CatSettings.shared.musicDance && music > 0.5 && userIdleShort && !isAudioQuiet
             && feedAge == nil
             && hunt < 0.2 && !busyElsewhere && activeKeys.isEmpty
         danceAmount += ((canDance ? 1 : 0) - danceAmount) * min(1, dt * (canDance ? 1.5 : 6))
@@ -1685,7 +1698,7 @@ final class CatPhysics {
 
         // 2l. 亲密度：打招呼、一起听歌、蹭光标、送礼物
         if scripted == nil && idleSeconds < 1 { greetIfFirstVisit() }
-        if isListening && headphonesOn.value > 0.5 && !isAudioQuiet {
+        if isEnjoyingMusic && headphonesOn.value > 0.5 && !isAudioQuiet {
             musicBondSeconds += dt
             if musicBondSeconds >= 300 { musicBondSeconds = 0; addBond(.music) }
         }

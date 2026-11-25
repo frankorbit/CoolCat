@@ -971,7 +971,9 @@ private struct MusicPane: View {
                     host.audioSettingsChanged(resetPermission: false)
                 })
                 RowDivider()
-                ToggleRow(title: "看视频 / 玩游戏有声音时也戴", isOn: store.binding(\.headphonesForAnyAudio) { _ in
+                ToggleRow(title: "看视频 / 玩游戏有声音时也戴",
+                          subtitle: "只戴耳机，不出频谱墙、不跳舞。飞书、微信、浏览器不出声也常占着声音通道，打开后可能误戴",
+                          isOn: store.binding(\.headphonesForAnyAudio) { _ in
                     host.audioSettingsChanged(resetPermission: false)
                 })
                 RowDivider()
