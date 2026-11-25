@@ -20,7 +20,7 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
   <img src="assets/coolcat/features.png" alt="CoolCat features" />
 </p>
 
-- 🎧 **Dances to your music** — headphones on when a music player is playing, a vertical LED spectrum wall behind the cat, real beat tracking via a system audio tap (macOS 14.2+) aligned to your output latency. Strong beats get head-bobs, calm songs get slow sways.
+- 🎧 **Dances to your music** — headphones on when a music player is playing, a vertical LED spectrum wall behind the cat, real beat tracking via a system audio tap (macOS 14.2+) aligned to your output latency. Strong beats get head-bobs, calm songs get slow sways. While music plays it stays at the keyboard instead of wandering off.
 - 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, gallops around like a cheetah, treats window tops like tables to jump between, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
 - 🤖 **Claude Code integration** — one-click hooks; a bubble shows *project · action · elapsed* per session, the cat waves when a session needs your approval and throws confetti when it is done.
 - ⌨️ **Codex integration** — one-click hooks in `~/.codex/hooks.json` (trust them once via `/hooks` in Codex); Codex sessions share the bubble with Claude Code, marked by a blue spinner.
@@ -49,7 +49,7 @@ After 30 seconds without typing the cat leaves its keyboard and wanders around i
   <img src="assets/coolcat/gallop.en.png" alt="Gallop cycle: extended and gathered flight" />
 </p>
 
-- **Comes back when needed** — typing sends it running home (a napping cat wakes with a start); it stays home during meetings or snacks and comes back to remind you when Claude Code / Codex is waiting for your approval. After 10 minutes away from the keyboard it stops wandering and naps at its seat.
+- **Comes back when needed** — typing sends it running home (a napping cat wakes with a start); it stays home during meetings or snacks, sticks to the keyboard dancing along while music plays (and gallops back if a song starts mid-walk), and comes back to remind you when Claude Code / Codex is waiting for your approval. After 10 minutes away from the keyboard it stops wandering and naps at its seat.
 
 Turn roaming off under *Settings → Interaction*, where preview buttons trigger a walk, a peek, window hops or a nap on demand.
 
