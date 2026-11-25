@@ -176,6 +176,8 @@ struct RoamDirector {
     private(set) var surfaceID: Int?
     private(set) var activity: Activity?
     private(set) var returning = false
+    /// 这趟回家是急着跑回去的（你在打字、要开会……）；慢悠悠往回走时一有急事就改成飞奔
+    private(set) var returningUrgently = false
     /// 这趟还能再玩几件事
     private(set) var budget = 0
     private var tripTime: CGFloat = 0
@@ -350,6 +352,9 @@ struct RoamDirector {
         let tripOver = tripTime > Self.maxTrip && !isNapping
         if !returning && (urgent || tripOver || (!tripForced && !world.wanderAllowed)) {
             beginReturn(world: world, run: urgent)
+        } else if returning && urgent && !returningUrgently {
+            // 正慢慢往回走时你开始打字：别闲逛了，立刻飞奔回去
+            beginReturn(world: world, run: true)
         }
 
         // 站着的面被移走/关掉：跟着动，或者掉下去
@@ -426,7 +431,7 @@ struct RoamDirector {
                 surfaceID = landing.id
                 activity = .land(remaining: 0.28)
                 events.append(.landed)
-                if returning { planReturnStep(world: world, run: true) }
+                if returning { planReturnStep(world: world, run: returningUrgently) }
             } else {
                 pos.y = newY
                 activity = .fall(vy: newVy)
@@ -446,7 +451,7 @@ struct RoamDirector {
             pendingAim = 0.26
         } else if activity == nil {
             if returning {
-                planReturnStep(world: world, run: true)
+                planReturnStep(world: world, run: returningUrgently)
             } else if budget <= 0 {
                 beginReturn(world: world, run: false)
             } else {
@@ -469,6 +474,7 @@ struct RoamDirector {
     private mutating func startTrip(world: RoamWorld) {
         isHome = false
         returning = false
+        returningUrgently = false
         tripTime = 0
         budget = 3 + Int(random() * 3)
         nappedThisTrip = false
@@ -688,6 +694,7 @@ struct RoamDirector {
 
     private mutating func beginReturn(world: RoamWorld, run: Bool) {
         returning = true
+        returningUrgently = returningUrgently || run
         budget = 0
         // 正在跳的那一下让它跳完，落地后再规划
         if case .jump = activity { return }
@@ -740,7 +747,7 @@ struct RoamDirector {
             pos = CGPoint(x: left ? floor.minX - 50 * k : floor.maxX + 50 * k, y: floor.y)
             surfaceID = floor.id
             facing = left ? 1 : -1
-            activity = .walk(toX: left ? floor.minX + 120 * k : floor.maxX - 120 * k, run: returning)
+            activity = .walk(toX: left ? floor.minX + 120 * k : floor.maxX - 120 * k, run: returningUrgently)
         }
     }
 
@@ -797,6 +804,7 @@ struct RoamDirector {
     private mutating func arriveHome() {
         isHome = true
         returning = false
+        returningUrgently = false
         activity = nil
         surfaceID = nil
         pendingJump = nil
