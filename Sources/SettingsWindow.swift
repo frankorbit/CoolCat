@@ -721,7 +721,7 @@ private struct InteractionPane: View {
                 RowDivider()
                 ToggleRow(title: "满屏漫游 🐾",
                           subtitle: "30 秒没打字就自己跳下键盘溜达、跳上窗口顶、躲到屏幕边偷看；"
-                              + "你一打字就跑回来，Claude / Codex 等你批准时也会回来提醒",
+                              + "你一打字就跑回来，Claude / Codex 等你批准时也会回来提醒；放歌时守在键盘前跟着节奏摇",
                           isOn: store.binding(\.roaming))
                 RowDivider()
                 ActionRow(title: "现在去溜达一圈", subtitle: "预览用：不等闲置，立刻出门（敲一下键盘就回来）", button: "出发") {

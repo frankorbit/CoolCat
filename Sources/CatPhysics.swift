@@ -480,7 +480,7 @@ final class CatPhysics {
     var catAway = false
 
     /// 这会儿该待在座位上：开会、Claude 在忙或等你、在跳舞、在睡觉、手里有东西、在吃鱼、在被摸……
-    /// 正在做只能坐在座位上做的事（开会、吃东西、送礼物、被摸、跳舞……）：手动「出发」也不出门，在外面也立刻回来。
+    /// 正在做只能坐在座位上做的事（开会、听歌、吃东西、送礼物、被摸……）：手动「出发」也不出门，在外面也立刻回来。
     /// Claude / Codex 在干活不算：状态气泡留在键盘上方照样显示；睡觉也不算：出门前会被叫醒。
     var prefersStayingHome: Bool {
         stayHomeReason != nil
@@ -489,6 +489,8 @@ final class CatPhysics {
     /// 不能出门的原因（给设置里的「出发」按钮提示用）；nil = 可以出门
     var stayHomeReason: String? {
         if micActive || cameraActive { return "在开会" }
+        // 放歌时戴着耳机守在键盘前跟着节奏摇，不出去玩；在外面的听到音乐就跑回来
+        if isEnjoyingMusic { return "在听歌" }
         if feedAge != nil { return "在吃小鱼干" }
         if gift != nil { return "在等你收礼物" }
         if heldProp != nil { return "手里拿着东西" }
@@ -497,6 +499,9 @@ final class CatPhysics {
         if danceAmount > 0.2 { return "在跟着音乐摇摆" }
         return nil
     }
+
+    /// 在听歌（戴着耳机）：和戴耳机用的是同一个判断，设置里关掉「听歌戴耳机」就不算
+    var isEnjoyingMusic: Bool { isListening && CatSettings.shared.musicHeadphones }
 
     /// Claude / Codex 在等你（批准权限、回复）：不自己出门；在外面溜达时一出现就跑回来提醒你
     var agentNeedsYou: Bool { claudeStatusIsWaiting }

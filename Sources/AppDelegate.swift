@@ -486,10 +486,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         if let path = roamLogPath, now - lastRoamLog > 0.5 {
             lastRoamLog = now
-            let line = String(format: "%.1f home=%d pose=%@ pos=(%.0f,%.0f) surf=%@ seat=(%.0f,%.0f) homeFrame=%@ visible=%@ tops=%d win=%@ stay=%d idle=%.0f fp=%@ act=%@\n",
+            let line = String(format: "%.1f home=%d pose=%@ pos=(%.0f,%.0f) surf=%@ seat=(%.0f,%.0f) homeFrame=%@ visible=%@ tops=%d win=%@ stay=%d idle=%.0f fp=%@ act=%@ why=%@\n",
                               now, roam.isHome ? 1 : 0, "\(roam.pose)", roam.pos.x, roam.pos.y, "\(roam.surfaceID.map(String.init) ?? "-")",
                               world.seat.x, world.seat.y, NSStringFromRect(home), NSStringFromRect(visible), roamSurfaces.count,
-                              NSStringFromRect(roamWindow?.frame ?? .zero), world.mustStayHome ? 1 : 0, keyIdle, "\(roam.pendingForcedPeek.map { "\($0)" } ?? "-")", "\(roam.activity.map { "\($0)" } ?? "-")".prefix(40).description)
+                              NSStringFromRect(roamWindow?.frame ?? .zero), world.mustStayHome ? 1 : 0, keyIdle, "\(roam.pendingForcedPeek.map { "\($0)" } ?? "-")", "\(roam.activity.map { "\($0)" } ?? "-")".prefix(40).description,
+                              physics.stayHomeReason ?? "-")
             if let h = FileHandle(forWritingAtPath: path) {
                 h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
             } else {
