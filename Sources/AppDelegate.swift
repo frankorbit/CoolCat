@@ -454,6 +454,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - 满屏漫游
 
+    /// 最近一次跳台扫描（设置里显示有几处能跳、为什么不能跳）
+    private var roamScan = RoamScanReport()
+
+    private func rescanRoamSurfaces(on screen: NSScreen) {
+        // 侧身小猫放大后站着约 150 画布点高
+        let walkerK = CatSettings.shared.scale * CatRenderer.walkerArtScale
+        roamScan = RoamSurfaceScanner.scan(on: screen, catHeight: 120 * walkerK, minWidth: 110 * walkerK)
+        roamSurfaces = roamScan.surfaces
+    }
+
     /// 每帧：把屏幕上能落脚的面、座位位置、按键空闲时长喂给漫游逻辑，再摆好侧身小猫
     private func updateRoaming(dt: CGFloat, now: CFTimeInterval) {
         let settings = CatSettings.shared
@@ -466,9 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let scanEvery: CFTimeInterval = roam.isHome ? 5 : 1
         if now - lastSurfaceScan > scanEvery {
             lastSurfaceScan = now
-            // 侧身小猫放大后站着约 150 画布点高
-            let walkerK = k * CatRenderer.walkerArtScale
-            roamSurfaces = RoamSurfaceScanner.windowTops(on: screen, catHeight: 120 * walkerK, minWidth: 110 * walkerK)
+            rescanRoamSurfaces(on: screen)
         }
         let engine = InputEngine.shared
         // 启动后还没按过键：从启动那一刻算闲置，免得被当成「人早就走了」而一直不出门
@@ -489,15 +497,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             screenTop: visible.maxY,
             // 光标逗猫：只看小猫这块屏幕上的光标；设置里关了就当没有
             cursor: settings.cursorPlay && screen.frame.contains(NSEvent.mouseLocation) ? NSEvent.mouseLocation : nil,
-            cursorSpeed: hypot(engine.mouseVelocity.dx, engine.mouseVelocity.dy)
+            cursorSpeed: hypot(engine.mouseVelocity.dx, engine.mouseVelocity.dy),
+            walls: roamScan.walls
         )
         if let path = roamLogPath, now - lastRoamLog > 0.5 {
             lastRoamLog = now
-            let line = String(format: "%.1f home=%d pose=%@ pos=(%.0f,%.0f) surf=%@ seat=(%.0f,%.0f) homeFrame=%@ visible=%@ tops=%d win=%@ stay=%d idle=%.0f fp=%@ act=%@ why=%@\n",
+            let line = String(format: "%.1f home=%d pose=%@ pos=(%.0f,%.0f) surf=%@ seat=(%.0f,%.0f) homeFrame=%@ visible=%@ tops=%d win=%@ stay=%d idle=%.0f fp=%@ act=%@ why=%@ scan=%@\n",
                               now, roam.isHome ? 1 : 0, "\(roam.pose)", roam.pos.x, roam.pos.y, "\(roam.surfaceID.map(String.init) ?? "-")",
                               world.seat.x, world.seat.y, NSStringFromRect(home), NSStringFromRect(visible), roamSurfaces.count,
                               NSStringFromRect(roamWindow?.frame ?? .zero), world.mustStayHome ? 1 : 0, keyIdle, "\(roam.pendingForcedPeek.map { "\($0)" } ?? "-")", "\(roam.activity.map { "\($0)" } ?? "-")".prefix(40).description,
-                              physics.stayHomeReason ?? "-")
+                              physics.stayHomeReason ?? "-", roamScan.summary)
             if let h = FileHandle(forWritingAtPath: path) {
                 h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
             } else {
@@ -524,7 +533,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             window = RoamWindow()
             roamWindow = window
         }
-        window.place(feet: roam.pos, scale: k)
+        window.place(feet: roam.pos, scale: k,
+                     anchor: roam.climbWallOnRight.map { CatRenderer.climbAnchor(wallOnRight: $0) } ?? CatRenderer.walkerFeet)
         window.walkerView.pose = CatRenderer.WalkerPose(
             pose: roam.pose, phase: roam.gaitPhase, facing: roam.facing, air: roam.airProgress,
             time: physics.time, blink: physics.time.truncatingRemainder(dividingBy: 4.1) < 0.13,
@@ -1180,6 +1190,8 @@ extension AppDelegate: SettingsHost {
     func install(_ agent: CodingAgent) { installHooks(for: agent) }
     func uninstall(_ agent: CodingAgent) { uninstallHooks(for: agent) }
 
+    var roamPlatformStatus: String { roamScan.summary }
+
     func runDemo(_ demo: SettingsDemo) {
         switch demo {
         case .typing: runDemoBurst()
@@ -1199,6 +1211,12 @@ extension AppDelegate: SettingsHost {
             } else if demo == .nap {
                 roam.napNow()
             } else if demo == .hop {
+                // 先现扫一遍：没有能跳的窗口就说明原因，不然点了像没反应
+                if let screen = overlayWindow.screen ?? NSScreen.main { rescanRoamSurfaces(on: screen) }
+                guard !roamScan.surfaces.isEmpty else {
+                    physics.showNotice("🪟 " + roamScan.summary)
+                    return
+                }
                 roam.hopNow()
             } else {
                 roam.goOutNow()

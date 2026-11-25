@@ -20,6 +20,8 @@ protocol SettingsHost: AnyObject {
     func install(_ agent: CodingAgent)
     func uninstall(_ agent: CodingAgent)
     func runDemo(_ demo: SettingsDemo)
+    /// 窗口跳台现在的情况：几处能跳，或者为什么一处都没有
+    var roamPlatformStatus: String { get }
 }
 
 enum SettingsDemo {
@@ -733,7 +735,8 @@ private struct InteractionPane: View {
                     store.host.runDemo(.peek)
                 }
                 RowDivider()
-                ActionRow(title: "窗口跳台 🪟", subtitle: "预览用：把桌面上的窗口当桌子，在窗口顶上走、从一扇窗跳到另一扇（窗口上方得留点空）",
+                // 副标题实时显示现在有几处能跳、为什么一处都没有（每秒刷新）
+                ActionRow(title: "窗口跳台 🪟", subtitle: "预览用：把窗口当桌子跳来跳去。" + store.host.roamPlatformStatus,
                           button: "跳吧") {
                     store.host.runDemo(.hop)
                 }

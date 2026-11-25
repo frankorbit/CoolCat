@@ -91,11 +91,35 @@ extension CatRenderer {
 
     // MARK: Draw
 
+    /// 爬窗框时的画布锚点（窗框上爪子贴着的那一点）：小猫转 90 度后横着占画布，锚点挪到靠窗框的那一侧
+    static func climbAnchor(wallOnRight: Bool) -> CGPoint {
+        CGPoint(x: wallOnRight ? 182 : 8, y: 92)
+    }
+
     static func drawWalker(in ctx: CGContext, pose: WalkerPose) {
         let settings = CatSettings.shared
         let coat = settings.coatTheme
         refreshActivePet(coat: coat)
         let pal = walkerPalette(coat: coat, eyeTheme: settings.eyeTheme)
+        if pose.pose == .climb {
+            // 爬窗框：把走路的侧身小猫转 90 度，头朝上、爪子贴着窗框（facing > 0 = 窗框在右边）
+            let wallRight = pose.facing > 0
+            let anchor = climbAnchor(wallOnRight: wallRight)
+            ctx.saveGState()
+            ctx.translateBy(x: anchor.x, y: anchor.y)
+            if wallRight {
+                ctx.rotate(by: -.pi / 2)
+            } else {
+                ctx.rotate(by: .pi / 2)
+                ctx.scaleBy(x: -1, y: 1)
+            }
+            ctx.translateBy(x: -walkerFeet.x, y: -walkerFeet.y)
+            var climbing = pose
+            climbing.facing = 1
+            drawMovingWalker(in: ctx, pose: climbing, pal: pal)
+            ctx.restoreGState()
+            return
+        }
         if pose.pose == .peek, let edge = pose.peekEdge {
             drawPeek(in: ctx, edge: edge, reveal: pose.peekReveal, pose: pose, pal: pal)
             return
@@ -175,6 +199,11 @@ extension CatRenderer {
             lift = 33
             bodyH = 24.5
             tilt = 0.09
+        case .climb:
+            // 爬窗框：身体紧贴着墙（转过来后"地面"就是窗框），身子稍微拉长
+            lift = 31 + sin(p * 2) * 1.2
+            bodyH = 22
+            stretch = 1.1
         case .stand, .sit, .peek, .curl:
             lift += sin(pose.time * 2.1) * 0.8
         }
@@ -248,6 +277,16 @@ extension CatRenderer {
                 // 腾空：前腿往前伸，后腿往后蹬
                 let len = groundY - joint.y - 4
                 return CGPoint(x: joint.x + (front ? len * 0.75 : -len * 0.75), y: joint.y + len * 0.62)
+            case .climb:
+                // 往上爬：前腿顺着墙往头顶方向够、钩住再往下拉；后腿收在屁股下面蹬墙。
+                // 腿是顺着墙斜着的，不是横着支出来的
+                let c = sin(p + offset)
+                if front {
+                    let reach = 0.5 + 0.5 * c                         // 1 = 够到最远，0 = 拉回到肩膀下
+                    let lift = max(0, cos(p + offset)) * 5            // 往上够的时候爪子稍微离墙
+                    return CGPoint(x: joint.x + 10 + reach * 30, y: groundY - lift)
+                }
+                return CGPoint(x: joint.x - 2 + c * 9, y: groundY)
             case .walk, .run, .stalk:
                 // 潜伏时步子小、爪子几乎不离地
                 let amp: CGFloat = pose.pose == .run ? 0.6 : (pose.pose == .stalk ? 0.28 : 0.4)
@@ -288,6 +327,10 @@ extension CatRenderer {
                 let g = gallopLeg(joint, front: front, near: near)
                 return leg(top, g.end, front: front, fold: g.fold)
             }
+            if pose.pose == .climb {
+                // 后腿深深弯着（膝盖、跗关节收起来蹬墙），前腿伸直往上够
+                return leg(top, legEnd(joint, offset: offset, front: front), front: front, fold: front ? 0 : 0.8)
+            }
             return leg(top, legEnd(joint, offset: offset, front: front), front: front)
         }
         let farFront = makeLeg(CGPoint(x: shoulder.x - 5, y: shoulder.y), top: CGPoint(x: shoulder.x - 5, y: shoulder.y - 2),
@@ -304,7 +347,8 @@ extension CatRenderer {
         // 盯上猎物时尾巴放低，只有尾巴尖在快速抽动
         let sway = hunting ? sin(pose.time * 18) * 7 : sin(pose.time * 3.2 + p * 0.5) * 6
         let tailRoot = CGPoint(x: -halfLen * 0.92 + wiggleX, y: -bodyH * 0.25 - wiggleUp)
-        let tailUp: CGFloat = pose.pose == .air ? 0.45 : (hunting ? 0.25 : 1)
+        // 爬窗框时尾巴顺着墙往下垂（转过来后"往后"就是往下）
+        let tailUp: CGFloat = pose.pose == .air ? 0.45 : (hunting ? 0.25 : (pose.pose == .climb ? 0.1 : 1))
         let tail = CGMutablePath()
         tail.move(to: tailRoot)
         if galloping {
@@ -391,10 +435,10 @@ extension CatRenderer {
         // 头：在身体前上方，走路时和身体反着轻轻点头
         let nod: CGFloat = pose.pose == .walk ? -sin(p * 2) * 1.2 : 0
         // 飞奔时头往前探、压低，并抵消身体的俯仰，眼睛始终平视前方（猎豹那种稳定的头）
-        // 潜伏、扭屁股时头往前伸、压到肩膀高度，死死盯着
+        // 潜伏、扭屁股时头往前伸、压到肩膀高度，死死盯着；爬窗框时同样贴着墙往上看
         let headCenter = galloping
             ? CGPoint(x: halfLen * 0.95 + 14, y: -bodyH - 9 - arch * 0.3)
-            : (hunting ? CGPoint(x: halfLen * 0.95 + 15, y: -bodyH - 6)
+            : (hunting || pose.pose == .climb ? CGPoint(x: halfLen * 0.95 + 15, y: -bodyH - 6)
                        : CGPoint(x: halfLen * 0.95 + 10, y: -bodyH - 15 + nod))
         // 头和身体重叠的那段（脖子）不描线，看起来是长在身体上的
         let bodyCTM = ctx.ctm

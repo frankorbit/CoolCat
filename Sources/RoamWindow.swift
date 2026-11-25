@@ -30,13 +30,13 @@ final class RoamWindow: NSPanel {
         }
     }
 
-    /// 把窗口摆到「脚底在 feet」的位置
-    func place(feet: CGPoint, scale: CGFloat) {
+    /// 把窗口摆到「画布上的 anchor 落在屏幕上的 feet」的位置。平时 anchor 是脚底；爬窗框时是贴着窗框的那一点
+    func place(feet: CGPoint, scale: CGFloat, anchor: CGPoint = CatRenderer.walkerFeet) {
         // 侧身小猫额外放大，和坐着的小猫体型一致
         let k = scale * CatRenderer.walkerArtScale
         let size = CGSize(width: CatRenderer.walkerCanvas.width * k, height: CatRenderer.walkerCanvas.height * k)
-        let origin = CGPoint(x: feet.x - CatRenderer.walkerFeet.x * k,
-                             y: feet.y - (CatRenderer.walkerCanvas.height - CatRenderer.walkerFeet.y) * k)
+        let origin = CGPoint(x: feet.x - anchor.x * k,
+                             y: feet.y - (CatRenderer.walkerCanvas.height - anchor.y) * k)
         let frame = CGRect(origin: origin, size: size).integral
         if frame != self.frame { setFrame(frame, display: false) }
     }
@@ -70,15 +70,55 @@ final class RoamView: NSView {
 
 // MARK: - Surfaces
 
+/// 一次扫描的结果：能站的窗口上沿，以及其余窗口为什么站不了（设置里显示、预览按钮提示用）
+struct RoamScanReport {
+    var surfaces: [RoamSurface] = []
+    /// 能爬上去的窗框侧边（窗口顶太高跳不上去时用）
+    var walls: [RoamWall] = []
+    /// 窗口顶上方空间不够站一只猫
+    var noRoom = 0
+    /// 窗口上沿被前面的窗口挡住了
+    var occluded = 0
+    /// 窗口太窄
+    var tooNarrow = 0
+    /// 窗口顶上方至少要留出多少点
+    var neededRoom: CGFloat = 0
+
+    var summary: String {
+        if !surfaces.isEmpty {
+            return "现在有 \(surfaces.count) 处能跳" + (walls.isEmpty ? "" : "，\(walls.count) 条窗框能爬（太高跳不上去时爬上去）")
+        }
+        var reasons: [String] = []
+        if noRoom > 0 { reasons.append("\(noRoom) 个窗口顶上空间不够（要留出约 \(Int(neededRoom)) 点）") }
+        if occluded > 0 { reasons.append("\(occluded) 个被前面的窗口挡住") }
+        if tooNarrow > 0 { reasons.append("\(tooNarrow) 个太窄") }
+        return reasons.isEmpty ? "这块屏幕上没有窗口" : "现在没有能跳的窗口：" + reasons.joined(separator: "，")
+    }
+}
+
 /// 扫描屏幕上能站的窗口上沿。只读窗口位置（不需要屏幕录制权限），不读内容。
 enum RoamSurfaceScanner {
+    static func windowTops(on screen: NSScreen, catHeight: CGFloat, minWidth: CGFloat) -> [RoamSurface] {
+        scan(on: screen, catHeight: catHeight, minWidth: minWidth).surfaces
+    }
+
+    /// 侧边被前面的窗口挡住了三成以上：不爬（看起来像爬在别的窗口上）
+    private static func sideCovered(x: CGFloat, from bottom: CGFloat, to top: CGFloat, by fronts: [CGRect]) -> Bool {
+        var covered: CGFloat = 0
+        for r in fronts where r.minX - 2 <= x && r.maxX + 2 >= x {
+            covered += max(0, min(top, r.maxY) - max(bottom, r.minY))
+        }
+        return covered > (top - bottom) * 0.3
+    }
+
     /// - Parameters:
     ///   - screen: 小猫所在的屏幕
     ///   - catHeight: 小猫站着的高度（屏幕点）：上沿离屏幕最上沿至少得有它的八成（耳朵可以伸进菜单栏）
     ///   - minWidth: 太窄的不站
-    static func windowTops(on screen: NSScreen, catHeight: CGFloat, minWidth: CGFloat) -> [RoamSurface] {
+    static func scan(on screen: NSScreen, catHeight: CGFloat, minWidth: CGFloat) -> RoamScanReport {
+        var report = RoamScanReport(neededRoom: catHeight * 0.8)
         guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
-              let primary = NSScreen.screens.first else { return [] }
+              let primary = NSScreen.screens.first else { return report }
         let myPID = Int(ProcessInfo.processInfo.processIdentifier)
         let visible = screen.visibleFrame
         // 脚下那条边被前面的窗口盖住才算站不了；前面窗口只挡住上方空间时，小猫画在最上层，看起来就是站在它前面
@@ -97,12 +137,19 @@ enum RoamSurfaceScanner {
             guard rect.width >= 40, rect.height >= 40 else { continue }
             rects.append((id, rect))
         }
-        var result: [RoamSurface] = []
         for (index, item) in rects.enumerated() {
             let top = item.rect.maxY
-            guard item.rect.width >= minWidth,
-                  top > visible.minY + 60, top < visible.maxY - 8, top + catHeight * 0.8 < screen.frame.maxY,
-                  item.rect.maxX > visible.minX, item.rect.minX < visible.maxX else { continue }
+            // 只统计上沿在这块屏幕里的窗口
+            guard item.rect.maxX > visible.minX, item.rect.minX < visible.maxX,
+                  top > visible.minY + 60, top <= screen.frame.maxY else { continue }
+            guard item.rect.width >= minWidth else {
+                report.tooNarrow += 1
+                continue
+            }
+            guard top < visible.maxY - 8, top + catHeight * 0.8 < screen.frame.maxY else {
+                report.noRoom += 1
+                continue
+            }
             var segments = [(max(item.rect.minX, visible.minX), min(item.rect.maxX, visible.maxX))]
             // 被前面的窗口盖住的那段去掉
             for front in rects.prefix(index) {
@@ -116,10 +163,23 @@ enum RoamSurfaceScanner {
                     return out
                 }
             }
-            for (i, seg) in segments.enumerated() where seg.1 - seg.0 >= minWidth {
-                result.append(RoamSurface(id: item.id * 8 + i + 1, minX: seg.0, maxX: seg.1, y: top))
+            let usable = segments.enumerated().filter { $0.element.1 - $0.element.0 >= minWidth }
+            if usable.isEmpty { report.occluded += 1 }
+            for (i, seg) in usable {
+                let surface = RoamSurface(id: item.id * 8 + i + 1, minX: seg.0, maxX: seg.1, y: top)
+                report.surfaces.append(surface)
+                // 这段上沿正好到窗口的左/右角，而且那条侧边没被前面的窗口挡住：可以顺着侧边爬上来
+                let bottom = max(item.rect.minY, visible.minY)
+                for (x, windowOnRight) in [(item.rect.minX, true), (item.rect.maxX, false)] {
+                    let atCorner = windowOnRight ? abs(seg.0 - x) < 2 : abs(seg.1 - x) < 2
+                    let fronts = rects.prefix(index).map(\.rect)
+                    guard atCorner, x > visible.minX + 30, x < visible.maxX - 30, top - bottom > 60,
+                          !Self.sideCovered(x: x, from: bottom, to: top, by: fronts) else { continue }
+                    report.walls.append(RoamWall(x: x, windowOnRight: windowOnRight, minY: bottom, top: top,
+                                                 surfaceID: surface.id))
+                }
             }
         }
-        return result
+        return report
     }
 }

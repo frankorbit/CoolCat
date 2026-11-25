@@ -18,6 +18,19 @@ struct RoamSurface: Equatable {
     }
 }
 
+/// 能爬的窗框侧边：窗口顶太高跳不上去时，顺着侧边爬上去（屏幕坐标，y 向上）
+struct RoamWall: Equatable {
+    /// 侧边所在的 x
+    var x: CGFloat
+    /// 窗口在侧边的右边（这是窗口的左框）；false = 窗口在左边（右框）
+    var windowOnRight: Bool
+    /// 侧边露在外面的那段：从 minY 爬到 top（窗口上沿）
+    var minY: CGFloat
+    var top: CGFloat
+    /// 爬到顶后站上去的那段窗口上沿
+    var surfaceID: Int
+}
+
 /// 每帧喂给漫游逻辑的外部状态（全部由调用方采集，逻辑本身不碰 AppKit）
 struct RoamWorld {
     /// 屏幕底部（Dock 上方）
@@ -46,6 +59,8 @@ struct RoamWorld {
     var cursor: CGPoint?
     /// 光标速度（屏幕点/秒）
     var cursorSpeed: CGFloat = 0
+    /// 能爬的窗框侧边
+    var walls: [RoamWall] = []
 
     var surfaces: [RoamSurface] { [floor] + windowTops }
 
@@ -62,6 +77,8 @@ enum RoamPose: Equatable {
     case stalk
     /// 蹲着扭屁股蓄力，马上要扑
     case wiggle
+    /// 顺着窗框侧边往上爬
+    case climb
     /// 蜷成一团睡觉（趴下 → 蜷起来 → 醒来伸展）
     case curl
 }
@@ -95,6 +112,8 @@ struct RoamDirector {
         var apex: CGFloat
         /// 落在哪个面上；nil = 跳回座位
         var surface: Int?
+        /// 跳过去抓住窗框侧边（落地后接着往上爬）
+        var toWall = false
 
         /// 抛物线：两端连线再往上鼓一个弧，弧高 = apex + 高度差的一半（往上跳时能越过高的那一端）
         func point(at t: CGFloat) -> CGPoint {
@@ -179,6 +198,8 @@ struct RoamDirector {
         case stalk(Stalk)
         /// 朝光标扑过去；飞行途中前爪碰到光标就算抓到
         case pounce(Pounce)
+        /// 顺着窗框侧边往上爬，到顶翻上窗口
+        case climb(Climb)
         case land(remaining: CGFloat)
         case sit(remaining: CGFloat)
         case fall(vy: CGFloat)
@@ -240,6 +261,7 @@ struct RoamDirector {
         case .sit: return .sit
         case .peek(let p): return p.t < p.start ? .crouch : .peek
         case .nap: return .curl
+        case .climb: return .climb
         case nil: return .stand
         }
     }
@@ -343,6 +365,9 @@ struct RoamDirector {
     private var playCooldown: CGFloat = 0
     /// 扑完落地后接着盯
     private var resumeStalk = false
+    /// 走到窗框旁边后要开始的那次攀爬；跳上窗框侧边后接着爬的那次
+    private var pendingClimb: Climb?
+    private var wallJumpClimb: Climb?
     /// 这一趟已经睡过了：一趟最多睡一觉
     private var nappedThisTrip = false
     /// 这一趟已经安排了几件事（第一件多半是先走远一点）
@@ -425,7 +450,16 @@ struct RoamDirector {
             facing = j.to.x >= j.from.x ? 1 : -1
             if j.t >= 1 {
                 pos = j.to
-                if let surface = j.surface {
+                if j.toWall {
+                    // 抓住了窗框侧边：接着往上爬；半路上要回家了就直接松爪掉下来
+                    if let climb = wallJumpClimb, !returning {
+                        activity = .climb(climb)
+                    } else {
+                        surfaceID = nil
+                        activity = .fall(vy: 0)
+                    }
+                    wallJumpClimb = nil
+                } else if let surface = j.surface {
                     surfaceID = surface
                     activity = .land(remaining: 0.22)
                     events.append(.landed)
@@ -437,6 +471,30 @@ struct RoamDirector {
                 }
             } else {
                 activity = .jump(j)
+            }
+        case .climb(var climb):
+            // 窗口挪动了就跟着挪；关掉了就掉下来
+            guard let wall = world.walls.first(where: { $0.surfaceID == climb.wall.surfaceID
+                && $0.windowOnRight == climb.wall.windowOnRight && abs($0.x - climb.wall.x) < 40 }) else {
+                surfaceID = nil
+                activity = .fall(vy: 0)
+                break
+            }
+            climb.wall = wall
+            let step = Self.climbSpeed * k * dt
+            climb.y += step
+            // 一个攀爬周期约爬 48 点：每秒倒腾三四下，不像在原地刨
+            gaitPhase += step / (48 * k) * .pi * 2
+            facing = wall.windowOnRight ? 1 : -1
+            pos = CGPoint(x: wall.x, y: min(climb.y, wall.top))
+            if climb.y >= wall.top {
+                // 爬到顶：翻上窗口，站在离角落一点点的地方
+                pos = CGPoint(x: wall.x + (wall.windowOnRight ? 22 : -22) * k, y: wall.top)
+                surfaceID = wall.surfaceID
+                activity = .land(remaining: 0.25)
+                events.append(.landed)
+            } else {
+                activity = .climb(climb)
             }
         case .stalk(var stalk):
             stepStalk(&stalk, dt: dt, world: world)
@@ -497,6 +555,10 @@ struct RoamDirector {
             break
         }
 
+        if activity == nil, let climb = pendingClimb {
+            pendingClimb = nil
+            beginClimb(climb, world: world)
+        }
         if activity == nil, resumeStalk {
             resumeStalk = false
             if !returning, playSession, playPounces < Self.maxPounces, cursorInterest(world: world) != nil {
@@ -530,7 +592,7 @@ struct RoamDirector {
     private func isGrounded(_ a: Activity) -> Bool {
         switch a {
         case .walk, .sit, .land, .crouch, .nap, .stalk: return true
-        case .jump, .fall, .peek, .pounce: return false
+        case .jump, .fall, .peek, .pounce, .climb: return false
         }
     }
 
@@ -693,6 +755,62 @@ struct RoamDirector {
         activity = .pounce(Pounce(jump: jump))
     }
 
+    // MARK: Climbing
+
+    /// 顺着窗框侧边往上爬
+    struct Climb: Equatable {
+        var wall: RoamWall
+        /// 现在爬到的高度（脚的位置）
+        var y: CGFloat
+    }
+
+    /// 爬的速度（画布点/秒，乘 scale）
+    static let climbSpeed: CGFloat = 170
+
+    /// 正在爬：窗口在小猫的右边（true）还是左边；不在爬时 nil（画的时候把小猫转 90 度）
+    var climbWallOnRight: Bool? {
+        if case .climb(let c) = activity { return c.wall.windowOnRight }
+        return nil
+    }
+
+    /// 地上能爬的窗框：窗口顶太高、跳不上去的才爬；侧边下端要够得着（贴地，或者跳一下能抓住）。挑最近的
+    private func climbTarget(from here: RoamSurface, world: RoamWorld) -> RoamWall? {
+        let k = world.scale
+        let candidates = world.walls.filter { wall in
+            let start = max(wall.minY, here.y)
+            return start - here.y <= Self.maxJumpUp * k * 0.8 && wall.top - here.y > Self.maxJumpUp * k * 0.9
+        }
+        return candidates.min { abs($0.x - pos.x) < abs($1.x - pos.x) }
+    }
+
+    /// 先走到窗框旁边（窗口外侧）
+    private mutating func startClimb(_ wall: RoamWall, from here: RoamSurface, k: CGFloat) {
+        let standX = wall.x + (wall.windowOnRight ? -16 : 16) * k
+        let climb = Climb(wall: wall, y: max(wall.minY, here.y))
+        if abs(standX - pos.x) > 1 {
+            activity = .walk(toX: standX, run: false)
+            pendingClimb = climb
+        } else {
+            activity = nil
+            pendingClimb = climb
+        }
+    }
+
+    /// 走到窗框旁边了：侧边贴地就直接爬；悬在半空就先蹲一下跳上去抓住
+    private mutating func beginClimb(_ climb: Climb, world: RoamWorld) {
+        let k = world.scale
+        facing = climb.wall.windowOnRight ? 1 : -1
+        if climb.y > pos.y + 8 * k {
+            var jump = makeJump(from: pos, to: CGPoint(x: climb.wall.x, y: climb.y), surface: nil, k: k)
+            jump.toWall = true
+            wallJumpClimb = climb
+            activity = .crouch(remaining: 0.28, then: jump)
+        } else {
+            pos.x = climb.wall.x
+            activity = .climb(climb)
+        }
+    }
+
     // MARK: Planning
 
     private mutating func startTrip(world: RoamWorld) {
@@ -786,6 +904,12 @@ struct RoamDirector {
             budget = max(budget, 1)
             let pick = windowHops[Int(random() * Double(windowHops.count)) % windowHops.count]
             startHop(pick.1, from: here, to: pick.0, k: k, run: false)
+            return
+        }
+        // 窗口顶太高跳不上去：在地上时找一条窗框侧边爬上去（演示时一定爬）
+        if id == world.floor.id, let wall = climbTarget(from: here, world: world),
+           forcedHops > 0 || random() < 0.3 {
+            startClimb(wall, from: here, k: k)
             return
         }
         forcedHops = 0
@@ -924,6 +1048,13 @@ struct RoamDirector {
         if case .jump = activity { return }
         if case .pounce = activity { return }
         endPlay()
+        pendingClimb = nil
+        if case .climb = activity {
+            // 爬到一半要回家：松爪跳下来
+            surfaceID = nil
+            activity = .fall(vy: 0)
+            return
+        }
         if case .fall = activity { return }
         if case .nap(var n) = activity {
             // 在睡觉：醒过来（被吵醒的话一激灵），醒透了再回家
@@ -1039,6 +1170,8 @@ struct RoamDirector {
         forcedHops = 0
         playSession = false
         resumeStalk = false
+        pendingClimb = nil
+        wallJumpClimb = nil
         cooldown = 60 + CGFloat(random() * 60)
         checkTimer = 5
     }

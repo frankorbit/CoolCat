@@ -923,7 +923,9 @@ func renderWalkPreviewSheet(to path: String) {
         ("潜伏 2", .init(pose: .stalk, phase: .pi, facing: 1, air: 0, time: 0.6, blink: false)),
         ("扭屁股 1", .init(pose: .wiggle, phase: 0, facing: 1, air: 0, time: 0.1, blink: false)),
         ("扭屁股 2", .init(pose: .wiggle, phase: 0, facing: 1, air: 0, time: 0.2, blink: false)),
-        ("扑", .init(pose: .air, phase: 0, facing: 1, air: 0.3, time: 0.3, blink: false, hunting: true))
+        ("扑", .init(pose: .air, phase: 0, facing: 1, air: 0.3, time: 0.3, blink: false, hunting: true)),
+        ("爬（窗在右）", .init(pose: .climb, phase: 0, facing: 1, air: 0, time: 0.3, blink: false)),
+        ("爬（窗在左）", .init(pose: .climb, phase: .pi, facing: -1, air: 0, time: 0.3, blink: false))
     ]
     let set = ProcessInfo.processInfo.environment["COOLCAT_WALK_SET"]
     let poses = set == "nap" ? napPoses : (set == "run" ? runPoses : (set == "play" ? playPoses : walkPoses))
@@ -1098,6 +1100,7 @@ private final class PreviewSettingsHost: SettingsHost {
     func install(_ agent: CodingAgent) {}
     func uninstall(_ agent: CodingAgent) {}
     func runDemo(_ demo: SettingsDemo) {}
+    var roamPlatformStatus: String { "现在有 2 处能跳" }
 }
 
 /// README 用的设置截图：在屏幕上开真实窗口（侧栏毛玻璃、选中态都正确），用 screencapture 按窗口截取
