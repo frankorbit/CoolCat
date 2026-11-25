@@ -83,10 +83,70 @@ enum DanceMove: String, CaseIterable {
     case concertWave = "演唱会挥手"
     case rocking = "摇椅"
 
+    /// 冲击曲线的舞步比正弦曲线更接近阶跃，弹簧追上它要更久：在通用提前量之外再提前这么多秒，峰值才正好落在拍点上
+    /// （用跳舞时的弹簧参数实测：通用 50ms + 额外 50ms → 峰值误差 0ms）
+    var extraSpringLead: CGFloat { isCalm ? 0 : 0.05 }
+
     var isCalm: Bool {
         switch self {
         case .gentleSway, .dreamyCircle, .slowNod, .concertWave, .rocking: return true
         default: return false
+        }
+    }
+}
+
+/// 卡点曲线。正弦曲线在拍点那一刻速度为零、动作最软，看不出"哪一下是拍"；
+/// 这里的曲线把大部分位移集中在拍点前很短的一段里，拍点上急停到位，之后慢慢回去——弹簧再带一点过冲，就是"卡点"的那一下。
+/// local = 拍内进度 0..1（0 = 刚好在拍点上）
+enum BeatShape {
+    /// 冲击：拍点上为 1，之后慢慢回落到 0；下一拍前 attack 拍内加速冲回 1
+    static func hit(_ local: CGFloat, attack: CGFloat = 0.14) -> CGFloat {
+        let release = 1 - attack
+        if local < release { return pow(1 - local / release, 2.2) }
+        let t = (local - release) / attack
+        return t * t
+    }
+
+    /// 两侧切换（偶数拍在 +1 一侧、奇数拍在 -1 一侧）：大部分时间停在一侧、微微回收，
+    /// 下一拍前 attack 拍内加速甩到另一侧，拍点上到位
+    static func swing(_ beatFloat: CGFloat, attack: CGFloat) -> CGFloat {
+        let beat = beatFloat.rounded(.down)
+        let local = beatFloat - beat
+        let side: CGFloat = Int(beat).isMultiple(of: 2) ? 1 : -1
+        let release = 1 - attack
+        if local < release { return side * (1 - 0.12 * local / release) }
+        let t = (local - release) / attack
+        let from = side * 0.88
+        return from + (-side - from) * t * t
+    }
+
+    /// 抬起再砸下：拍点后抬起（0 = 落着，1 = 抬到最高），停一会儿，下一拍前加速落下，拍点上砸到底
+    static func liftSlam(_ local: CGFloat, attack: CGFloat = 0.16) -> CGFloat {
+        let release = 1 - attack
+        if local < 0.4 { let t = local / 0.4; return 1 - (1 - t) * (1 - t) }
+        if local < release { return 1 }
+        let t = (local - release) / attack
+        return 1 - t * t
+    }
+
+    /// 两只爪子轮流：even = true 的那只在偶数拍上冲到位，另一只在奇数拍。返回这一只当前的冲击值
+    static func alternatingHit(_ beatFloat: CGFloat, even: Bool, attack: CGFloat) -> CGFloat {
+        let beat = beatFloat.rounded(.down)
+        let local = beatFloat - beat
+        let release = 1 - attack
+        // 回落阶段属于刚过去的这一拍，冲刺阶段属于马上要到的下一拍
+        let owner = local < release ? Int(beat) : Int(beat) + 1
+        guard owner.isMultiple(of: 2) == even else { return 0 }
+        return hit(local, attack: attack)
+    }
+
+    /// 小节里的重拍加重：第 1 拍最重，第 3 拍次之。downbeat = 小节第一拍的拍号余数；nil = 还不知道，不加重
+    static func accent(beat: Int, downbeat: Int?) -> CGFloat {
+        guard let downbeat else { return 1 }
+        switch ((beat - downbeat) % 4 + 4) % 4 {
+        case 0: return 1.2
+        case 2: return 1.08
+        default: return 0.95
         }
     }
 }
@@ -111,23 +171,36 @@ struct DanceDirector {
     ///   - seatX: 当前坐姿锚点 x（含身体位移）
     ///   - arousal: 0..1 歌曲能量感（舒缓 ↔ 激烈），决定从哪组舞步里挑
     ///   - rhythm: 0..1 节奏强度（鼓点网格有多清晰）
+    ///   - downbeat: 小节第一拍的拍号余数（0..3）；nil = 还没认出来。换舞步对齐到小节开头，重拍加重
+    ///   - steady: 速度稳不稳。速度乱跳时只跳平滑的舒缓舞步（连拍子都没有，有节奏的舞步只会乱点头）
+    ///   - snap: 0..1 相位准不准决定的动作软硬（见 evaluate）。准 → 冲击曲线卡点；不准 → 平滑曲线，误差不显眼
     mutating func pose(beatPhase: CGFloat, headLead: CGFloat = 0, energy: CGFloat, kick: CGFloat, seatX: CGFloat,
-                       arousal: CGFloat = 0.6, rhythm: CGFloat = 0.5) -> PoseOverlay {
+                       arousal: CGFloat = 0.6, rhythm: CGFloat = 0.5, downbeat: Int? = nil,
+                       bpm: CGFloat = 120, steady: Bool = true, snap: CGFloat = 1) -> PoseOverlay {
         let beat = Int(beatPhase / (2 * .pi))
+        // 认出小节后只在小节第一拍换舞步（像真人跳舞一样跟着乐句走）；没认出来就照旧每 8 拍换
+        let barStart = downbeat.map { ((beat - $0) % 4 + 4) % 4 == 0 } ?? true
         // 情绪明显变了（安静段落 ↔ 副歌），不用等满 8 拍就换一组舞步
         let strongBeat = Self.isStrongBeat(rhythm: rhythm, arousal: arousal)
-        let moodMismatch = (arousal < 0.3 && !move.isCalm && !strongBeat)
-            || ((arousal > 0.7 || strongBeat) && (move.isCalm || (strongBeat && move == .sway)))
-        // 相位校正可能让拍号回退一格，不当作"重新开始"；明显回退（切歌重置）才换舞步
-        if beat - moveStartBeat >= beatsPerMove || beat < moveStartBeat - 1 || (moodMismatch && beat != moveStartBeat) {
+        let moodMismatch = steady
+            ? (arousal < 0.3 && !move.isCalm && !strongBeat)
+                || ((arousal > 0.7 || strongBeat) && (move.isCalm || (strongBeat && move == .sway)))
+            : !move.isCalm
+        // 相位校正可能让拍号回退一格，不当作"重新开始"；明显回退（切歌重置）才换舞步。
+        // 拍子丢了要马上收成柔和舞步，不等小节开头
+        if (beat - moveStartBeat >= beatsPerMove && barStart) || beat < moveStartBeat - 1
+            || (moodMismatch && (!steady || (beat != moveStartBeat && barStart))) {
             previous = (move, beatPhase)
             moveStartBeat = beat
-            move = nextMove(energy: energy, arousal: arousal, rhythm: rhythm)
+            move = nextMove(energy: energy, arousal: arousal, rhythm: rhythm, steady: steady)
         }
         func full(_ m: DanceMove) -> PoseOverlay {
-            var p = Self.evaluate(m, beatPhase: beatPhase, energy: energy, kick: kick, seatX: seatX)
+            // 额外提前量只给冲击曲线；软的正弦曲线用通用提前量就够了
+            let phase = beatPhase + m.extraSpringLead * snap * bpm / 60 * 2 * .pi
+            var p = Self.evaluate(m, beatPhase: phase, energy: energy, kick: kick, seatX: seatX, downbeat: downbeat, snap: snap)
             if headLead != 0 {
-                let head = Self.evaluate(m, beatPhase: beatPhase + headLead, energy: energy, kick: kick, seatX: seatX)
+                let head = Self.evaluate(m, beatPhase: phase + headLead, energy: energy, kick: kick, seatX: seatX,
+                                         downbeat: downbeat, snap: snap)
                 p.headYaw = head.headYaw
                 p.headPitch = head.headPitch
             }
@@ -147,14 +220,26 @@ struct DanceDirector {
     }
 
     /// 纯函数：某个舞步在某个相位的姿态
-    static func evaluate(_ move: DanceMove, beatPhase phi: CGFloat, energy: CGFloat, kick: CGFloat, seatX: CGFloat) -> PoseOverlay {
+    /// - Parameter snap: 0..1 动作有多"硬"。1 = 冲击曲线卡点；0 = 平滑的正弦曲线。
+    ///   相位抖动大时用软的：踩在拍附近、但不把误差放大
+    static func evaluate(_ move: DanceMove, beatPhase phi: CGFloat, energy: CGFloat, kick: CGFloat, seatX: CGFloat,
+                         downbeat: Int? = nil, snap: CGFloat = 1) -> PoseOverlay {
         let beatFloat = phi / (2 * .pi)
+        let beatIndex = Int(beatFloat.rounded(.down))
         let local = beatFloat - beatFloat.rounded(.down)            // 0..1 拍内进度
-        // 拍点下沉：整拍时为 1（最低），半拍时为 0；连续曲线，适合驱动弹簧
-        let dip = (1 + cos(local * 2 * .pi)) / 2 + kick * 0.2
+        let snap = max(0, min(1, snap))
+        /// soft → hard 按 snap 插值
+        func blend(_ soft: CGFloat, _ hard: CGFloat) -> CGFloat { soft + (hard - soft) * snap }
+        // 重拍加重：回落阶段算刚过去的那一拍，冲刺阶段算马上要到的那一拍
+        let accent = BeatShape.accent(beat: local < 0.86 ? beatIndex : beatIndex + 1, downbeat: downbeat)
+        // 拍点冲击：拍点上为 1（最低/最远），之后回落，下一拍前加速冲回来。
+        // 冲刺很短，弹簧追不满（实测只到正弦曲线振幅的 77%），乘 1.3 补回原来的幅度
+        let softDip = (1 + cos(local * 2 * .pi)) / 2
+        let dip = blend(softDip, BeatShape.hit(local) * 1.3) * accent + kick * 0.2
         let e = 0.55 + energy * 0.65
-        // 两拍一个来回，整拍时摆到最远（偶数拍 +1、奇数拍 -1）
-        let swing = cos(phi * 0.5)
+        // 两侧切换：偶数拍在 +1、奇数拍在 -1，拍点前甩过去（软的时候是两拍一个来回的余弦）
+        let softSwing = cos(phi * 0.5)
+        let swing = blend(softSwing, BeatShape.swing(beatFloat, attack: 0.3))
         let shoulderY: CGFloat = 178
         let restY: CGFloat = 235
 
@@ -165,21 +250,29 @@ struct DanceDirector {
             p.headOffsetY = dip * 8 * e
             p.headPitch = dip * 0.25 * e
             p.headTilt = swing * 0.1 * e
-            // 两只爪子轮流在拍间抬起、在拍上落桌（左爪落在奇数拍，右爪落在偶数拍）
-            let half = sin(phi * 0.5)
-            p.leftPaw = CGPoint(x: CatPhysics.leftPawRest.x, y: restY - 7 * max(0, half))
-            p.rightPaw = CGPoint(x: CatPhysics.rightPawRest.x, y: restY - 7 * max(0, -half))
+            // 两只爪子轮流：拍后抬起、拍上砸回桌面（左爪砸在奇数拍，右爪砸在偶数拍）
+            let lift = BeatShape.liftSlam(local)
+            // 整个拍间抬起的都是下一拍要砸下的那只
+            let leftTurn = !(beatIndex + 1).isMultiple(of: 2)
+            let half = sin(phi * 0.5)                                 // 软：两拍一个来回的半正弦
+            p.leftPaw = CGPoint(x: CatPhysics.leftPawRest.x, y: restY - 7 * blend(max(0, -half), leftTurn ? lift : 0))
+            p.rightPaw = CGPoint(x: CatPhysics.rightPawRest.x, y: restY - 7 * blend(max(0, half), leftTurn ? 0 : lift))
             p.tailBoost = 0.4
         case .sway:
+            // 摇摆要有律动感：甩过去的时间长一些（半拍），不像点头那样硬
+            let swing = blend(softSwing, BeatShape.swing(beatFloat, attack: 0.5))
             p.bodyShiftX = swing * 11 * e
             p.bodyTilt = swing * 0.09 * e
             p.headTilt = -swing * 0.12 * e
             p.headOffsetY = dip * 2.5
             p.tailBoost = 0.8
         case .raiseTheRoof:
-            // 两只爪子轮流往上顶：偶数拍左爪举到最高，奇数拍右爪；曲线连续，不靠方波瞬切
-            let leftUp = pow(max(0, swing), 1.5)
-            let rightUp = pow(max(0, -swing), 1.5)
+            // 两只爪子轮流往上顶：偶数拍左爪冲到最高，奇数拍右爪；拍点前加速顶上去、拍点上到顶
+            // 爪子要从桌面举过头顶（约 110pt），冲刺给 0.35 拍，路程太长时弹簧跟不上
+            let leftUp = blend(pow(max(0, softSwing), 1.5),
+                               BeatShape.alternatingHit(beatFloat, even: true, attack: 0.35) * min(1.1, accent))
+            let rightUp = blend(pow(max(0, -softSwing), 1.5),
+                                BeatShape.alternatingHit(beatFloat, even: false, attack: 0.35) * min(1.1, accent))
             let topY = shoulderY - 44 * e
             p.leftPaw = CGPoint(x: CatPhysics.leftPawRest.x + (seatX - 38 - CatPhysics.leftPawRest.x) * leftUp,
                                 y: restY + (topY - restY) * leftUp)
@@ -194,14 +287,17 @@ struct DanceDirector {
             p.squash = dip * 0.13 * e
             p.headOffsetY = dip * 11 * e
             p.earFold = dip * 0.4
-            // 拍间弹起、拍上落下
-            p.leftPaw = CGPoint(x: CatPhysics.leftPawRest.x - 2, y: restY - (1 - dip) * 10)
-            p.rightPaw = CGPoint(x: CatPhysics.rightPawRest.x + 2, y: restY - (1 - dip) * 10)
+            // 拍间弹起、拍上砸下
+            let lift = blend(1 - softDip, BeatShape.liftSlam(local))
+            p.leftPaw = CGPoint(x: CatPhysics.leftPawRest.x - 2, y: restY - lift * 10)
+            p.rightPaw = CGPoint(x: CatPhysics.rightPawRest.x + 2, y: restY - lift * 10)
             p.tailBoost = 1.2
         case .conductor:
             // 右爪画 8 字指挥：每拍的最低点（指挥的"落点"）正好在整拍上，头跟着爪子转
             let arc = phi * 0.5 + .pi / 4
-            p.rightPaw = CGPoint(x: seatX + 36 + cos(arc) * 14, y: 150 + cos(phi) * 10)
+            // 竖直方向用冲击曲线：拍点上"啪"地落到最低，之后慢慢提起
+            p.rightPaw = CGPoint(x: seatX + 36 + cos(arc) * 14,
+                                 y: blend(150 + cos(phi) * 10, 140 + BeatShape.hit(local, attack: 0.2) * 20))
             p.headYaw = cos(arc) * 0.3
             p.headTilt = sin(arc) * 0.08
             p.headOffsetY = dip * 2
@@ -209,7 +305,8 @@ struct DanceDirector {
             p.tailBoost = 0.5
         case .shimmy:
             // 每拍抖一个来回（整拍和半拍各到一侧）：4Hz 的半拍抖动弹簧跟不上，幅度会被吃掉一半
-            let shake = cos(phi)
+            // 方一点的来回：两端停得久、中间过得快，抖得更利落
+            let shake = blend(cos(phi), tanh(2.2 * cos(phi)) / tanh(2.2))
             p.bodyShiftX = shake * 8 * e
             p.bodyTilt = shake * 0.05 * e
             p.headTilt = -shake * 0.06
@@ -284,11 +381,19 @@ struct DanceDirector {
 
     /// 节奏强（鼓点清晰）时：只用蹦迪舞步，点头权重最高且可以连着来，左右摇摆压低；
     /// 节奏弱时才按能量感在舒缓/蹦迪之间选
-    private mutating func nextMove(energy: CGFloat, arousal: CGFloat, rhythm: CGFloat) -> DanceMove {
+    private mutating func nextMove(energy: CGFloat, arousal: CGFloat, rhythm: CGFloat, steady: Bool = true) -> DanceMove {
         let strongBeat = Self.isStrongBeat(rhythm: rhythm, arousal: arousal)
         var weights: [(DanceMove, Double)] = []
         for candidate in DanceMove.allCases {
             if candidate == .headbang && (energy < 0.7 || arousal < 0.65) { continue }
+            if !steady {
+                // 还在找拍子：只跳平滑的舒缓舞步；歌比较嗨时偏向两拍一循环的摇椅和慢点头，不至于显得太困
+                guard candidate.isCalm else { continue }
+                let lively = arousal > 0.5 && (candidate == .rocking || candidate == .slowNod)
+                let w: Double = candidate == move ? 0 : (lively ? 2.5 : 1)
+                if w > 0 { weights.append((candidate, w)) }
+                continue
+            }
             if strongBeat {
                 // 强鼓点下身体左右晃（不论幅度）都显得软，只留点头/弹跳/甩头/举爪/指挥/抖肩
                 guard !candidate.isCalm, candidate != .sway else { continue }
@@ -313,7 +418,10 @@ struct DanceDirector {
             if w > 0 { weights.append((candidate, w)) }
         }
         let total = weights.reduce(0) { $0 + $1.1 }
-        guard total > 0 else { return arousal < 0.5 && !strongBeat ? .gentleSway : .headBob }
+        guard total > 0 else {
+            if !steady { return move == .rocking ? .gentleSway : .rocking }
+            return arousal < 0.5 && !strongBeat ? .gentleSway : .headBob
+        }
         var pick = Double.random(in: 0..<total, using: &rng)
         for (candidate, w) in weights {
             if pick < w { return candidate }

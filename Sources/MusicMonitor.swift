@@ -306,6 +306,25 @@ enum AudioProcessProbe {
         return min(3, Double(frames) / rate)
     }
 
+    /// 默认输出设备的唯一标识和名字（「MacBook Pro 扬声器」「AirPods Pro」）：节拍偏移按设备分别记
+    static func defaultOutputDevice() -> (uid: String, name: String)? {
+        guard let device = defaultDeviceID(input: false) else { return nil }
+        func string(_ selector: AudioObjectPropertySelector) -> String? {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var value: Unmanaged<CFString>?
+            var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr,
+                  let cf = value?.takeRetainedValue() else { return nil }
+            return cf as String
+        }
+        guard let uid = string(kAudioDevicePropertyDeviceUID) else { return nil }
+        return (uid, string(kAudioObjectPropertyName) ?? uid)
+    }
+
     static func defaultDeviceID(input: Bool) -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(
             mSelector: input ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice,

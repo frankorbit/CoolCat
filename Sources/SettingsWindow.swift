@@ -956,6 +956,7 @@ private struct MusicPane: View {
                 ToggleRow(title: "没在打字时跟着节奏跳舞 💃", subtitle: "强节奏多点头，舒缓的歌慢慢摇",
                           isOn: store.binding(\.musicDance) { _ in host.audioSettingsChanged(resetPermission: false) })
             }
+            BeatCalibrationCard(physics: host.physics)
             SettingsCard(title: "节拍来源", footer: "关掉后用模拟节拍：动作照样有，只是不会严丝合缝地踩在鼓点上。") {
                 ToggleRow(title: "跟随真实音频节拍", subtitle: "需要在「隐私与安全性 → 录屏与系统录音」允许 CoolCat",
                           isOn: store.binding(\.realAudioAnalysis) { on in host.audioSettingsChanged(resetPermission: on) })
@@ -965,6 +966,206 @@ private struct MusicPane: View {
                 InfoRow(title: "当前", value: SettingsStatus.nowPlaying())
             }
         }
+    }
+}
+
+// MARK: - Beat Calibration
+
+/// 节拍校准面板的数据：节拍灯、锁拍统计、跟拍校准流程、按设备的偏移。打开时 30fps 刷新，关掉就停
+final class BeatCalibrationModel: ObservableObject {
+    enum Stage: Equatable {
+        case idle
+        case collecting(Int)
+        case result(String, success: Bool)
+    }
+
+    let physics: CatPhysics
+    @Published private(set) var flash: Double = 0
+    @Published private(set) var stats = "放首歌就有数据"
+    @Published private(set) var device = "—"
+    @Published private(set) var stage: Stage = .idle
+    @Published private(set) var canCalibrate = false
+    private var deviceUID: String?
+    private var calibrator = BeatTapCalibrator()
+    private var timer: Timer?
+    private var keyMonitor: Any?
+    private var lastStatsUpdate: CFTimeInterval = 0
+
+    init(physics: CatPhysics) {
+        self.physics = physics
+    }
+
+    deinit {
+        stop()
+    }
+
+    var offsetMs: Double {
+        get { BeatOffsetStore.shared.offsetMs(for: deviceUID) }
+        set {
+            BeatOffsetStore.shared.setOffsetMs((newValue / 10).rounded() * 10, for: deviceUID)
+            objectWillChange.send()
+        }
+    }
+
+    func start() {
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+        tick()
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        endCollecting()
+    }
+
+    private func tick() {
+        let now = CACurrentMediaTime()
+        let live = physics.audio.isLive && physics.isEnjoyingMusic
+        if live {
+            // 节拍灯：正好在小猫的拍点上最亮，四分之一拍内暗下去
+            let position = Double(physics.beatPosition(at: now))
+            flash = max(0, 1 - (position - position.rounded(.down)) * 4)
+        } else {
+            flash = 0
+        }
+        guard now - lastStatsUpdate > 0.5 else { return }
+        lastStatsUpdate = now
+        let snapshot = physics.audio
+        deviceUID = snapshot.outputDeviceUID
+        device = snapshot.isLive
+            ? "\(snapshot.outputDeviceName ?? "未知设备") · 系统报告延迟 \(Int(snapshot.outputLatency * 1000)) ms"
+            : "等音乐响起"
+        canCalibrate = physics.canCalibrateBeat
+        if let s = physics.currentLockSummary, live {
+            let state = physics.beatIsSteady ? "卡点中" : (physics.beatTempoStable ? "跟拍中（相位不太准，动作放软）" : "找拍子中")
+            stats = String(format: "%@ · 锁拍 %.0f%% · 抖动 %.0f ms · %.0f BPM", state, s.lockRatio * 100, s.meanAbsMs, s.bpm)
+        } else {
+            stats = live ? "统计中…" : "放首歌就有数据"
+        }
+    }
+
+    // MARK: 跟拍校准
+
+    func beginCollecting() {
+        guard physics.canCalibrateBeat else {
+            stage = .result("先放一首鼓点清楚的歌，等小猫戴上耳机、跟上拍子再来", success: false)
+            return
+        }
+        calibrator.reset()
+        stage = .collecting(0)
+        endKeyMonitor()
+        // 用按下空格那一刻的事件时间戳，不用按钮回调：鼠标点按钮要松开才触发，会晚 100ms 左右
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.keyCode == 49 else { return event }
+            if !event.isARepeat { self.recordTap(at: event.timestamp) }
+            return nil
+        }
+    }
+
+    func cancel() {
+        endCollecting()
+        stage = .idle
+    }
+
+    private func recordTap(at timestamp: TimeInterval) {
+        guard case .collecting = stage else { return }
+        // NSEvent.timestamp 和 CACurrentMediaTime 都是开机以来的秒数（mach 时钟），可以直接比
+        calibrator.record(beatPosition: Double(physics.beatPosition(at: timestamp)),
+                          secondsPerBeat: Double(physics.secondsPerBeat))
+        switch calibrator.outcome {
+        case .needMore:
+            stage = .collecting(calibrator.count)
+        case .done(let offset, let spread):
+            endCollecting()
+            let ms = offset * 1000
+            let before = offsetMs
+            offsetMs = before + ms
+            let direction = ms >= 0 ? "早" : "晚"
+            let fix = abs(ms) < 15 ? "已经很准了" : "已经帮你修正（\(Int(before)) → \(Int(offsetMs)) ms）"
+            stage = .result(String(format: "小猫比你听到的%@ %.0f ms，%@。你按得很稳（±%.0f ms）", direction, abs(ms), fix, spread),
+                            success: true)
+        case .inconsistent(let spread):
+            endCollecting()
+            stage = .result(String(format: "按得有点散（±%.0f ms），跟着底鼓「咚」那一下再试一次", spread), success: false)
+        case .offBeat:
+            endCollecting()
+            stage = .result("好像都按在两拍中间了（反拍）。跟着底鼓「咚」那一下再试一次", success: false)
+        }
+    }
+
+    private func endCollecting() {
+        endKeyMonitor()
+        if case .collecting = stage { stage = .idle }
+    }
+
+    private func endKeyMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+    }
+}
+
+private struct BeatCalibrationCard: View {
+    @StateObject private var model: BeatCalibrationModel
+
+    init(physics: CatPhysics) {
+        _model = StateObject(wrappedValue: BeatCalibrationModel(physics: physics))
+    }
+
+    var body: some View {
+        SettingsCard(title: "节拍校准",
+                     footer: "蓝牙耳机、外接音箱自报的延迟常常不准，会让小猫每一拍都早一点或晚一点。按输出设备分别记住，换耳机不用重新调。") {
+            InfoRow(title: "输出设备", value: model.device)
+            RowDivider()
+            SettingsRow(title: "节拍灯", subtitle: "亮的那一下就是小猫认为的拍点，和你听到的鼓点对比看看") {
+                HStack(spacing: 10) {
+                    Text(model.stats)
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundColor(.secondary)
+                    Circle()
+                        .fill(Color.orange.opacity(0.18 + 0.82 * model.flash))
+                        .frame(width: 16, height: 16)
+                        .scaleEffect(1 + 0.25 * model.flash)
+                }
+            }
+            RowDivider()
+            SettingsRow(title: "跟拍校准", subtitle: "放一首鼓点清楚的歌，跟着鼓点按空格键 \(BeatTapCalibrator.taps) 下") {
+                switch model.stage {
+                case .collecting(let n):
+                    HStack(spacing: 8) {
+                        Text("按空格 \(n)/\(BeatTapCalibrator.taps)")
+                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                        Button("取消") { model.cancel() }
+                    }
+                default:
+                    Button("开始") { model.beginCollecting() }
+                        .disabled(!model.canCalibrate)
+                }
+            }
+            if case .result(let text, let success) = model.stage {
+                Text(text)
+                    .font(.system(size: 11))
+                    .foregroundColor(success ? .green : .orange)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+            }
+            RowDivider()
+            SettingsRow(title: "手动微调", subtitle: "正数 = 小猫往后挪（原来太早），负数 = 往前挪") {
+                HStack(spacing: 8) {
+                    Slider(value: Binding(get: { model.offsetMs }, set: { model.offsetMs = $0 }),
+                           in: BeatOffsetStore.range)
+                        .frame(width: 150)
+                    Text(String(format: "%+.0f ms", model.offsetMs))
+                        .font(.system(size: 11).monospacedDigit())
+                        .frame(width: 56, alignment: .trailing)
+                    Button("归零") { model.offsetMs = 0 }
+                }
+            }
+        }
+        .onAppear { model.start() }
+        .onDisappear { model.stop() }
     }
 }
 

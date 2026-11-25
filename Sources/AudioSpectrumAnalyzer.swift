@@ -27,6 +27,11 @@ struct AudioSpectrumSnapshot {
     var isLive = false
     /// 从 tap 拿到声音到用户真正听到的延迟（秒）：蓝牙/AirPlay 下可达数百毫秒到 2 秒
     var outputLatency: CFTimeInterval = 0
+    /// 当前输出设备（用来取这台设备的节拍校准偏移）
+    var outputDeviceUID: String?
+    var outputDeviceName: String?
+    /// 诊断：速度估计的候选（BPM:得分）、选中的速度、相位置信度、节奏特征，写进 --beat-log
+    var tempoDebug: String?
     /// 检测延迟：鼓点要进入分析窗口才认得出来，报告时实际已过去约半个窗口 + 半个 hop
     var analysisDelay: CFTimeInterval = 0
     /// 梳状相位估计：此刻距离"最近一个拍点"过去了多少秒（已扣除分析延迟），nil = 还没有可靠估计
@@ -188,6 +193,9 @@ final class SpectrumDSP {
         return beat
     }
 
+    /// 诊断：最近一次速度估计的候选和结果
+    private var lastTempoDebug: String?
+
     /// 诊断：节奏强度的原始分量（低频/高频/整体梳状对比度、周期强度），用来按真实歌曲标定阈值
     var rhythmFeatures: String {
         String(format: "low=%.2f high=%.2f comb=%.2f clarity=%.2f", lastLowContrast, lastHighContrast, lastCombContrast, pulseClarity)
@@ -204,6 +212,7 @@ final class SpectrumDSP {
         snap.analysisDelay = Double(fftSize) / sampleRate
         snap.arousal = CGFloat(arousal)
         snap.rhythmStrength = CGFloat(rhythmStrength)
+        snap.tempoDebug = lastTempoDebug.map { $0 + String(format: " conf=%.2f ", combPhase?.confidence ?? 0) + rhythmFeatures }
         if let phase = combPhase {
             snap.secondsSinceBeat = phase.secondsSinceBeat
             snap.beatConfidence = CGFloat(phase.confidence)
@@ -463,6 +472,34 @@ final class SpectrumDSP {
             if best == nil || score > best!.score { best = (lag, score) }
         }
         guard let chosen = best else { return }
+        // 在位优势：已经锁着一个速度时，只有证据够强、新速度明显更好才换。
+        // 实测抒情歌（6/8、三连音）里 140/93/70 这几种"数法"得分常常只差几个百分点，
+        // 节奏清晰度一低（间奏、鼓停）就会被拽到另一种数法上，小猫的拍子跟着乱跳
+        if warm, let current = bpm {
+            let currentLag = 60.0 / Double(current) / hopSeconds
+            let currentOctaves = log2(Double(current) / 120.0)
+            let currentScore = (combContrast(period: currentLag).map(Double.init) ?? 0)
+                * exp(-0.5 * (currentOctaves / 0.9) * (currentOctaves / 0.9))
+            if !Self.shouldSwitchTempo(current: Double(current), currentScore: currentScore,
+                                       candidate: tempoOf(lag: chosen.lag), candidateScore: chosen.score,
+                                       clarity: Double(pulseClarity)) {
+                lastTempoDebug = String(format: "hold=%.1f (cand %.0f:%.2f vs %.2f, clarity %.2f)",
+                                        Double(current), tempoOf(lag: chosen.lag), chosen.score, currentScore, Double(pulseClarity))
+                applyTempoEstimate(current)
+                return
+            }
+        }
+        // 记下打分最高的几个候选：哪首歌在 2:3、1:2 之间犹豫，一眼能看出来
+        var scored: [(bpm: Double, score: Double)] = []
+        for lag in candidates {
+            guard let contrast = combContrast(period: lag) else { continue }
+            let tempo = tempoOf(lag: lag)
+            let octaves = log2(tempo / 120.0)
+            scored.append((tempo, Double(contrast) * exp(-0.5 * (octaves / 0.9) * (octaves / 0.9))))
+        }
+        let top = scored.sorted { $0.score > $1.score }.prefix(4)
+            .map { String(format: "%.0f:%.2f", $0.bpm, $0.score) }.joined(separator: ",")
+        lastTempoDebug = String(format: "pick=%.1f cand=[%@]", tempoOf(lag: chosen.lag), top)
         lastCombContrast = combContrast(period: chosen.lag) ?? 0
         lastChosenLag = chosen.lag
         lastLowContrast = combContrast(period: chosen.lag, envelope: lowOnsetEnvelope) ?? 0
@@ -472,6 +509,15 @@ final class SpectrumDSP {
             return period >= 2 ? combContrast(period: period, envelope: highOnsetEnvelope) : nil
         }.max() ?? 0
         applyTempoEstimate(Float(tempoOf(lag: chosen.lag)))
+    }
+
+    /// 要不要从当前速度换到候选速度。和当前差不到 4% 的算同一个速度（正常微调），直接放行；
+    /// 否则要求节奏足够清晰（clarity ≥ 0.15），且候选得分比当前高 12% 以上
+    static func shouldSwitchTempo(current: Double, currentScore: Double, candidate: Double, candidateScore: Double,
+                                  clarity: Double) -> Bool {
+        if abs(candidate - current) / current <= 0.04 { return true }
+        guard clarity >= 0.15 else { return false }
+        return candidateScore > currentScore * 1.12
     }
 
     /// 以 period（hop，可带小数）为齿距，在最近约 8 秒包络上找最佳对齐，返回"齿尖平均强度 / 整体平均"
@@ -676,6 +722,7 @@ final class AudioSpectrumAnalyzer {
     private var retryAttempt = 0
     /// controlQueue 写、ioQueue 读，lock 保护
     private var outputLatency: CFTimeInterval = 0
+    private var outputDevice: (uid: String, name: String)?
 
     /// 这台机器上是否曾经收到过真实信号：收到过就说明授权没问题，之后的全零只是"在安静"
     /// （网易云这类 App 暂停/切歌时不关音频流，会持续输出数字静音）
@@ -812,9 +859,12 @@ final class AudioSpectrumAnalyzer {
             tapBox = tap
             retryAttempt = 0
             let latency = AudioProcessProbe.defaultOutputLatency()
+            let device = AudioProcessProbe.defaultOutputDevice()
             lock.lock()
             outputLatency = latency
+            outputDevice = device
             lock.unlock()
+            audioLog.notice("output \(device?.name ?? "?", privacy: .public) latency \(Int(latency * 1000), privacy: .public)ms")
             publishState(.running)
         } catch {
             publishState(.failed(error.localizedDescription))
@@ -963,6 +1013,8 @@ final class AudioSpectrumAnalyzer {
         snap.isLive = !reportedSilence
         lock.lock()
         snap.outputLatency = outputLatency
+        snap.outputDeviceUID = outputDevice?.uid
+        snap.outputDeviceName = outputDevice?.name
         latest = snap
         lock.unlock()
     }

@@ -46,6 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--roam-peek") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.peekNow() }
         }
+        // `--beat-log <文件>`：每 5 秒记一行锁拍统计（落拍率、抖动、偏移、输出设备）
+        if let i = CommandLine.arguments.firstIndex(of: "--beat-log"), i + 1 < CommandLine.arguments.count {
+            overlayWindow.catView.physics.beatLogPath = CommandLine.arguments[i + 1]
+        }
         // `--roam-hop`：出门直接跳上窗口，在窗口之间连跳
         if CommandLine.arguments.contains("--roam-hop") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.hopNow() }

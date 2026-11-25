@@ -90,6 +90,7 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/InputEngine.swift"
     "$ROOT/Sources/CatPhysics.swift"
     "$ROOT/Sources/MusicMonitor.swift"
+    "$ROOT/Sources/BeatCalibration.swift"
     "$ROOT/Sources/ClaudeBridge.swift"
     "$ROOT/Sources/MeetingMonitor.swift"
     "$ROOT/Sources/KeyHabits.swift"

@@ -421,6 +421,8 @@ final class CatPhysics {
     private(set) var audio = AudioSpectrumSnapshot()
     /// 真实流逝时间（不被 1/25 秒钳制），节拍时钟和延迟队列用它
     private var audioClock: CGFloat = 0
+    /// 上一次 step 的墙钟时间（CACurrentMediaTime），跟拍校准时把节拍外推到按键那一刻
+    private var lastStepClock: CFTimeInterval = 0
     /// 按输出延迟回放用的快照历史（time, snapshot）
     private var audioHistory: [(time: CGFloat, snapshot: AudioSpectrumSnapshot)] = []
     private var lastAudioBeatSerial = 0
@@ -1101,7 +1103,9 @@ final class CatPhysics {
             return
         }
         audioHistory.append((audioClock, snapshot))
-        let delay = CGFloat(max(0, min(2.5, snapshot.outputLatency)))
+        // 系统报告的输出延迟 + 用户为这台设备校准的偏移（蓝牙耳机自报的延迟常常不准）
+        let calibration = BeatOffsetStore.shared.offsetMs(for: snapshot.outputDeviceUID) / 1000
+        let delay = CGFloat(max(0, min(2.5, snapshot.outputLatency + calibration)))
         // 取"延迟之前"最新的一份；队列只保留到这之前的最后一份
         var delayed = audioHistory[0].snapshot
         var keepFrom = 0
@@ -1120,7 +1124,8 @@ final class CatPhysics {
         // 2) 相位：每帧向梳状相位估计平滑靠拢，靠拢速度随置信度。
         //    梳状估计综合了最近 ~4 秒所有起音，强拍主导，单个切分/十六分音符起音拽不动它
         if let since = delayed.secondsSinceBeat, delayed.beatConfidence > 0.15 {
-            let target = CGFloat(since) * beatsPerMinute / 60                  // 拍内进度 0..1
+            // phaseTrim：鼓点平均比小猫的拍晚多少（自动积分出来），往后挪这么多
+            let target = (CGFloat(since) - phaseTrim) * beatsPerMinute / 60     // 拍内进度 0..1
             let beats = beatPhase / (2 * .pi)
             var error = target - (beats - beats.rounded(.down))
             if error > 0.5 { error -= 1 } else if error < -0.5 { error += 1 }
@@ -1145,20 +1150,142 @@ final class CatPhysics {
         let lagBeats = CGFloat(delayed.analysisDelay) * beatsPerMinute / 60
         let gridError = ((beats - lagBeats).rounded() + lagBeats) - beats
         recordLockSample(error: gridError)
+        steadiness.record(error: Double(gridError), at: Double(time))
+        // 自动修正固定偏差：梳状相位估计和鼓点检测的延迟补偿口径不完全一致，实测小猫的拍稳定早 20–35ms。
+        // 只用紧贴拍点的鼓点（±0.12 拍），慢慢积分（约 20 个鼓点收敛），限制在 ±80ms。
+        // 起音模糊的歌（钢琴、弦乐）鼓点前后飘 ±100ms，放宽了修正量会跟着噪声游走
+        if abs(gridError) < 0.12 {
+            let errorSeconds = gridError * 60 / max(1, beatsPerMinute)
+            phaseTrim = max(-0.08, min(0.08, phaseTrim + errorSeconds * 0.05))
+        }
         // 只有落在拍上的起音才给重音；反拍/切分起音不让猫在两拍之间多做一下
         if abs(gridError) < 0.15 { beatKick = max(beatKick, 1 - abs(gridError) / 0.15) }
+    }
+
+    // MARK: - Beat Steadiness
+
+    private var steadiness = BeatSteadinessTracker()
+    /// 自动相位修正（秒）：正 = 小猫的拍往后挪。跨歌保留——偏差来自分析器本身，不随歌变
+    private(set) var phaseTrim: CGFloat = 0
+    /// 相位准：用冲击曲线硬卡点（见 BeatSteadinessTracker）
+    var beatIsSteady: Bool { steadiness.isSteady }
+    /// 速度稳：跳有节奏感的舞步；不稳只跳柔和舞步
+    var beatTempoStable: Bool { steadiness.tempoStable }
+    /// 0..1 动作软硬，跟着相位准度慢慢过渡
+    private(set) var danceSnap: CGFloat = 0
+
+    // MARK: - Bar (Downbeat) Estimate
+
+    /// 小节里 4 个位置各自的低频能量（底鼓），慢慢平均
+    private var barBass = [CGFloat](repeating: 0, count: 4)
+    private var barSamples = 0
+    private var lastBarBeat = Int.min
+    /// 拍点后 90ms 内取低频峰值（底鼓的起音落在拍点稍后一点）
+    private var barSampleWindow: (position: Int, until: CGFloat, peak: CGFloat)?
+    /// 小节第一拍的拍号余数（0..3）；nil = 还没认出来（四踩地板这类每拍一样重的分不出来）
+    private(set) var downbeat: Int?
+
+    /// 底鼓通常打在第 1、3 拍：统计小节里哪个位置的低频最重，当作第一拍。
+    /// 认不准时宁可不认（nil），舞步就退回到不分轻重
+    private func updateBarEstimate() {
+        guard audio.isLive, isBeatLocked else { return }
+        let beat = Int((beatPhase / (2 * .pi)).rounded(.down))
+        if var window = barSampleWindow {
+            window.peak = max(window.peak, audio.bass)
+            if time >= window.until {
+                let blend: CGFloat = barSamples < 16 ? 0.35 : 0.12
+                barBass[window.position] += (window.peak - barBass[window.position]) * blend
+                barSamples += 1
+                barSampleWindow = nil
+                chooseDownbeat()
+            } else {
+                barSampleWindow = window
+            }
+        }
+        if beat > lastBarBeat {
+            lastBarBeat = beat
+            barSampleWindow = (((beat % 4) + 4) % 4, time + 0.09, audio.bass)
+        } else if beat < lastBarBeat - 1 {
+            // 相位大幅回退（切歌、重新锁拍）：从头统计
+            resetBarEstimate()
+            lastBarBeat = beat
+        }
+    }
+
+    private func chooseDownbeat() {
+        // 至少攒 4 小节
+        guard barSamples >= 16 else { return }
+        let mean = barBass.reduce(0, +) / 4
+        guard mean > 0.02, let best = barBass.indices.max(by: { barBass[$0] < barBass[$1] }) else {
+            downbeat = nil
+            return
+        }
+        // 每拍一样重（四踩地板）：分不出第一拍
+        guard barBass[best] / mean > 1.06 else {
+            downbeat = nil
+            return
+        }
+        // 迟滞：新位置要明显更重才换，免得在第 1、3 拍之间来回跳
+        if let current = downbeat, barBass[best] < barBass[current] * 1.06 { return }
+        downbeat = best
+    }
+
+    private func appendBeatLog(_ line: String) {
+        guard let path = beatLogPath else { return }
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile(); handle.write(Data(line.utf8)); try? handle.close()
+        } else {
+            FileManager.default.createFile(atPath: path, contents: Data(line.utf8))
+        }
+    }
+
+    private func resetBarEstimate() {
+        barBass = [CGFloat](repeating: 0, count: 4)
+        barSamples = 0
+        barSampleWindow = nil
+        downbeat = nil
     }
 
     // MARK: - Beat Lock Diagnostics
 
     private var lockErrors: [CGFloat] = []
     private var lockWindowStart: CGFloat = 0
+    /// 最近一次 5 秒锁拍统计（设置面板实时显示）
+    private(set) var lockSummary: BeatLockSummary?
+    private var lockSummaryTime: CGFloat = -100
+    /// 统计是否还新鲜（10 秒内）：停歌后不再显示旧数据
+    var currentLockSummary: BeatLockSummary? { time - lockSummaryTime < 10 ? lockSummary : nil }
+    /// `--beat-log <文件>`：每 5 秒追加一行锁拍统计，便于离线分析
+    var beatLogPath: String?
+
+    /// 按下按键那一刻小猫的节拍位置（拍，带整数部分）。按键发生在两帧之间，按拍速外推到那一刻
+    func beatPosition(at clock: CFTimeInterval) -> CGFloat {
+        beatPhase / (2 * .pi) + CGFloat(clock - lastStepClock) * beatsPerMinute / 60
+    }
+
+    var secondsPerBeat: CGFloat { 60 / max(1, beatsPerMinute) }
+
+    /// 能做跟拍校准：在听歌、拿到了真实音频、而且拍子已经锁上
+    var canCalibrateBeat: Bool { isEnjoyingMusic && audio.isLive && isBeatLocked }
 
     /// 每 5 秒汇总一次：收到多少鼓点、多少落在猫的整拍附近（|误差| < 0.1 拍）、平均误差毫秒数
     private func recordLockSample(error: CGFloat) {
         lockErrors.append(error)
         guard time - lockWindowStart >= 5 else { return }
         defer { lockErrors.removeAll(); lockWindowStart = time }
+        let summary = BeatLockSummary(errors: lockErrors.map(Double.init), bpm: Double(beatsPerMinute))
+        lockSummary = summary
+        lockSummaryTime = time
+        if beatLogPath != nil {
+            let offset = BeatOffsetStore.shared.offsetMs(for: audio.outputDeviceUID)
+            let bar = downbeat.map { "\($0) [" + barBass.map { String(format: "%.2f", $0) }.joined(separator: " ") + "]" } ?? "-"
+            let line = String(format: "%@ %@ device=%@ latency=%.0fms offset=%+.0fms move=%@ downbeat=%@ tempo=%d phase=%d trim=%+.0fms snap=%.2f%@\n",
+                              ISO8601DateFormatter().string(from: Date()), summary.logLine,
+                              audio.outputDeviceName ?? "?", audio.outputLatency * 1000, offset,
+                              currentDanceMove?.rawValue ?? "-", bar, beatTempoStable ? 1 : 0, beatIsSteady ? 1 : 0,
+                              phaseTrim * 1000, danceSnap, audio.tempoDebug.map { " " + $0 } ?? "")
+            appendBeatLog(line)
+        }
         let onGrid = lockErrors.filter { abs($0) < 0.3 }
         let locked = onGrid.filter { abs($0) < 0.1 }.count
         let msPerBeat = 60_000 / max(1, beatsPerMinute)
@@ -1191,6 +1318,8 @@ final class CatPhysics {
 
     /// 切歌：弹歌名气泡，并按歌名哈希出一个稳定的 BPM，不同的歌点头速度不同
     func showTrack(title: String, artist: String?) {
+        resetBarEstimate()
+        appendBeatLog("# track: \(title)\(artist.map { " - " + $0 } ?? "")\n")
         var hash: UInt64 = 1469598103934665603
         for b in title.utf8 { hash = (hash ^ UInt64(b)) &* 1099511628211 }
         // 有真实音频时以分析结果为准，别用歌名哈希覆盖（会让刚锁好的拍子跑掉几秒）
@@ -1235,6 +1364,7 @@ final class CatPhysics {
         // 节拍和输出延迟队列用真实流逝时间：卡顿时不丢相位（只防极端长卡顿）
         let clockDt = min(rawDt, 0.5)
         audioClock += clockDt
+        lastStepClock = scripted?.now ?? CACurrentMediaTime()
         time += dt
 
         let engine = InputEngine.shared
@@ -1323,6 +1453,10 @@ final class CatPhysics {
         let music = wantMusic ? max(0, min(1, headphonesOn.value)) : 0
         if wantMusic {
             beatPhase += clockDt * beatsPerMinute / 60 * 2 * .pi
+            updateBarEstimate()
+            steadiness.update(time: Double(time), bpm: Double(beatsPerMinute), live: audio.isLive && isBeatLocked)
+            // 动作软硬跟着相位准度慢慢变（约 1.5 秒），不会一下子从软切到硬
+            danceSnap += ((beatIsSteady ? 1 : 0) - danceSnap) * min(1, dt / 1.5)
             // 2.5s 没碰键鼠就闭眼陶醉；一动就睁眼。捕猎/摸头时让位给原有表情
             let idleForVibe = now - max(curLastKeyTime, curLastMouseMove) > 2.5
             let vibeTarget: CGFloat = (idleForVibe && hunt < 0.2) ? 1 : 0
@@ -1380,7 +1514,8 @@ final class CatPhysics {
             let lead = CatPhysics.danceSpringLead * beatsPerMinute / 60 * 2 * .pi
             let headLead = CatPhysics.danceHeadExtraLead * beatsPerMinute / 60 * 2 * .pi
             frameOverlay = dance.pose(beatPhase: beatPhase + lead, headLead: headLead, energy: musicEnergy,
-                                      kick: beatKick, seatX: seatX, arousal: musicArousal, rhythm: musicRhythm)
+                                      kick: beatKick, seatX: seatX, arousal: musicArousal, rhythm: musicRhythm,
+                                      downbeat: downbeat, bpm: beatsPerMinute, steady: beatTempoStable, snap: danceSnap)
                 .scaled(by: danceAmount)
             currentDanceMove = dance.move
         } else {
