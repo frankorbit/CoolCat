@@ -21,7 +21,7 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
 </p>
 
 - 🎧 **Dances to your music** — headphones on when a music player is playing, a vertical LED spectrum wall behind the cat, real beat tracking via a system audio tap (macOS 14.2+) aligned to your output latency, with tap-along calibration. Moves hit the beat and accent the downbeat ([more](#-hitting-the-beat)). Strong beats get head-bobs, calm songs get slow sways. While music plays it stays at the keyboard instead of wandering off.
-- 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, gallops around like a cheetah, treats window tops like tables to jump between, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
+- 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, gallops around like a cheetah, treats window tops like tables to jump between (climbing the frame when they're too high), chases your cursor, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
 - 🤖 **Claude Code integration** — one-click hooks; a bubble shows *project · action · elapsed* per session, the cat waves when a session needs your approval and throws confetti when it is done.
 - ⌨️ **Codex integration** — one-click hooks in `~/.codex/hooks.json` (trust them once via `/hooks` in Codex); Codex sessions share the bubble with Claude Code, marked by a blue spinner.
 - 🎙 **Meeting mode** — headset when the mic is on, a "shh" when you type too loudly, a quick face wash before the camera turns on.
@@ -41,6 +41,13 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
 After 30 seconds without typing the cat leaves its keyboard and wanders around in a separate, fully click-through window:
 
 - **Windows are tables** — it walks along window tops, crouches at the edge to aim and leaps across the gap to the next window. It can jump straight from its seat onto a nearby window and hops window to window on the way home. If a window moves it rides along; if the window closes it falls. A window needs some room above it to stand on (maximized windows pinned to the menu bar don't count).
+- **Climbing** — real window tops are usually far higher than the cat can jump, so it walks to the frame and climbs up the side, then keeps hopping from the top (leaping onto the frame first if the window floats). *Settings → Interaction* shows live how many tops and frames are usable, and why there are none.
+- **Cursor play** — wiggle the cursor slowly near a roaming cat: it stares, creeps closer, wiggles its butt and pounces, jumping for a cursor in mid-air; flick the cursor and it gallops after it. Catches earn bond points; after three pounces it takes a break.
+
+<p align="center">
+  <img src="assets/coolcat/roam-play.en.png" alt="Cursor play and climbing" />
+</p>
+
 - **Peeking** — it hides past the bottom or side edge of the screen with only its head and two paws showing, clipped so it never spills onto another display.
 - **Naps** — it curls up into a ball (high window tops are its favourite), breathing slowly with floating Zzz. The longer you're idle, the sleepier it gets.
 - **Gallops like a cheetah** — running is a rotary gallop with a flexing spine and two flight phases per stride, head level and tail streaming back; every now and then it gets the zoomies and sprints off, braking with a crouch when it arrives.

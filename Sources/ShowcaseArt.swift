@@ -140,6 +140,87 @@ enum ShowcaseArt {
         write(renderRoam(english: true), to: dir + "/roam.en.png")
         write(renderGallop(english: false), to: dir + "/gallop.png")
         write(renderGallop(english: true), to: dir + "/gallop.en.png")
+        write(renderRoamPlay(english: false), to: dir + "/roam-play.png")
+        write(renderRoamPlay(english: true), to: dir + "/roam-play.en.png")
+    }
+
+    // MARK: Roam play
+
+    /// 漫游玩法配图：左边追光标（盯上 → 扭屁股 → 扑），右边爬窗户（太高跳不上去就顺着窗框爬）
+    private static func renderRoamPlay(english: Bool) -> CGImage? {
+        let width: CGFloat = 1280, height: CGFloat = 440
+        guard let ctx = makeContext(width: width, height: height) else { return nil }
+        CatSettings.shared.accessory = .none
+        ctx.setFillColor(rgb(0xFAFAFC).cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let k: CGFloat = 0.9
+
+        // 左：追光标
+        let left = CGRect(x: 40, y: 40, width: 590, height: 360)
+        fillGradient(left, radius: 18, colors: (rgb(0xE8F1FF), rgb(0xF3E8FF)), in: ctx)
+        text(english ? "Chases your cursor" : "追光标", at: CGPoint(x: left.minX + 22, y: left.minY + 18), size: 20,
+             weight: .heavy, color: rgb(0x1D1D24), in: ctx)
+        text(english ? "Wiggle the cursor near a roaming cat: it stalks, wiggles its butt and pounces"
+                     : "在溜达的小猫前面慢慢晃光标：盯上 → 压低挪近 → 扭屁股 → 扑",
+             at: CGPoint(x: left.minX + 22, y: left.minY + 50), size: 13, weight: .regular, color: rgb(0x6B6E78), in: ctx)
+        let floorY = left.maxY - 40
+        ctx.setStrokeColor(NSColor(calibratedWhite: 0, alpha: 0.12).cgColor)
+        ctx.setLineWidth(1.5)
+        ctx.move(to: CGPoint(x: left.minX + 18, y: floorY)); ctx.addLine(to: CGPoint(x: left.maxX - 18, y: floorY))
+        ctx.strokePath()
+        PetLibrary.shared.select(PetLibrary.shared.pet(id: "orange-tabby"))
+        let cursor = CGPoint(x: left.maxX - 70, y: floorY - 150)
+        drawWalker(.init(pose: .stalk, phase: 0.6, facing: 1, air: 0, time: 0.3, blink: false),
+                   feet: CGPoint(x: left.minX + 110, y: floorY), k: k, alpha: 0.35, in: ctx)
+        drawWalker(.init(pose: .wiggle, phase: 0, facing: 1, air: 0, time: 0.12, blink: false),
+                   feet: CGPoint(x: left.minX + 250, y: floorY), k: k, alpha: 0.6, in: ctx)
+        // 扑的弧线
+        let launch = CGPoint(x: left.minX + 290, y: floorY - 30)
+        let arc = CGMutablePath()
+        arc.move(to: launch)
+        arc.addQuadCurve(to: CGPoint(x: cursor.x - 6, y: cursor.y + 30), control: CGPoint(x: launch.x + 60, y: cursor.y - 40))
+        ctx.saveGState()
+        ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.95).cgColor)
+        ctx.setLineWidth(3)
+        ctx.setLineCap(.round)
+        ctx.setLineDash(phase: 0, lengths: [2, 9])
+        ctx.addPath(arc)
+        ctx.strokePath()
+        ctx.restoreGState()
+        drawWalker(.init(pose: .air, phase: 0, facing: 1, air: 0.35, time: 0.3, blink: false, hunting: true),
+                   feet: CGPoint(x: cursor.x - 60, y: cursor.y + 62 * k), k: k, alpha: 1, in: ctx)
+        drawMacCursor(in: ctx, at: cursor, clicking: false)
+
+        // 右：爬窗户
+        let right = CGRect(x: 650, y: 40, width: 590, height: 360)
+        fillGradient(right, radius: 18, colors: (rgb(0xFFF1E6), rgb(0xFFE8EE)), in: ctx)
+        text(english ? "Climbs tall windows" : "爬窗户", at: CGPoint(x: right.minX + 22, y: right.minY + 18), size: 20,
+             weight: .heavy, color: rgb(0x1D1D24), in: ctx)
+        text(english ? "Window too high to jump onto? It climbs up the frame and keeps hopping from the top"
+                     : "窗口太高跳不上去？顺着窗框爬上去，再在窗口之间跳来跳去",
+             at: CGPoint(x: right.minX + 22, y: right.minY + 50), size: 13, weight: .regular, color: rgb(0x6B6E78), in: ctx)
+        let floor2 = right.maxY - 40
+        ctx.setStrokeColor(NSColor(calibratedWhite: 0, alpha: 0.12).cgColor)
+        ctx.move(to: CGPoint(x: right.minX + 18, y: floor2)); ctx.addLine(to: CGPoint(x: right.maxX - 18, y: floor2))
+        ctx.strokePath()
+        ctx.saveGState()
+        ctx.addPath(CGPath(roundedRect: right, cornerWidth: 18, cornerHeight: 18, transform: nil))
+        ctx.clip()
+        let window = CGRect(x: right.minX + 250, y: right.minY + 205, width: 300, height: floor2 - right.minY - 205 + 30)
+        drawFakeWindow(window, title: english ? "Terminal" : "终端", in: ctx)
+        ctx.restoreGState()
+        PetLibrary.shared.select(nil)
+        CatSettings.shared.coatTheme = .siamese
+        CatSettings.shared.eyeTheme = .siameseBlue
+        // 地上走向窗框 → 抓着窗框往上爬 → 站上窗口顶
+        drawWalker(.init(pose: .walk, phase: .pi / 2, facing: 1, air: 0, time: 0.3, blink: false),
+                   feet: CGPoint(x: window.minX - 175, y: floor2), k: k, alpha: 0.35, in: ctx)
+        drawWalker(.init(pose: .climb, phase: 0, facing: 1, air: 0, time: 0.3, blink: false),
+                   feet: CGPoint(x: window.minX, y: window.minY + 85), k: k, alpha: 1, in: ctx,
+                   anchor: CatRenderer.climbAnchor(wallOnRight: true))
+        drawWalker(.init(pose: .stand, phase: 0, facing: 1, air: 0, time: 0.3, blink: false),
+                   feet: CGPoint(x: window.minX + 200, y: window.minY), k: k, alpha: 0.4, in: ctx)
+        return ctx.makeImage()
     }
 
     // MARK: Gallop
@@ -540,11 +621,13 @@ enum ShowcaseArt {
     }
 
     /// 把侧身小猫画在 feet（脚底中点）处；alpha < 1 用透明图层画，叠在一起的部件不会透出接缝
-    private static func drawWalker(_ pose: CatRenderer.WalkerPose, feet: CGPoint, k: CGFloat, alpha: CGFloat, in ctx: CGContext) {
+    /// - Parameter anchor: 画布上对准 feet 的那一点（爬窗框时是贴着窗框的那一点）
+    private static func drawWalker(_ pose: CatRenderer.WalkerPose, feet: CGPoint, k: CGFloat, alpha: CGFloat, in ctx: CGContext,
+                                   anchor: CGPoint = CatRenderer.walkerFeet) {
         ctx.saveGState()
         ctx.setAlpha(alpha)
         ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-        ctx.translateBy(x: feet.x - CatRenderer.walkerFeet.x * k, y: feet.y - CatRenderer.walkerFeet.y * k)
+        ctx.translateBy(x: feet.x - anchor.x * k, y: feet.y - anchor.y * k)
         ctx.scaleBy(x: k, y: k)
         CatRenderer.drawWalker(in: ctx, pose: pose)
         ctx.endTransparencyLayer()
