@@ -138,6 +138,56 @@ enum ShowcaseArt {
         write(renderHero(), to: dir + "/hero.png")
         write(renderRoam(english: false), to: dir + "/roam.png")
         write(renderRoam(english: true), to: dir + "/roam.en.png")
+        write(renderGallop(english: false), to: dir + "/gallop.png")
+        write(renderGallop(english: true), to: dir + "/gallop.en.png")
+    }
+
+    // MARK: Gallop
+
+    /// 飞奔分解图：一个步幅周期 6 帧，标出伸展腾空和收拢腾空
+    private static func renderGallop(english: Bool) -> CGImage? {
+        let width: CGFloat = 1280, height: CGFloat = 330
+        guard let ctx = makeContext(width: width, height: height) else { return nil }
+        CatSettings.shared.accessory = .none
+        PetLibrary.shared.select(PetLibrary.shared.pet(id: "orange-tabby"))
+        ctx.setFillColor(rgb(0xFAFAFC).cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        text(english ? "Gallops like a cheetah" : "像猎豹一样飞奔", at: CGPoint(x: 40, y: 26), size: 26, weight: .heavy,
+             color: rgb(0x1D1D24), in: ctx)
+        text(english ? "A rotary gallop with a flexing spine and two flight phases — head level, tail streaming back"
+                     : "旋转式飞奔：脊柱一伸一弓、两次腾空，头保持水平，尾巴往后拉直当平衡杆",
+             at: CGPoint(x: 40, y: 64), size: 14, weight: .regular, color: rgb(0x6B6E78), in: ctx)
+        let card = CGRect(x: 40, y: 98, width: width - 80, height: 212)
+        fillGradient(card, radius: 18, colors: (rgb(0xFDF1E2), rgb(0xF6E3EE)), in: ctx)
+        let ground = card.maxY - 44
+        ctx.setStrokeColor(NSColor(calibratedWhite: 0, alpha: 0.12).cgColor)
+        ctx.setLineWidth(1.5)
+        ctx.move(to: CGPoint(x: card.minX + 20, y: ground)); ctx.addLine(to: CGPoint(x: card.maxX - 20, y: ground))
+        ctx.strokePath()
+        let frames = 6
+        let step = (card.width - 40) / CGFloat(frames)
+        for i in 0..<frames {
+            let feet = CGPoint(x: card.minX + 20 + step * (CGFloat(i) + 0.5), y: ground)
+            let pose = CatRenderer.WalkerPose(pose: .run, phase: CGFloat(i) / CGFloat(frames) * 2 * .pi, facing: 1,
+                                              air: 0, time: 0.3, blink: false)
+            ctx.saveGState()
+            ctx.translateBy(x: feet.x - CatRenderer.walkerFeet.x * 0.9, y: feet.y - CatRenderer.walkerFeet.y * 0.9)
+            ctx.scaleBy(x: 0.9, y: 0.9)
+            CatRenderer.drawWalker(in: ctx, pose: pose)
+            ctx.restoreGState()
+            let label: String? = i == 0 ? (english ? "extended flight" : "伸展腾空")
+                : (i == 3 ? (english ? "gathered flight" : "收拢腾空") : nil)
+            if let label {
+                let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+                let w = (label as NSString).size(withAttributes: [.font: font]).width + 20
+                let r = CGRect(x: feet.x - w / 2, y: ground + 12, width: w, height: 24)
+                ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.95).cgColor)
+                ctx.addPath(CGPath(roundedRect: r, cornerWidth: 12, cornerHeight: 12, transform: nil))
+                ctx.fillPath()
+                text(label, at: CGPoint(x: r.minX + 10, y: r.minY + 4), size: 13, weight: .semibold, color: rgb(0x33343C), in: ctx)
+            }
+        }
+        return ctx.makeImage()
     }
 
     private static func write(_ image: CGImage?, to path: String) {
