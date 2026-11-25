@@ -652,6 +652,12 @@ if let idx = CommandLine.arguments.firstIndex(of: "--render-settings-preview"),
     exit(0)
 }
 
+if let idx = CommandLine.arguments.firstIndex(of: "--render-holiday-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderHolidayPreviewSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
 if let idx = CommandLine.arguments.firstIndex(of: "--render-bond-preview"),
    idx + 1 < CommandLine.arguments.count {
     renderBondPreviewSheet(to: CommandLine.arguments[idx + 1])
@@ -760,6 +766,66 @@ func renderPlayPreviewSheet(to path: String) {
 }
 
 /// 亲密度预览：四件装扮 + 送礼物 + 蹭光标
+/// 节日装扮：每行一只猫，左到右 = 圣诞帽 + 小雪、深夜（还是圣诞帽，不叠睡帽）、礼盒、拐杖糖
+func renderHolidayPreviewSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme, settings.accessory, settings.customPetID)
+    defer { (settings.coatTheme, settings.eyeTheme, settings.accessory, settings.customPetID) = saved }
+    let cats: [(String, () -> Void)] = [
+        ("小黑猫", { PetLibrary.shared.select(nil); settings.coatTheme = .classicBlack; settings.eyeTheme = .neonChartreuse }),
+        ("暹罗", { PetLibrary.shared.select(nil); settings.coatTheme = .siamese; settings.eyeTheme = .siameseBlue }),
+        ("大橘", { PetLibrary.shared.select(PetLibrary.shared.pet(id: "orange-tabby")) }),
+        ("德文卷毛", { PetLibrary.shared.select(PetLibrary.shared.pet(id: "devon-rex")) })
+    ]
+    let step: (CatPhysics) -> Void = { $0.step(dt: 1.0 / 60, windowFrameInScreen: .zero, scripted: idleInput(now: 100)) }
+    let scenes: [(String, (CatPhysics) -> Void)] = [
+        ("🎄 圣诞帽 + 小雪", { p in for _ in 0..<(60 * 4) { step(p) } }),
+        ("深夜：还是圣诞帽", { p in p.debugNight = true; for _ in 0..<(60 * 4) { step(p) } }),
+        ("🎁 圣诞礼盒", { p in for _ in 0..<(60 * 2) { step(p) }; p.offerGift(kind: .present); for _ in 0..<(60 * 2) { step(p) } }),
+        ("🍬 拐杖糖", { p in for _ in 0..<(60 * 2) { step(p) }; p.offerGift(kind: .candyCane); for _ in 0..<(60 * 2) { step(p) } })
+    ]
+    let suite = "coolcat.preview.holiday"
+    guard let store = UserDefaults(suiteName: suite) else { return }
+    store.removePersistentDomain(forName: suite)
+    let bond = BondLog(store: store, today: "2026-12-24")
+    let cellW = 360, cellH = 320, scale = 2
+    guard let ctx = CGContext(
+        data: nil, width: cellW * scenes.count * scale, height: cellH * cats.count * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(cellH * cats.count * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.42, green: 0.50, blue: 0.62, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: cellW * scenes.count, height: cellH * cats.count))
+    for (row, cat) in cats.enumerated() {
+        cat.1()
+        settings.accessory = .none
+        for (col, scene) in scenes.enumerated() {
+            let physics = CatPhysics()
+            physics.debugBond = bond
+            physics.debugHoliday = .preview
+            scene.1(physics)
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(col * cellW), y: CGFloat(row * cellH))
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.25).cgColor)
+            ctx.stroke(CGRect(x: 0.5, y: 0.5, width: CGFloat(cellW) - 1, height: CGFloat(cellH) - 1))
+            CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: false)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            NSAttributedString(string: "\(cat.0) · \(scene.0)", attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.white
+            ]).draw(at: CGPoint(x: 10, y: 296))
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
+    }
+    store.removePersistentDomain(forName: suite)
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    try? png.write(to: URL(fileURLWithPath: path))
+}
+
 func renderBondPreviewSheet(to path: String) {
     let settings = CatSettings.shared
     let saved = (settings.coatTheme, settings.eyeTheme, settings.accessory)
@@ -927,8 +993,18 @@ func renderWalkPreviewSheet(to path: String) {
         ("爬（窗在右）", .init(pose: .climb, phase: 0, facing: 1, air: 0, time: 0.3, blink: false)),
         ("爬（窗在左）", .init(pose: .climb, phase: .pi, facing: -1, air: 0, time: 0.3, blink: false))
     ]
+    // COOLCAT_WALK_SET=holiday：戴圣诞帽的几个漫游姿势
+    let holidayPoses: [(String, CatRenderer.WalkerPose)] = [
+        ("站", .init(pose: .stand, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, santaHat: true)),
+        ("飞奔", .init(pose: .run, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, santaHat: true)),
+        ("爬", .init(pose: .climb, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, santaHat: true)),
+        ("打盹", .init(pose: .curl, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, curl: 1, asleep: true, santaHat: true)),
+        ("偷看", .init(pose: .peek, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, peekEdge: .bottom, peekReveal: 1,
+                     santaHat: true))
+    ]
     let set = ProcessInfo.processInfo.environment["COOLCAT_WALK_SET"]
-    let poses = set == "nap" ? napPoses : (set == "run" ? runPoses : (set == "play" ? playPoses : walkPoses))
+    let poses = set == "nap" ? napPoses : (set == "run" ? runPoses : (set == "play" ? playPoses
+        : (set == "holiday" ? holidayPoses : walkPoses)))
     let cw = Int(CatRenderer.walkerCanvas.width), ch = Int(CatRenderer.walkerCanvas.height), scale = 2
     let labelW = 70
     guard let ctx = CGContext(

@@ -60,7 +60,10 @@ extension CatRenderer {
         ctx.saveGState()
         ctx.addPath(body)
         ctx.clip()
-        let colors = [rgb(0x5162A8).cgColor, rgb(0x2F3B73).cgColor, rgb(0x232C57).cgColor] as CFArray
+        // 圣诞季是红色的圣诞帽，平时是深蓝色带星星的睡帽（同一套 3D 形状）
+        let santa = physics.capIsSanta
+        let colors = (santa ? [rgb(0xE9434B).cgColor, rgb(0xC0242D).cgColor, rgb(0x8E141B).cgColor]
+                            : [rgb(0x5162A8).cgColor, rgb(0x2F3B73).cgColor, rgb(0x232C57).cgColor]) as CFArray
         if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.55, 1]) {
             ctx.drawLinearGradient(grad, start: CGPoint(x: leftEdge.x, y: domeTop.y), end: CGPoint(x: tip.x, y: rightEdge.y), options: [])
         }
@@ -77,7 +80,7 @@ extension CatRenderer {
         ctx.strokePath()
         // 小星星（贴在帽面上）
         ctx.setFillColor(rgb(0xFFE07A).cgColor)
-        for (x, y, z) in [(-16.0, -38.0, 14.0), (2.0, -52.0, 10.0), (20.0, -40.0, 12.0), (32.0, -50.0, 0.0)] {
+        for (x, y, z) in santa ? [] : [(-16.0, -38.0, 14.0), (2.0, -52.0, 10.0), (20.0, -40.0, 12.0), (32.0, -50.0, 0.0)] {
             let star = P(CGFloat(x), CGFloat(y), CGFloat(z))
             guard star.z > -2 else { continue }
             ctx.fillEllipse(in: CGRect(x: star.pt.x - 1.4, y: star.pt.y - 1.4, width: 2.8, height: 2.8))

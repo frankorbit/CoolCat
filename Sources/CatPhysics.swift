@@ -136,6 +136,10 @@ final class CatSettings {
     var accessory: CatAccessory {
         didSet { UserDefaults.standard.set(accessory.rawValue, forKey: "CoolCat.Accessory") }
     }
+    /// 节日装扮：12 月戴圣诞帽、送圣诞礼物，冬天下小雪
+    var holidayDecor: Bool {
+        didSet { UserDefaults.standard.set(holidayDecor, forKey: "CoolCat.HolidayDecor") }
+    }
     /// 生活陪伴：深夜睡帽、早晨咖啡、低电量/插电、久坐喝水
     var lifeNight: Bool {
         didSet { UserDefaults.standard.set(lifeNight, forKey: "CoolCat.LifeNight") }
@@ -209,6 +213,7 @@ final class CatSettings {
         meetingMode = d.object(forKey: "CoolCat.MeetingMode") as? Bool ?? true
         keyHabitReactions = d.object(forKey: "CoolCat.KeyHabitReactions") as? Bool ?? true
         lifeNight = d.object(forKey: "CoolCat.LifeNight") as? Bool ?? true
+        holidayDecor = d.object(forKey: "CoolCat.HolidayDecor") as? Bool ?? true
         cursorPlay = d.object(forKey: "CoolCat.CursorPlay") as? Bool ?? true
         accessory = CatAccessory(rawValue: d.string(forKey: "CoolCat.Accessory") ?? "") ?? .none
         customPetID = d.string(forKey: "CoolCat.CustomPetID")
@@ -531,7 +536,14 @@ final class CatPhysics {
     private var nuzzleSide: CGFloat = 1
     /// 小猫送的礼物：推到键盘左上方的桌面上，光标碰一下就收下
     struct Gift {
-        enum Kind: CaseIterable { case mouseToy, yarn, flower, feather }
+        enum Kind: CaseIterable {
+            case mouseToy, yarn, flower, feather
+            /// 圣诞季：礼盒、拐杖糖
+            case present, candyCane
+
+            static let everyday: [Kind] = [.mouseToy, .yarn, .flower, .feather]
+            static let christmas: [Kind] = [.present, .candyCane]
+        }
         let kind: Kind
         var age: CGFloat = 0
         /// 非 nil = 已收下（收下后淡出的秒数）
@@ -903,10 +915,13 @@ final class CatPhysics {
     /// 直接送一个礼物（菜单演示/预览也用）
     func offerGift(kind: Gift.Kind? = nil) {
         guard gift == nil else { return }
-        gift = Gift(kind: kind ?? Gift.Kind.allCases.randomElement() ?? .mouseToy)
+        // 圣诞季送圣诞礼物
+        let pool: [Gift.Kind] = activeHoliday.christmas ? Gift.Kind.christmas : Gift.Kind.everyday
+        gift = Gift(kind: kind ?? pool.randomElement() ?? .mouseToy)
         if debugBond == nil { bond.markGiftOffered(today: Self.todayKey) }
         sleepiness = 0
-        toast = Toast(text: "🎁 小猫叼来一个礼物，用光标碰碰它", style: .bond)
+        toast = Toast(text: activeHoliday.christmas ? "🎄 小猫叼来一份圣诞礼物，用光标碰碰它" : "🎁 小猫叼来一个礼物，用光标碰碰它",
+                      style: .bond)
     }
 
     /// 光标碰到礼物：收下
@@ -995,6 +1010,44 @@ final class CatPhysics {
         isNightTime = isNight
         latestBattery = battery
         tirednessTarget = CatSettings.shared.lifeBattery ? tiredness : 0
+    }
+
+    // MARK: - Holiday
+
+    /// 按真实日期算出的节日季（AppDelegate 每 5 秒喂一次）
+    private(set) var holidaySeason = HolidaySeason.none
+    /// 设置里「预览 30 秒」：到这个时刻为止当作圣诞季
+    private var holidayPreviewUntil: CGFloat = -1
+    /// 预览用：强制节日季（离屏渲染配图）
+    var debugHoliday: HolidaySeason?
+    private(set) var snow = Snowfall()
+    /// 现在在戴的帽子是圣诞帽（不是深夜睡帽）
+    private(set) var capIsSanta = false
+
+    /// 现在生效的节日装扮：设置里关了就没有；预览是你主动点的，开关关着也照样预览
+    var activeHoliday: HolidaySeason {
+        if let debugHoliday { return debugHoliday }
+        let real = CatSettings.shared.holidayDecor ? holidaySeason : .none
+        return time < holidayPreviewUntil ? real.union(.preview) : real
+    }
+
+    func setHoliday(_ season: HolidaySeason) {
+        holidaySeason = season
+        // 平安夜 / 圣诞节当天：第一次见到时打个招呼、撒彩带（每天一次）
+        guard season.christmasDay, CatSettings.shared.holidayDecor, debugBond == nil else { return }
+        let key = "CoolCat.ChristmasGreeted"
+        guard UserDefaults.standard.string(forKey: key) != Self.todayKey else { return }
+        UserDefaults.standard.set(Self.todayKey, forKey: key)
+        toast = Toast(text: "🎄 圣诞快乐！今天的礼物是特别的哦", style: .bond)
+        celebration = 1
+        spawnConfetti()
+        spawnHeart()
+    }
+
+    /// 设置里的「预览 30 秒」：现在不是 12 月也能看看圣诞帽、小雪和圣诞礼物
+    func previewHoliday() {
+        holidayPreviewUntil = time + 30
+        toast = Toast(text: "🎄 节日装扮预览 30 秒", style: .bond)
     }
 
     func react(life event: LifeEvent) {
@@ -1562,7 +1615,16 @@ final class CatPhysics {
 
         // 2j. 生活陪伴：睡帽、没精神、手持道具计时、电量小图标
         let night = debugNight ?? isNightTime
-        nightCap.target = (night && CatSettings.shared.lifeNight) ? 1 : 0
+        // 圣诞季戴圣诞帽（深夜也是这一顶，不叠戴）；不然深夜戴睡帽
+        let holiday = activeHoliday
+        let wantsNightCap = night && CatSettings.shared.lifeNight
+        if holiday.christmas != capIsSanta && nightCap.value < 0.05 {
+            capIsSanta = holiday.christmas
+        }
+        let wantsCap = holiday.christmas || wantsNightCap
+        // 换帽子：先摘掉旧的（降到 0）再戴新的
+        nightCap.target = wantsCap && capIsSanta == holiday.christmas ? 1 : 0
+        snow.step(dt: dt, on: holiday.snow, bounds: CGRect(x: 10, y: 0, width: 340, height: 250))
         nightCap.step(dt: dt, stiffness: 200, damping: 13)
         capSway.target = headTilt.value
         capSway.step(dt: dt, stiffness: 45, damping: 4.5)

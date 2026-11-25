@@ -304,6 +304,8 @@ extension CatRenderer {
         case .yarn: drawYarn(in: ctx)
         case .flower: drawFlower(in: ctx)
         case .feather: drawFeather(in: ctx)
+        case .present: drawPresent(in: ctx)
+        case .candyCane: drawCandyCane(in: ctx)
         }
         ctx.restoreGState()
 

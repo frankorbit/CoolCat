@@ -25,7 +25,7 @@ protocol SettingsHost: AnyObject {
 }
 
 enum SettingsDemo {
-    case typing, life, meeting, claude, codex, gift, roam, peek, nap, hop
+    case typing, life, meeting, claude, codex, gift, roam, peek, nap, hop, holiday
 }
 
 // MARK: - Store
@@ -555,6 +555,14 @@ private struct AppearancePane: View {
                 RowDivider()
                 SettingsRow(title: "装扮", subtitle: "在「亲密度」里随等级解锁") {
                     Text(CatSettings.shared.accessory.title).font(.system(size: 12)).foregroundColor(.secondary)
+                }
+            }
+            SettingsCard(title: "节日") {
+                ToggleRow(title: "节日装扮 🎄", subtitle: "12 月戴圣诞帽、送圣诞礼物，冬天下小雪；平安夜和圣诞节会跟你打招呼",
+                          isOn: store.binding(\.holidayDecor))
+                RowDivider()
+                ActionRow(title: "预览 30 秒", subtitle: "现在不是 12 月也能先看看", button: "看看") {
+                    store.host.runDemo(.holiday)
                 }
             }
             SettingsCard(title: "键盘") {

@@ -50,6 +50,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--beat-log"), i + 1 < CommandLine.arguments.count {
             overlayWindow.catView.physics.beatLogPath = CommandLine.arguments[i + 1]
         }
+        // `--holiday-preview`：启动后预览 30 秒节日装扮（圣诞帽、小雪、圣诞礼物）
+        if CommandLine.arguments.contains("--holiday-preview") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.overlayWindow.catView.physics.previewHoliday()
+            }
+        }
         // `--roam-hop`：出门直接跳上窗口，在窗口之间连跳
         if CommandLine.arguments.contains("--roam-hop") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.hopNow() }
@@ -539,7 +545,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pose: roam.pose, phase: roam.gaitPhase, facing: roam.facing, air: roam.airProgress,
             time: physics.time, blink: physics.time.truncatingRemainder(dividingBy: 4.1) < 0.13,
             peekEdge: roam.peekEdge, peekReveal: roam.peekReveal, sink: roam.sinkDepth,
-            curl: roam.napCurl, asleep: roam.napAsleep, hunting: roam.isPlaying
+            curl: roam.napCurl, asleep: roam.napAsleep, hunting: roam.isPlaying,
+            santaHat: physics.activeHoliday.christmas
         )
         // 屏幕边换算到画布坐标：走出屏幕、偷看时屏幕外的部分不画
         if let c = roam.clipEdge {
@@ -621,6 +628,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 UserDefaults.standard.set(day, forKey: "CoolCat.LastCoffeeDay")
             }
             let physics = self.overlayWindow.catView.physics
+            physics.setHoliday(HolidaySeason.on(Date()))
             physics.setLife(isNight: self.lifeCompanion.isNight, battery: battery,
                             tiredness: CGFloat(self.lifeCompanion.tiredness))
             for event in events { physics.react(life: event) }
@@ -1200,6 +1208,7 @@ extension AppDelegate: SettingsHost {
         case .claude: runAgentDemo(.claude)
         case .codex: runAgentDemo(.codex)
         case .gift: physics.offerGift()
+        case .holiday: physics.previewHoliday()
         case .roam, .peek, .nap, .hop:
             // 正在做只能在座位上做的事：提示一下，不然点了像没反应
             if let reason = physics.stayHomeReason {

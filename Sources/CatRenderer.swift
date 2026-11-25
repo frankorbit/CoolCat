@@ -202,6 +202,8 @@ enum CatRenderer {
         if physics.catAway {
             if !physics.floatingKeycaps.isEmpty { drawFloatingKeycaps(in: ctx, physics: physics) }
             // Claude / Codex 的状态气泡留在空座位上方，出门时也看得到进度
+            // 雪在状态气泡底下，别盖住 Claude 的进度
+            drawSnow(in: ctx, snow: physics.snow)
             if physics.claudeBubble.value > 0.02 {
                 drawClaudeBubble(in: ctx, physics: physics, headCenter: CGPoint(x: seatX, y: 126))
             }
@@ -209,6 +211,9 @@ enum CatRenderer {
             ctx.restoreGState()
             return
         }
+
+        // 2b. 冬天的小雪：飘在小猫身后
+        drawSnow(in: ctx, snow: physics.snow)
 
         // 3. Cat Tail (behind body)
         drawTail(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)

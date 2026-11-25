@@ -30,6 +30,8 @@ extension CatRenderer {
         var asleep = false
         /// 盯上光标：瞳孔放大成圆圆的大黑眼
         var hunting = false
+        /// 圣诞季：戴圣诞帽
+        var santaHat = false
     }
 
     /// 侧身小猫的配色：从主画面的取色工具里推出来，保证和坐着时是同一只猫
@@ -628,6 +630,8 @@ extension CatRenderer {
         case .none:
             break
         }
+        // 圣诞季：斜扣一顶圣诞帽
+        if pose.santaHat { drawSideSantaHat(in: ctx, r: r, time: pose.time) }
         ctx.restoreGState()
     }
 
@@ -672,7 +676,7 @@ extension CatRenderer {
             paws = [(CGPoint(x: pawX, y: head.y - r * 0.55), CGSize(width: r * 0.4, height: r * 0.6)),
                     (CGPoint(x: pawX, y: head.y + r * 0.78), CGSize(width: r * 0.4, height: r * 0.6))]
         }
-        drawFrontHead(in: ctx, center: head, r: r, tilt: tilt, look: look, blink: pose.blink, pal: pal)
+        drawFrontHead(in: ctx, center: head, r: r, tilt: tilt, look: look, blink: pose.blink, pal: pal, santaHat: pose.santaHat)
         // 爪子盖在脑袋前面，扒着屏幕边
         for (c, size) in paws {
             let rect = CGRect(x: c.x - size.width / 2, y: c.y - size.height / 2, width: size.width, height: size.height)
@@ -702,7 +706,7 @@ extension CatRenderer {
 
     /// 正脸大头：耳朵、花纹、圆眼高光、粉鼻子、ω 嘴、腮红、胡须
     private static func drawFrontHead(in ctx: CGContext, center: CGPoint, r: CGFloat, tilt: CGFloat,
-                                      look: CGPoint, blink: Bool, pal: WalkerPalette) {
+                                      look: CGPoint, blink: Bool, pal: WalkerPalette, santaHat: Bool = false) {
         let earSize = CGFloat(pet?.shape.earSize ?? 1)
         let flare = CGFloat(pet?.shape.earFlare ?? 0)
         let folded = pet?.shape.earStyle == .folded
@@ -860,6 +864,8 @@ extension CatRenderer {
         default:
             break
         }
+        // 圣诞季：正脸戴圣诞帽（帽尖歪向一边）
+        if santaHat { drawSideSantaHat(in: ctx, r: r * 1.1, time: 0) }
         ctx.restoreGState()
     }
 
