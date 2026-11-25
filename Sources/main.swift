@@ -610,6 +610,18 @@ func renderCapPreviewSheet(to path: String) {
 }
 
 // 逗猫 & 喂食预览：4 皮肤 x 5 个瞬间
+if let idx = CommandLine.arguments.firstIndex(of: "--render-roam-compare"),
+   idx + 1 < CommandLine.arguments.count {
+    renderRoamCompare(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
+if let idx = CommandLine.arguments.firstIndex(of: "--render-walk-preview"),
+   idx + 1 < CommandLine.arguments.count {
+    renderWalkPreviewSheet(to: CommandLine.arguments[idx + 1])
+    exit(0)
+}
+
 if let idx = CommandLine.arguments.firstIndex(of: "--render-pets-preview"),
    idx + 1 < CommandLine.arguments.count {
     renderPetsPreviewSheet(to: CommandLine.arguments[idx + 1])
@@ -819,6 +831,123 @@ func renderBondPreviewSheet(to path: String) {
         }
     }
     store.removePersistentDomain(forName: suite)
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+    } catch {
+        FileHandle.standardError.write(Data("写入预览失败: \(error)\n".utf8))
+    }
+}
+
+/// 体型对比：坐在键盘前的小猫 vs 屏幕上同比例的侧身小猫（脚底对齐座位高度）
+func renderRoamCompare(to path: String) {
+    let k = CatRenderer.walkerArtScale
+    let width: CGFloat = 360 + 4 * CatRenderer.walkerCanvas.width * k * 0.62, height: CGFloat = 320
+    let scale: CGFloat = 2
+    guard let ctx = CGContext(data: nil, width: Int(width * scale), height: Int(height * scale), bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+    ctx.translateBy(x: 0, y: height * scale)
+    ctx.scaleBy(x: scale, y: -scale)
+    ctx.setFillColor(NSColor(calibratedRed: 0.66, green: 0.70, blue: 0.68, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    CatRenderer.draw(in: ctx, physics: CatPhysics(), showPermissionPill: false)
+    let seatY = CatPhysics.seatAnchor.y
+    ctx.setStrokeColor(NSColor(calibratedWhite: 0, alpha: 0.2).cgColor)
+    ctx.move(to: CGPoint(x: 0, y: seatY)); ctx.addLine(to: CGPoint(x: width, y: seatY)); ctx.strokePath()
+    let poses: [RoamPose] = [.stand, .walk, .air, .sit]
+    for (i, pose) in poses.enumerated() {
+        ctx.saveGState()
+        // 脚底放在座位那条线上
+        let x = 360 + CGFloat(i) * CatRenderer.walkerCanvas.width * k * 0.62
+        ctx.translateBy(x: x - CatRenderer.walkerFeet.x * k * 0.25, y: seatY - CatRenderer.walkerFeet.y * k)
+        ctx.scaleBy(x: k, y: k)
+        CatRenderer.drawWalker(in: ctx, pose: .init(pose: pose, phase: .pi / 2, facing: 1, air: 0.4, time: 0.3, blink: false))
+        ctx.restoreGState()
+    }
+    guard let image = ctx.makeImage(),
+          let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+    try? png.write(to: URL(fileURLWithPath: path))
+}
+
+/// 满屏漫游的侧身小猫：每行一只猫，每列一个姿势
+func renderWalkPreviewSheet(to path: String) {
+    let settings = CatSettings.shared
+    let saved = (settings.coatTheme, settings.eyeTheme, settings.customPetID, settings.accessory)
+    defer { (settings.coatTheme, settings.eyeTheme, settings.customPetID, settings.accessory) = saved }
+    settings.accessory = CatAccessory(rawValue: ProcessInfo.processInfo.environment["COOLCAT_ACCESSORY"] ?? "") ?? .none
+    let cats: [(String, () -> Void)] = [
+        ("小黑猫", { PetLibrary.shared.select(nil); settings.coatTheme = .classicBlack; settings.eyeTheme = .neonChartreuse }),
+        ("暹罗", { PetLibrary.shared.select(nil); settings.coatTheme = .siamese; settings.eyeTheme = .siameseBlue }),
+        ("美短", { PetLibrary.shared.select(nil); settings.coatTheme = .shorthair; settings.eyeTheme = .softAmber }),
+        ("大橘", { PetLibrary.shared.select(PetLibrary.shared.pet(id: "orange-tabby")) }),
+        ("奶牛猫", { PetLibrary.shared.select(PetLibrary.shared.pet(id: "tuxedo")) }),
+        ("三花", { PetLibrary.shared.select(PetLibrary.shared.pet(id: "calico")) }),
+        ("英短蓝猫", { PetLibrary.shared.select(PetLibrary.shared.pet(id: "british-blue")) }),
+        ("德文卷毛", { PetLibrary.shared.select(PetLibrary.shared.pet(id: "devon-rex")) })
+    ]
+    // COOLCAT_WALK_SET=nap：只看打盹的几个阶段
+    let napPoses: [(String, CatRenderer.WalkerPose)] = [
+        ("刚趴下", .init(pose: .curl, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, curl: 0)),
+        ("蜷一半", .init(pose: .curl, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, curl: 0.5)),
+        ("睡着 1", .init(pose: .curl, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, curl: 1, asleep: true)),
+        ("睡着 2", .init(pose: .curl, phase: 0, facing: 1, air: 0, time: 1.9, blink: false, curl: 1, asleep: true)),
+        ("朝左睡", .init(pose: .curl, phase: 0, facing: -1, air: 0, time: 1.1, blink: false, curl: 1, asleep: true))
+    ]
+    let walkPoses: [(String, CatRenderer.WalkerPose)] = [
+        ("站", .init(pose: .stand, phase: 0, facing: 1, air: 0, time: 0.3, blink: false)),
+        ("走 1", .init(pose: .walk, phase: 0, facing: 1, air: 0, time: 0.3, blink: false)),
+        ("走 2", .init(pose: .walk, phase: .pi / 2, facing: 1, air: 0, time: 0.6, blink: false)),
+        ("走 3", .init(pose: .walk, phase: .pi, facing: 1, air: 0, time: 0.9, blink: false)),
+        ("跑", .init(pose: .run, phase: .pi * 0.3, facing: 1, air: 0, time: 0.3, blink: false)),
+        ("蹲", .init(pose: .crouch, phase: 0, facing: 1, air: 0, time: 0.3, blink: false)),
+        ("起跳", .init(pose: .air, phase: 0, facing: 1, air: 0.15, time: 0.3, blink: false)),
+        ("下落", .init(pose: .air, phase: 0, facing: 1, air: 0.85, time: 0.3, blink: false)),
+        ("落地", .init(pose: .land, phase: 0, facing: 1, air: 0, time: 0.3, blink: false)),
+        ("坐", .init(pose: .sit, phase: 0, facing: 1, air: 0, time: 0.3, blink: false)),
+        ("底边下沉", .init(pose: .crouch, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, sink: 0.5)),
+        ("底边偷看", .init(pose: .peek, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, peekEdge: .bottom, peekReveal: 1)),
+        ("右边偷看", .init(pose: .peek, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, peekEdge: .right, peekReveal: 1)),
+        ("左边偷看", .init(pose: .peek, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, peekEdge: .left, peekReveal: 1)),
+        ("探出一半", .init(pose: .peek, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, peekEdge: .right, peekReveal: 0.5)),
+        ("朝左走", .init(pose: .walk, phase: .pi / 2, facing: -1, air: 0, time: 0.6, blink: false))
+    ]
+    let poses = ProcessInfo.processInfo.environment["COOLCAT_WALK_SET"] == "nap" ? napPoses : walkPoses
+    let cw = Int(CatRenderer.walkerCanvas.width), ch = Int(CatRenderer.walkerCanvas.height), scale = 2
+    let labelW = 70
+    guard let ctx = CGContext(
+        data: nil, width: (labelW + cw * poses.count) * scale, height: ch * cats.count * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return }
+    ctx.translateBy(x: 0, y: CGFloat(ch * cats.count * scale))
+    ctx.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+    ctx.setFillColor(NSColor(calibratedRed: 0.66, green: 0.70, blue: 0.68, alpha: 1).cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: labelW + cw * poses.count, height: ch * cats.count))
+    for (row, cat) in cats.enumerated() {
+        cat.1()
+        for (col, pose) in poses.enumerated() {
+            ctx.saveGState()
+            ctx.translateBy(x: CGFloat(labelW + col * cw), y: CGFloat(row * ch))
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.2).cgColor)
+            ctx.stroke(CGRect(x: 0.5, y: 0.5, width: CGFloat(cw) - 1, height: CGFloat(ch) - 1))
+            // 地面线
+            ctx.setStrokeColor(NSColor(calibratedWhite: 0, alpha: 0.15).cgColor)
+            ctx.move(to: CGPoint(x: 0, y: CatRenderer.walkerFeet.y)); ctx.addLine(to: CGPoint(x: CGFloat(cw), y: CatRenderer.walkerFeet.y)); ctx.strokePath()
+            CatRenderer.drawWalker(in: ctx, pose: pose.1)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            if row == 0 {
+                NSAttributedString(string: pose.0, attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: NSColor.white]).draw(at: CGPoint(x: 6, y: 4))
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        NSAttributedString(string: cat.0, attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .bold), .foregroundColor: NSColor.white]).draw(at: CGPoint(x: 8, y: CGFloat(row * ch + ch / 2 - 8)))
+        NSGraphicsContext.restoreGraphicsState()
+    }
     guard let image = ctx.makeImage(),
           let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
     do {

@@ -23,7 +23,7 @@ protocol SettingsHost: AnyObject {
 }
 
 enum SettingsDemo {
-    case typing, life, meeting, claude, codex, gift
+    case typing, life, meeting, claude, codex, gift, roam, peek, nap, hop
 }
 
 // MARK: - Store
@@ -718,6 +718,28 @@ private struct InteractionPane: View {
                 ToggleRow(title: "光标逗猫", subtitle: "在小猫身前慢慢晃光标：盯上 → 扭屁股 → 出爪拍", isOn: store.binding(\.cursorPlay))
                 RowDivider()
                 ToggleRow(title: "空闲时的小动作", subtitle: "打哈欠、伸懒腰、踩奶、慢眨眼……", isOn: store.binding(\.idleAnimations))
+                RowDivider()
+                ToggleRow(title: "满屏漫游 🐾",
+                          subtitle: "30 秒没打字就自己跳下键盘溜达、跳上窗口顶、躲到屏幕边偷看；"
+                              + "你一打字就跑回来，Claude / Codex 等你批准时也会回来提醒",
+                          isOn: store.binding(\.roaming))
+                RowDivider()
+                ActionRow(title: "现在去溜达一圈", subtitle: "预览用：不等闲置，立刻出门（敲一下键盘就回来）", button: "出发") {
+                    store.host.runDemo(.roam)
+                }
+                RowDivider()
+                ActionRow(title: "偷看一下 👀", subtitle: "预览用：溜达时会随机躲到屏幕边外，只露脑袋和两只爪子偷看你", button: "看看") {
+                    store.host.runDemo(.peek)
+                }
+                RowDivider()
+                ActionRow(title: "窗口跳台 🪟", subtitle: "预览用：把桌面上的窗口当桌子，在窗口顶上走、从一扇窗跳到另一扇（窗口上方得留点空）",
+                          button: "跳吧") {
+                    store.host.runDemo(.hop)
+                }
+                RowDivider()
+                ActionRow(title: "打个盹 💤", subtitle: "预览用：溜达时会随机找个地方（最爱窗口顶上）蜷成一团睡一会儿", button: "睡吧") {
+                    store.host.runDemo(.nap)
+                }
             }
             SettingsCard(title: "键盘和鼠标") {
                 ToggleRow(title: "按键气泡", subtitle: "按下的键从键盘上冒出来，如 [S] [W] [⇧]", isOn: store.binding(\.showKeyBadges))

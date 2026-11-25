@@ -10,7 +10,7 @@ enum CatHitZone {
 }
 
 enum CatRenderer {
-    private static func patterned(_ coat: CatCoatTheme) -> Bool { coat == .shorthair || coat == .orangeWhite }
+    static func patterned(_ coat: CatCoatTheme) -> Bool { coat == .shorthair || coat == .orangeWhite }
     static func rgb(_ hex: Int, _ alpha: CGFloat = 1) -> NSColor {
         NSColor(calibratedRed: CGFloat((hex >> 16) & 255)/255,
                 green: CGFloat((hex >> 8) & 255)/255, blue: CGFloat(hex & 255)/255, alpha: alpha)
@@ -19,6 +19,11 @@ enum CatRenderer {
 
     /// 当前自定义宠物：每次 draw 开头取一次（nil = 内置猫，走原来的配色，画面逐像素不变）
     private(set) static var pet: PetSpec?
+
+    /// 每帧开头：按当前选择取一次自定义宠物（主画面和漫游的侧身小猫共用）
+    static func refreshActivePet(coat: CatCoatTheme) {
+        pet = PetLibrary.shared.active.flatMap { $0.style.baseCoat == coat ? $0 : nil }
+    }
     /// 身体宽度系数（自定义体型）
     private static var bodyScale: CGFloat { CGFloat(pet?.shape.bodyWidth ?? 1) }
 
@@ -28,18 +33,18 @@ enum CatRenderer {
 
     /// 浅色/花色猫的「可爱化」：粉鼻子 ω 嘴、腮红、粉耳朵、圆瞳高光、描边和下巴分界、小口鼻白斑。
     /// 经典小黑猫（剪影风）和暹罗系（自带面罩）保持原样
-    private static func isCute(_ coat: CatCoatTheme) -> Bool {
+    static func isCute(_ coat: CatCoatTheme) -> Bool {
         if let pet { return pet.style != .colorpoint }
         return coat == .shorthair || coat == .orangeWhite
     }
 
     /// 口鼻处的底色（决定嘴线的深浅）
-    private static func muzzleColor(_ coat: CatCoatTheme) -> NSColor {
+    static func muzzleColor(_ coat: CatCoatTheme) -> NSColor {
         patterned(coat) ? coatRGB(0xF2EEE4) : bodyColor(coat)
     }
 
     /// 可爱化描边：比身体深一截的同色系，浅色猫轮廓清楚、深色猫也不突兀
-    private static func cuteOutline(_ coat: CatCoatTheme, alpha: CGFloat = 0.7) -> NSColor {
+    static func cuteOutline(_ coat: CatCoatTheme, alpha: CGFloat = 0.7) -> NSColor {
         let body = bodyColor(coat)
         return HexColor.luminance(body) < 0.2
             ? HexColor.mix(body, .white, 0.22, alpha: alpha)
@@ -63,7 +68,7 @@ enum CatRenderer {
         CGPoint(x: -16.5, y: 3), CGPoint(x: -10.5, y: -2.5), CGPoint(x: -4.5, y: -6), CGPoint(x: -2.6, y: -14)
     ]
 
-    private static func coatRGB(_ hex: Int, _ alpha: CGFloat = 1) -> NSColor {
+    static func coatRGB(_ hex: Int, _ alpha: CGFloat = 1) -> NSColor {
         guard let pet else { return rgb(hex, alpha) }
         if hex == tricolorPatchRGB { return pet.accentColor.withAlphaComponent(alpha) }
         switch (pet.style, hex) {
@@ -78,25 +83,25 @@ enum CatRenderer {
         }
     }
 
-    private static func bodyColor(_ coat: CatCoatTheme) -> NSColor {
+    static func bodyColor(_ coat: CatCoatTheme) -> NSColor {
         if let pet {
             return pet.style == .solid || pet.style == .tabby ? pet.mainColor : pet.secondaryColor
         }
         return coat == .shorthair ? rgb(0xC2C5C1) : (coat == .orangeWhite ? rgb(0xF2EEE4) : catBlack)
     }
-    private static func limbColor(_ coat: CatCoatTheme) -> NSColor {
+    static func limbColor(_ coat: CatCoatTheme) -> NSColor {
         if let pet { return pet.style == .colorpoint ? pet.secondaryColor : pet.mainColor }
         return coat == .orangeWhite ? rgb(0xD8AA73) : bodyColor(coat)
     }
-    private static func pawColor(_ coat: CatCoatTheme) -> NSColor {
+    static func pawColor(_ coat: CatCoatTheme) -> NSColor {
         if let pet { return pet.style == .colorpoint ? pet.mainColor : pet.secondaryColor }
         return patterned(coat) ? rgb(0xF2EEE4) : (coat == .siamese ? siamesePoint : catBlack)
     }
-    private static func earTailColor(_ coat: CatCoatTheme) -> NSColor {
+    static func earTailColor(_ coat: CatCoatTheme) -> NSColor {
         if let pet, pet.style == .colorpoint { return pet.mainColor }
         return coat == .siamese ? siamesePoint : limbColor(coat)
     }
-    private static func creaseColor(_ coat: CatCoatTheme) -> NSColor {
+    static func creaseColor(_ coat: CatCoatTheme) -> NSColor {
         if pet != nil {
             // 深色身体用浅色描线，浅色身体用加深的同色系描线
             let body = bodyColor(coat)
@@ -137,6 +142,8 @@ enum CatRenderer {
         if showPermissionPill && permissionPillRect.insetBy(dx: -4, dy: -4).contains(p) {
             return .permissionPill
         }
+        // 小猫不在座位上：没有可摸、可拖的地方
+        if physics.catAway { return .none }
 
         let cx = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
         let breath = sin(physics.time * 2.1) * 1.6
@@ -175,7 +182,7 @@ enum CatRenderer {
 
         let settings = CatSettings.shared
         let coat = settings.coatTheme
-        pet = PetLibrary.shared.active.flatMap { $0.style.baseCoat == coat ? $0 : nil }
+        refreshActivePet(coat: coat)
         let breath = sin(physics.time * 2.1) * 1.6
         let seatX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
         let seatY = CatPhysics.seatAnchor.y
@@ -190,6 +197,18 @@ enum CatRenderer {
 
         // 2. Mini Angled 65% Mechanical Keyboard + Dynamic Keycap Glow
         drawKeyboard(in: ctx, physics: physics, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends)
+
+        // 小猫出门溜达了：座位空着，只画键盘、鼠标、按键气泡和授权提示
+        if physics.catAway {
+            if !physics.floatingKeycaps.isEmpty { drawFloatingKeycaps(in: ctx, physics: physics) }
+            // Claude / Codex 的状态气泡留在空座位上方，出门时也看得到进度
+            if physics.claudeBubble.value > 0.02 {
+                drawClaudeBubble(in: ctx, physics: physics, headCenter: CGPoint(x: seatX, y: 126))
+            }
+            if showPermissionPill { drawPermissionPill(in: ctx, text: permissionPillText) }
+            ctx.restoreGState()
+            return
+        }
 
         // 3. Cat Tail (behind body)
         drawTail(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)

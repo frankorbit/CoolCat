@@ -124,6 +124,10 @@ final class CatSettings {
     var cursorPlay: Bool {
         didSet { UserDefaults.standard.set(cursorPlay, forKey: "CoolCat.CursorPlay") }
     }
+    /// 满屏漫游：闲着时下座位溜达，一打字就跑回来
+    var roaming: Bool {
+        didSet { UserDefaults.standard.set(roaming, forKey: "CoolCat.Roaming") }
+    }
     /// 正在用的自定义宠物（PetLibrary 里的 id）；nil = 内置猫
     var customPetID: String? {
         didSet { UserDefaults.standard.set(customPetID, forKey: "CoolCat.CustomPetID") }
@@ -208,6 +212,7 @@ final class CatSettings {
         cursorPlay = d.object(forKey: "CoolCat.CursorPlay") as? Bool ?? true
         accessory = CatAccessory(rawValue: d.string(forKey: "CoolCat.Accessory") ?? "") ?? .none
         customPetID = d.string(forKey: "CoolCat.CustomPetID")
+        roaming = d.object(forKey: "CoolCat.Roaming") as? Bool ?? true
         lifeMorning = d.object(forKey: "CoolCat.LifeMorning") as? Bool ?? true
         lifeBattery = d.object(forKey: "CoolCat.LifeBattery") as? Bool ?? true
         lifeWorkBreak = d.object(forKey: "CoolCat.LifeWorkBreak") as? Bool ?? true
@@ -469,6 +474,45 @@ final class CatPhysics {
     static let feedDuration: CGFloat = 4.2
     /// 已经啃掉几口（0...3）
     private(set) var fishBites = 0
+
+    // 满屏漫游
+    /// 小猫出门溜达了（座位空着，侧身小猫在漫游窗口里）
+    var catAway = false
+
+    /// 这会儿该待在座位上：开会、Claude 在忙或等你、在跳舞、在睡觉、手里有东西、在吃鱼、在被摸……
+    /// 正在做只能坐在座位上做的事（开会、吃东西、送礼物、被摸、跳舞……）：手动「出发」也不出门，在外面也立刻回来。
+    /// Claude / Codex 在干活不算：状态气泡留在键盘上方照样显示；睡觉也不算：出门前会被叫醒。
+    var prefersStayingHome: Bool {
+        stayHomeReason != nil
+    }
+
+    /// 不能出门的原因（给设置里的「出发」按钮提示用）；nil = 可以出门
+    var stayHomeReason: String? {
+        if micActive || cameraActive { return "在开会" }
+        if feedAge != nil { return "在吃小鱼干" }
+        if gift != nil { return "在等你收礼物" }
+        if heldProp != nil { return "手里拿着东西" }
+        if nuzzle > 0.1 || petHeadIntensity > 0.1 || playStalk > 0.1 { return "正在和你玩" }
+        if shushTimer > 0 || groomTimer > 0 { return "在忙自己的事" }
+        if danceAmount > 0.2 { return "在跟着音乐摇摆" }
+        return nil
+    }
+
+    /// Claude / Codex 在等你（批准权限、回复）：不自己出门；在外面溜达时一出现就跑回来提醒你
+    var agentNeedsYou: Bool { claudeStatusIsWaiting }
+
+    /// 手动「出发」被拦下时冒个提示，不然点了没反应
+    func explainCannotRoam(_ reason: String) {
+        toast = Toast(text: "🐾 小猫\(reason)，等会儿再出门", style: .habit)
+    }
+
+    /// 跳回座位：屁股一沉、脑袋一顿
+    func landBackInSeat() {
+        catAway = false
+        bodySquash.velocity -= 2.2
+        headOffsetY.velocity += 90
+        sleepiness = 0
+    }
 
     // 亲密度
     private(set) var bond = BondLog(today: LifeCompanion.dayKey(Date(), calendar: .current))

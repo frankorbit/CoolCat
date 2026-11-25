@@ -12,6 +12,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lifeTimer: Timer?
     private var isPetVisible = true
     private var settingsController: SettingsWindowController?
+    // 满屏漫游
+    private var roam = RoamDirector()
+    private var roamWindow: RoamWindow?
+    private var roamSurfaces: [RoamSurface] = []
+    private var lastSurfaceScan: CFTimeInterval = 0
+    /// `--roam-log <文件>`：每半秒记一行漫游状态（调试多屏坐标用）
+    private lazy var roamLogPath: String? = {
+        guard let i = CommandLine.arguments.firstIndex(of: "--roam-log"), i + 1 < CommandLine.arguments.count else { return nil }
+        return CommandLine.arguments[i + 1]
+    }()
+    private var lastRoamLog: CFTimeInterval = 0
+    private var roamClockStart: CFTimeInterval = 0
     private var availableUpdateVersion: String?
     private var availableUpdateURL: URL?
     private var availableAssetURL: URL?
@@ -29,6 +41,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlayWindow = OverlayWindow()
         overlayWindow.orderFrontRegardless()
         // `open -a CoolCat --args --open-settings`：启动后直接打开设置面板
+        // `open -a CoolCat --args --roam-now`：启动后马上出门溜达（调试/演示用）
+        // `--roam-peek`：出门后马上去底边偷看
+        if CommandLine.arguments.contains("--roam-peek") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.peekNow() }
+        }
+        // `--roam-hop`：出门直接跳上窗口，在窗口之间连跳
+        if CommandLine.arguments.contains("--roam-hop") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.hopNow() }
+        }
+        // `--roam-nap`：出门后马上找地方打个盹
+        if CommandLine.arguments.contains("--roam-nap") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.napNow() }
+        }
+        if CommandLine.arguments.contains("--roam-now") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.goOutNow() }
+        }
         if CommandLine.arguments.contains("--open-settings") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.openSettings() }
         }
@@ -274,6 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             view.physics.outputSilentHint = MusicMonitor.shared.isMomentarilySilent
             view.physics.updateAudio(AudioSpectrumAnalyzer.shared.snapshot())
             view.physics.step(dt: dt, windowFrameInScreen: self.overlayWindow.frame)
+            self.updateRoaming(dt: dt, now: now)
             view.updateHoverAndClickThrough()
             view.needsDisplay = true
         }
@@ -415,7 +444,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             overlayWindow.orderFrontRegardless()
         } else {
             overlayWindow.orderOut(nil)
+            roamWindow?.orderOut(nil)
         }
+    }
+
+    // MARK: - 满屏漫游
+
+    /// 每帧：把屏幕上能落脚的面、座位位置、按键空闲时长喂给漫游逻辑，再摆好侧身小猫
+    private func updateRoaming(dt: CGFloat, now: CFTimeInterval) {
+        let settings = CatSettings.shared
+        let physics = overlayWindow.catView.physics
+        guard let screen = overlayWindow.screen ?? NSScreen.main else { return }
+        let k = settings.scale
+        let home = overlayWindow.frame
+        let visible = screen.visibleFrame
+        // 窗口上沿：在外面溜达时每秒扫一次，在家时 5 秒一次（出门那一刻用得上）
+        let scanEvery: CFTimeInterval = roam.isHome ? 5 : 1
+        if now - lastSurfaceScan > scanEvery {
+            lastSurfaceScan = now
+            // 侧身小猫放大后站着约 150 画布点高
+            let walkerK = k * CatRenderer.walkerArtScale
+            roamSurfaces = RoamSurfaceScanner.windowTops(on: screen, catHeight: 120 * walkerK, minWidth: 110 * walkerK)
+        }
+        let engine = InputEngine.shared
+        // 启动后还没按过键：从启动那一刻算闲置，免得被当成「人早就走了」而一直不出门
+        if roamClockStart == 0 { roamClockStart = now }
+        let keyIdle = now - max(engine.lastKeyActivityTime, roamClockStart)
+        let world = RoamWorld(
+            floor: RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2),
+            windowTops: roamSurfaces,
+            seat: CGPoint(x: home.minX + CatPhysics.seatAnchor.x * k, y: home.maxY - CatPhysics.seatAnchor.y * k),
+            homeRect: home,
+            keyIdle: keyIdle,
+            userActive: keyIdle < 0.4,
+            mustStayHome: physics.prefersStayingHome,
+            wanderAllowed: settings.roaming && !physics.agentNeedsYou,
+            needsAttention: physics.agentNeedsYou,
+            // 走路速度、跳跃距离跟着侧身小猫的体型放大
+            scale: k * CatRenderer.walkerArtScale,
+            screenTop: visible.maxY
+        )
+        if let path = roamLogPath, now - lastRoamLog > 0.5 {
+            lastRoamLog = now
+            let line = String(format: "%.1f home=%d pose=%@ pos=(%.0f,%.0f) surf=%@ seat=(%.0f,%.0f) homeFrame=%@ visible=%@ tops=%d win=%@ stay=%d idle=%.0f fp=%@ act=%@\n",
+                              now, roam.isHome ? 1 : 0, "\(roam.pose)", roam.pos.x, roam.pos.y, "\(roam.surfaceID.map(String.init) ?? "-")",
+                              world.seat.x, world.seat.y, NSStringFromRect(home), NSStringFromRect(visible), roamSurfaces.count,
+                              NSStringFromRect(roamWindow?.frame ?? .zero), world.mustStayHome ? 1 : 0, keyIdle, "\(roam.pendingForcedPeek.map { "\($0)" } ?? "-")", "\(roam.activity.map { "\($0)" } ?? "-")".prefix(40).description)
+            if let h = FileHandle(forWritingAtPath: path) {
+                h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+            } else {
+                FileManager.default.createFile(atPath: path, contents: Data(line.utf8))
+            }
+        }
+        for event in roam.update(dt: dt, world: world) {
+            switch event {
+            case .leftSeat: physics.catAway = true
+            case .arrivedHome: physics.landBackInSeat()
+            case .landed: break
+            }
+        }
+        guard !roam.isHome else {
+            if roamWindow?.isVisible == true { roamWindow?.orderOut(nil) }
+            return
+        }
+        let window: RoamWindow
+        if let existing = roamWindow {
+            window = existing
+        } else {
+            window = RoamWindow()
+            roamWindow = window
+        }
+        window.place(feet: roam.pos, scale: k)
+        window.walkerView.pose = CatRenderer.WalkerPose(
+            pose: roam.pose, phase: roam.gaitPhase, facing: roam.facing, air: roam.airProgress,
+            time: physics.time, blink: physics.time.truncatingRemainder(dividingBy: 4.1) < 0.13,
+            peekEdge: roam.peekEdge, peekReveal: roam.peekReveal, sink: roam.sinkDepth,
+            curl: roam.napCurl, asleep: roam.napAsleep
+        )
+        // 屏幕边换算到画布坐标：走出屏幕、偷看时屏幕外的部分不画
+        if let c = roam.clipEdge {
+            let K = k * CatRenderer.walkerArtScale
+            let f = window.frame
+            switch c.edge {
+            case .left, .right: window.walkerView.clip = (c.edge, (c.at - f.minX) / K)
+            case .bottom: window.walkerView.clip = (.bottom, CatRenderer.walkerCanvas.height - (c.at - f.minY) / K)
+            }
+        } else {
+            window.walkerView.clip = nil
+        }
+        window.walkerView.needsDisplay = true
+        if !window.isVisible { window.orderFrontRegardless() }
     }
 
     // MARK: - Launch at Login (macOS LaunchAgent — works reliably for signed & ad-hoc builds)
@@ -1026,7 +1144,10 @@ extension AppDelegate: SettingsHost {
 
     func applyScale(_ scale: CGFloat) { overlayWindow.applyScale(scale) }
 
-    func applyWindowBehavior() { overlayWindow.applyWindowLevelAndBehavior() }
+    func applyWindowBehavior() {
+        overlayWindow.applyWindowLevelAndBehavior()
+        roamWindow?.applyWindowLevelAndBehavior()
+    }
 
     func audioSettingsChanged(resetPermission: Bool) {
         // 重新打开实时音频 = 用户想再试一次（可能刚在系统设置里授了权）
@@ -1057,6 +1178,21 @@ extension AppDelegate: SettingsHost {
         case .claude: runAgentDemo(.claude)
         case .codex: runAgentDemo(.codex)
         case .gift: physics.offerGift()
+        case .roam, .peek, .nap, .hop:
+            // 正在做只能在座位上做的事：提示一下，不然点了像没反应
+            if let reason = physics.stayHomeReason {
+                physics.explainCannotRoam(reason)
+                return
+            }
+            if demo == .peek {
+                roam.peekNow(edge: [RoamEdge.bottom, .left, .right].randomElement())
+            } else if demo == .nap {
+                roam.napNow()
+            } else if demo == .hop {
+                roam.hopNow()
+            } else {
+                roam.goOutNow()
+            }
         }
     }
 }
