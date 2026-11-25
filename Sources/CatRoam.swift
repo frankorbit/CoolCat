@@ -188,7 +188,7 @@ struct RoamDirector {
     private var random: () -> Double
 
     /// 漫游最长时间，到点自己回家
-    static let maxTrip: CGFloat = 90
+    static let maxTrip: CGFloat = 120
     /// 闲置多久之后才自己出门（秒）
     static let idleBeforeWander: Double = 30
     /// 闲置这么久（人大概离开了）就不再出门，安心在座位上睡觉
@@ -310,6 +310,8 @@ struct RoamDirector {
     private var forcedHops = 0
     /// 这一趟已经睡过了：一趟最多睡一觉
     private var nappedThisTrip = false
+    /// 这一趟已经安排了几件事（第一件多半是先走远一点）
+    private var stepsThisTrip = 0
     /// 调试日志用
     var pendingForcedPeek: RoamEdge? { forcedPeek }
 
@@ -463,8 +465,9 @@ struct RoamDirector {
         isHome = false
         returning = false
         tripTime = 0
-        budget = 2 + Int(random() * 3)
+        budget = 3 + Int(random() * 3)
         nappedThisTrip = false
+        stepsThisTrip = 0
         pos = world.seat
         surfaceID = nil
         let k = world.scale
@@ -501,6 +504,7 @@ struct RoamDirector {
             activity = .fall(vy: 0)
             return
         }
+        stepsThisTrip += 1
         let roll = random()
         if let edge = forcedPeek, id == world.floor.id {
             // 演示：直接去偷看
@@ -514,10 +518,16 @@ struct RoamDirector {
             }
             return
         }
-        // 打盹：一趟最多一次；窗口顶上（高处）更想睡，闲得越久越困
+        // 刚跳下座位：多半先走远一段再说，不然总在键盘边上打转
+        let free = forcedHops == 0 && !forcedNap
+        if free, stepsThisTrip == 1, id == world.floor.id, random() < 0.7 {
+            activity = .walk(toX: exploreTarget(on: here, k: k), run: false)
+            return
+        }
+        // 打盹：一趟最多一次，先溜达过再睡；窗口顶上（高处）更想睡，闲得越久越困
         let onHighPlace = id != world.floor.id
         let napChance = (onHighPlace ? 0.35 : 0.16) * (world.keyIdle > 120 ? 1.7 : 1)
-        if forcedHops == 0, forcedNap || (!nappedThisTrip && random() < napChance) {
+        if forcedHops == 0, forcedNap || (!nappedThisTrip && stepsThisTrip > 1 && random() < napChance) {
             let hold: CGFloat = forcedNap ? 12 : 15 + CGFloat(random()) * (world.keyIdle > 120 ? 35 : 20)
             forcedNap = false
             nappedThisTrip = true
@@ -551,17 +561,18 @@ struct RoamDirector {
             return
         }
         let other = random()
-        if other < 0.27 {
+        if other < 0.22 {
             activity = .sit(remaining: 3 + CGFloat(random() * 5))
             return
         }
         // 在地上时偶尔躲到屏幕边外面偷看
-        if other < 0.67, id == world.floor.id {
+        if other < 0.52, id == world.floor.id {
             if random() < 0.45 {
                 surfaceID = nil
                 activity = .peek(Peek(edge: .bottom, hold: 3.5 + CGFloat(random() * 2.5)))
             } else {
-                let edge: RoamEdge = pos.x - world.floor.minX < world.floor.maxX - pos.x ? .left : .right
+                // 左右随机挑一边：远的那边就一路走过去，顺便逛遍整个屏幕
+                let edge: RoamEdge = random() < 0.5 ? .left : .right
                 let offX = edge == .left ? world.floor.minX - 60 * k : world.floor.maxX + 60 * k
                 activity = .walk(toX: offX, run: false)
                 pendingPeek = edge
@@ -569,9 +580,20 @@ struct RoamDirector {
             return
         }
         // 沿着脚下这张桌子溜达
+        activity = .walk(toX: exploreTarget(on: here, k: k), run: false)
+    }
+
+    /// 溜达的目的地：离当前位置至少桌面宽度的三成，空间大的那一侧更容易被选中（往没去过的地方走）
+    private func exploreTarget(on here: RoamSurface, k: CGFloat) -> CGFloat {
         let margin = 30 * k
-        let x = here.minX + margin + CGFloat(random()) * max(1, here.width - margin * 2)
-        activity = .walk(toX: x, run: false)
+        let lo = here.minX + margin, hi = here.maxX - margin
+        guard hi > lo else { return pos.x }
+        let minDist = (hi - lo) * 0.3
+        let leftRoom = max(0, pos.x - minDist - lo)
+        let rightRoom = max(0, hi - (pos.x + minDist))
+        guard leftRoom + rightRoom > 1 else { return lo + CGFloat(random()) * (hi - lo) }
+        let pick = CGFloat(random()) * (leftRoom + rightRoom)
+        return pick < leftRoom ? lo + pick : pos.x + minDist + (pick - leftRoom)
     }
 
     // MARK: Hopping
