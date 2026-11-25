@@ -21,7 +21,7 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
 </p>
 
 - 🎧 **Dances to your music** — headphones on when a music player is playing, a vertical LED spectrum wall behind the cat, real beat tracking via a system audio tap (macOS 14.2+) aligned to your output latency, with tap-along calibration. Moves hit the beat and accent the downbeat ([more](#-hitting-the-beat)). Strong beats get head-bobs, calm songs get slow sways. While music plays it stays at the keyboard instead of wandering off.
-- 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, gallops around like a cheetah, treats window tops like tables to jump between (climbing the frame when they're too high), chases your cursor, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
+- 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, gallops around like a cheetah, treats window tops like tables to jump between (climbing the frame when they're too high), chases your cursor, knocks your pen off a window, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
 - 🤖 **Claude Code integration** — one-click hooks; a bubble shows *project · action · elapsed* per session, the cat waves when a session needs your approval — and if you're looking at another window, [holds up a sign](#-agent-sign) on it — and throws confetti when it is done.
 - ⌨️ **Codex integration** — one-click hooks in `~/.codex/hooks.json` (trust them once via `/hooks` in Codex); Codex sessions share the bubble with Claude Code, marked by a blue spinner.
 - 🎙 **Meeting mode** — headset when the mic is on, a "shh" when you type too loudly, a quick face wash before the camera turns on.
@@ -49,6 +49,12 @@ After 30 seconds without typing the cat leaves its keyboard and wanders around i
   <img src="assets/coolcat/roam-play.en.png" alt="Cursor play and climbing" />
 </p>
 
+- **Knocking things off** — now and then it heads out with something from your desk in its mouth (a pen, an eraser, a bottle cap, a paper ball, a hair tie), sets it down by the edge of a window it can reach, stares at it, swats it out bit by bit (pausing to stare again), and leans over to watch it tumble off. It lands on a lower window or the bottom of the screen, bounces, paper balls and caps roll a bit, and it fades out after 25 seconds. Move the window and anything resting on it falls too. Start typing on the way and it drops the item and runs home.
+
+<p align="center">
+  <img src="assets/coolcat/knock.en.png" alt="Carrying your pen off and swatting it off a window" />
+</p>
+
 - **Peeking** — it hides past the bottom or side edge of the screen with only its head and two paws showing, clipped so it never spills onto another display.
 - **Naps** — it curls up into a ball (high window tops are its favourite), breathing slowly with floating Zzz. The longer you're idle, the sleepier it gets.
 - **Gallops like a cheetah** — running is a rotary gallop with a flexing spine and two flight phases per stride, head level and tail streaming back; every now and then it gets the zoomies and sprints off, braking with a crouch when it arrives.
@@ -59,7 +65,7 @@ After 30 seconds without typing the cat leaves its keyboard and wanders around i
 
 - **Comes back when needed** — typing sends it running home (a napping cat wakes with a start); it stays home during meetings or snacks, sticks to the keyboard dancing along while music plays (and gallops back if a song starts mid-walk), and comes back to remind you when Claude Code / Codex is waiting for your approval (or, if you're busy in another window, runs over and [holds up a sign](#-agent-sign)). After 10 minutes away from the keyboard it stops wandering and naps at its seat.
 
-Turn roaming off under *Settings → Interaction*, where preview buttons trigger a walk, a peek, window hops or a nap on demand.
+Turn roaming (or just the knocking) off under *Settings → Interaction*, where preview buttons trigger a walk, a peek, window hops, a nap or a knock-off on demand.
 
 ## 🙋 Agent sign
 

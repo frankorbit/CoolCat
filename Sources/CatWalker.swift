@@ -38,6 +38,10 @@ extension CatRenderer {
         var shake: CGFloat = 0
         /// 0...1：爪子上沾的雪（爪子发白）
         var pawSnow: CGFloat = 0
+        /// 拨爪（把东西拨下桌）的进度 0...1
+        var tap: CGFloat = 0
+        /// 嘴里叼着的东西
+        var trinket: Trinket?
     }
 
     /// 侧身小猫的配色：从主画面的取色工具里推出来，保证和坐着时是同一只猫
@@ -229,6 +233,9 @@ extension CatRenderer {
             let env = sin(.pi * pose.shake)
             tilt = sin(pose.time * 34) * 0.07 * env
             lift += abs(sin(pose.time * 34)) * 1.6 * env
+        case .knockTap:
+            // 拨东西：重心往前探一点
+            tilt = 0.05 * sin(.pi * pose.tap)
         }
         let center = CGPoint(x: feet.x - 6, y: ground - lift)
         let halfLen = bodyLen * stretch
@@ -317,6 +324,11 @@ extension CatRenderer {
                 let len = groundY - joint.y
                 let raise = max(0, cos(p + offset)) * (pose.pose == .run ? 9 : (pose.pose == .stalk ? 2.5 : 5.5))
                 return CGPoint(x: joint.x + sin(a) * len, y: joint.y + cos(a) * len - raise)
+            case .knockTap where front && offset == 0:
+                // 近侧前爪：抬起来往前探，在最远处按下去（拍在东西上），再收回来
+                let reach = sin(.pi * pose.tap)
+                let raise = max(0, sin(.pi * min(1, pose.tap * 2)))
+                return CGPoint(x: joint.x + 6 + 34 * reach, y: groundY - 10 * raise)
             case .pawShake where front && offset == 0:
                 // 近侧前爪抬到胸前快速甩：抬起 → 甩几下 → 放下
                 let env = sin(.pi * min(1, pose.shake * 1.15))
@@ -356,6 +368,11 @@ extension CatRenderer {
             if galloping {
                 let g = gallopLeg(joint, front: front, near: near)
                 return leg(top, g.end, front: front, fold: g.fold)
+            }
+            if pose.pose == .knockTap && front && near {
+                // 拨东西的那只前爪：抬起时腕关节弯着
+                let fold = 0.5 * max(0, sin(.pi * min(1, pose.tap * 2)))
+                return leg(top, legEnd(joint, offset: offset, front: front), front: true, fold: fold)
             }
             if pose.pose == .pawShake && front && near {
                 // 抬起来的那只前爪：腕关节弯着，爪尖朝下甩
@@ -692,6 +709,15 @@ extension CatRenderer {
         }
         // 圣诞季：斜扣一顶圣诞帽
         if pose.santaHat { drawSideSantaHat(in: ctx, r: r, time: pose.time) }
+        // 叼着的东西：横在嘴边（跟着头一起低头、转动）
+        if let trinket = pose.trinket {
+            ctx.saveGState()
+            // 横咬在嘴角（口鼻下沿靠前），一半露在嘴前面
+            ctx.translateBy(x: r * 0.86, y: r * 0.6)
+            ctx.rotate(by: 0.08)
+            drawTrinket(trinket, in: ctx)
+            ctx.restoreGState()
+        }
         ctx.restoreGState()
     }
 

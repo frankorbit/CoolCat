@@ -73,6 +73,8 @@ struct RoamWorld {
     var signTarget: RoamSignTarget?
     /// 积雪够厚的窗口上沿（在上面走久了会抖爪子，下来时甩身子）
     var snowySurfaces: Set<Int> = []
+    /// 设置里允许把东西推下桌
+    var knockAllowed = false
 
     var surfaces: [RoamSurface] { [floor] + windowTops }
 
@@ -99,6 +101,8 @@ enum RoamPose: Equatable {
     case pawShake
     /// 从积雪的窗口下来：从头到尾巴甩一甩全身的雪
     case bodyShake
+    /// 站着伸出前爪往前拨（把东西拨下桌）
+    case knockTap
 }
 
 /// 屏幕的哪条边
@@ -117,6 +121,8 @@ enum RoamEvent: Equatable {
     case caughtCursor
     /// 扑空
     case missedCursor
+    /// 叼着 / 放着的小东西离开了小猫：推下去了，或者半路放弃丢下了（调用方接手让它往下掉）
+    case releasedTrinket(kind: Int, at: CGPoint, vx: CGFloat)
 }
 
 /// 满屏漫游的纯逻辑：什么时候出门、走到哪、跳到哪、什么时候回家。坐标都是屏幕坐标（y 向上），位置是脚底中点。
@@ -206,6 +212,48 @@ struct RoamDirector {
         private func ease(_ x: CGFloat) -> CGFloat { x * x * (3 - 2 * x) }
     }
 
+    /// 把东西推下桌：去哪扇窗口、往哪边推（+1 = 从右边推下去）
+    struct KnockGoal: Equatable {
+        var surfaceID: Int
+        var dir: CGFloat
+    }
+
+    /// 推东西的几个阶段：放下 → 盯着看 → 一下下拨 →（掉下去了）探头看它掉
+    enum KnockPhase: Equatable {
+        case setDown, stare, tap, watch
+    }
+
+    struct Knock: Equatable {
+        var phase: KnockPhase
+        var t: CGFloat = 0
+        /// 盯着看多久
+        var hold: CGFloat = 0
+        /// 这一下已经碰到东西了
+        var hit = false
+        /// 碰完之后往前挪的距离（跟上被拨远的东西）
+        var scoot: CGFloat = 0
+    }
+
+    /// 叼着的（surfaceID == nil）或者放在窗口顶上的小东西
+    struct CarriedTrinket: Equatable {
+        var kind: Int
+        var surfaceID: Int?
+        /// 放在面上时：离这段上沿左端多远（窗口挪动时跟着走）
+        var dx: CGFloat = 0
+        /// 现在在哪（放着时是它底边中点）
+        var at: CGPoint
+    }
+
+    /// 东西放在嘴前方多远（画布单位，乘体型缩放）：前爪伸出去正好够到
+    static let trinketReach: CGFloat = 58
+    /// 一下拨多远
+    static let tapPush: ClosedRange<CGFloat> = 9...13
+    /// 一下拨爪的时长、爪子碰到东西的时刻
+    static let tapDuration: CGFloat = 0.55
+    static let tapContact: CGFloat = 0.24
+    /// 一趟里顺手推东西的概率（叼着出门）
+    static let knockChance = 0.15
+
     /// 抖雪：抬爪甩一甩（短），或者全身从头甩到尾（长一点）
     struct Shake: Equatable {
         var paw: Bool
@@ -234,6 +282,8 @@ struct RoamDirector {
         case sign
         /// 抖掉爪子上 / 身上的雪
         case shake(Shake)
+        /// 把叼来的东西放在窗口边上，一下下拨下去
+        case knock(Knock)
         case land(remaining: CGFloat)
         case sit(remaining: CGFloat)
         case fall(vy: CGFloat)
@@ -302,6 +352,12 @@ struct RoamDirector {
         case .climb: return .climb
         case .sign: return .sign
         case .shake(let shake): return shake.paw ? .pawShake : .bodyShake
+        case .knock(let knock):
+            switch knock.phase {
+            case .setDown, .watch: return .crouch
+            case .stare: return .sit
+            case .tap: return .knockTap
+            }
         case nil: return .stand
         }
     }
@@ -362,6 +418,24 @@ struct RoamDirector {
         return false
     }
 
+    /// 拨爪的进度 0...1
+    var tapProgress: CGFloat {
+        if case .knock(let knock) = activity, knock.phase == .tap { return min(1, knock.t / Self.tapDuration) }
+        return 0
+    }
+
+    /// 嘴里叼着的东西
+    var carriedTrinket: Int? {
+        guard let trinket, trinket.surfaceID == nil else { return nil }
+        return trinket.kind
+    }
+
+    /// 放在窗口顶上、正准备拨下去的东西
+    var placedTrinket: (kind: Int, at: CGPoint)? {
+        guard let trinket, trinket.surfaceID != nil else { return nil }
+        return (trinket.kind, trinket.at)
+    }
+
     /// 抖雪的进度 0...1
     var shakeProgress: CGFloat {
         if case .shake(let shake) = activity { return min(1, shake.t / shake.duration) }
@@ -395,6 +469,12 @@ struct RoamDirector {
         forcedNap = true
     }
 
+    /// 推东西演示：叼着东西出门，直接去窗口边上推（设置里的「推东西」）
+    mutating func knockNow() {
+        goOutNow()
+        forcedKnock = true
+    }
+
     /// 跳台演示：出门直接跳上窗口，再在窗口之间连跳几下（设置里的「跳台」）
     mutating func hopNow() {
         goOutNow()
@@ -403,6 +483,12 @@ struct RoamDirector {
 
     private var forcedPeek: RoamEdge?
     private var forcedNap = false
+    private var forcedKnock = false
+    /// 叼着 / 放着的小东西，和要去推它的地方
+    private(set) var trinket: CarriedTrinket?
+    private var knockGoal: KnockGoal?
+    /// 规划函数里产生的事件，update 结束时一起交出去
+    private var pendingEvents: [RoamEvent] = []
     private var forcedHops = 0
     /// 这一轮光标逗猫：扑了几次、玩了多久；玩够了歇一会儿
     private var playSession = false
@@ -425,6 +511,13 @@ struct RoamDirector {
     var pendingForcedPeek: RoamEdge? { forcedPeek }
 
     mutating func update(dt: CGFloat, world: RoamWorld) -> [RoamEvent] {
+        var events = step(dt: dt, world: world)
+        events += pendingEvents
+        pendingEvents.removeAll()
+        return events
+    }
+
+    private mutating func step(dt: CGFloat, world: RoamWorld) -> [RoamEvent] {
         var events: [RoamEvent] = []
         let k = world.scale
         lastFloor = world.floor
@@ -442,12 +535,17 @@ struct RoamDirector {
                 events.append(.leftSeat)
                 return events
             }
-            guard !world.mustStayHome, !world.userActive, cooldown <= 0 else { forced = false; return events }
+            guard !world.mustStayHome, !world.userActive, cooldown <= 0 else {
+                forced = false
+                forcedKnock = false
+                return events
+            }
             let idleEnough = world.keyIdle > Self.idleBeforeWander && world.keyIdle < Self.napAfter
             if forced || (world.wanderAllowed && idleEnough && checkTimer <= 0 && random() < 0.3) {
                 tripForced = forced
                 forced = false
                 startTrip(world: world)
+                considerKnockErrand(world: world)
                 events.append(.leftSeat)
             } else if checkTimer <= 0 {
                 checkTimer = 5
@@ -485,7 +583,9 @@ struct RoamDirector {
         }
 
         playCooldown = max(0, playCooldown - dt)
-        if !returning && !delivering { considerCursorPlay(world: world) }
+        followPlacedTrinket(world: world)
+        // 送牌、推东西的路上不被光标勾走
+        if !returning && !delivering && knockGoal == nil { considerCursorPlay(world: world) }
 
         switch activity {
         case .walk(let toX, let run):
@@ -589,6 +689,8 @@ struct RoamDirector {
         case .shake(var shake):
             shake.t += dt
             activity = shake.t >= shake.duration ? nil : .shake(shake)
+        case .knock(var knock):
+            stepKnock(&knock, dt: dt, world: world)
         case .land(let remaining):
             activity = remaining - dt <= 0 ? nil : .land(remaining: remaining - dt)
         case .sit(let remaining):
@@ -652,6 +754,8 @@ struct RoamDirector {
         } else if activity == nil {
             if delivering && !returning {
                 planDeliveryStep(world: world)
+            } else if knockGoal != nil && !returning {
+                planKnockStep(world: world)
             } else if returning {
                 planReturnStep(world: world, run: returningUrgently)
             } else if budget <= 0 {
@@ -681,7 +785,7 @@ struct RoamDirector {
 
     private func isGrounded(_ a: Activity) -> Bool {
         switch a {
-        case .walk, .sit, .land, .crouch, .nap, .stalk, .sign, .shake: return true
+        case .walk, .sit, .land, .crouch, .nap, .stalk, .sign, .shake, .knock: return true
         case .jump, .fall, .peek, .pounce, .climb: return false
         }
     }
@@ -906,6 +1010,7 @@ struct RoamDirector {
     /// 举牌提醒开始 / 结束：开始时放下手头的事（正在跳、在掉、在扑的让它落地）；结束时放下牌子回家
     private mutating func updateDelivery(world: RoamWorld) {
         if world.signTarget != nil, !delivering, !world.userActive, !world.mustStayHome {
+            releaseTrinket()
             delivering = true
             returning = false
             returningUrgently = false
@@ -938,50 +1043,230 @@ struct RoamDirector {
     /// 送牌的下一步：到了就坐下举牌；在别处就按跳台 / 爬窗 / 下地的顺序赶过去
     private mutating func planDeliveryStep(world: RoamWorld) {
         guard let target = world.signTarget else { return }
+        // 窗口顶上不去：在它正下方的屏幕底边举牌
+        if travelStep(to: target, world: world, belowIsFine: true) == .arrived {
+            activity = .sign
+        }
+    }
+
+    private enum TravelStep {
+        case moving, arrived, unreachable
+    }
+
+    /// 赶往 target 的下一步：在脚下这张桌子上就走过去；在别处就按跳台 / 爬窗 / 下地的顺序赶过去。
+    /// 到了返回 .arrived（到了做什么由调用方决定）。上不去那扇窗口时：belowIsFine 就去它正下方的屏幕底边，否则 .unreachable
+    private mutating func travelStep(to target: RoamSignTarget, world: RoamWorld, belowIsFine: Bool) -> TravelStep {
         let k = world.scale
         guard let id = surfaceID, let here = world.surface(id: id) else {
             activity = .fall(vy: 0)
-            return
+            return .moving
         }
         let floor = world.floor
-        /// 在脚下这张桌子上走到 x 坐下举牌
-        func sitHere(at x: CGFloat) -> Activity {
+        /// 在脚下这张桌子上走到 x
+        func goTo(_ x: CGFloat) -> TravelStep {
             let spot = min(max(x, here.minX + 30 * k), here.maxX - 30 * k)
-            return abs(spot - pos.x) > 3 * k ? .walk(toX: spot, run: true) : .sign
+            guard abs(spot - pos.x) > 3 * k else { return .arrived }
+            activity = .walk(toX: spot, run: true)
+            return .moving
         }
         /// 从窗口顶跳到地上，落在离目标近的那一侧
-        func dropToFloor() -> Activity {
+        func dropToFloor() -> TravelStep {
             let downX = min(max(pos.x + (target.x > pos.x ? 60 : -60) * k, floor.minX + 20 * k), floor.maxX - 20 * k)
-            return .crouch(remaining: 0.12, then: makeJump(from: pos, to: CGPoint(x: downX, y: floor.y),
-                                                           surface: floor.id, k: k))
+            activity = .crouch(remaining: 0.12, then: makeJump(from: pos, to: CGPoint(x: downX, y: floor.y),
+                                                               surface: floor.id, k: k))
+            return .moving
         }
-        if id == target.surfaceID {
-            activity = sitHere(at: target.x)
-            return
+        func below() -> TravelStep {
+            guard belowIsFine else { return .unreachable }
+            return id == floor.id ? goTo(target.x) : dropToFloor()
         }
-        guard target.surfaceID != floor.id, let goal = world.surface(id: target.surfaceID) else {
-            // 目的地是屏幕底部（或那扇窗口没了）：下地，走到窗口正下方
-            activity = id == floor.id ? sitHere(at: target.x) : dropToFloor()
-            return
-        }
+        if id == target.surfaceID { return goTo(target.x) }
+        if target.surfaceID == floor.id { return id == floor.id ? goTo(target.x) : dropToFloor() }
+        // 那扇窗口没了
+        guard let goal = world.surface(id: target.surfaceID) else { return below() }
+        if startRoute(to: goal, from: here, world: world) { return .moving }
+        // 从这扇窗口过不去：先下到地上，地上可能有窗框能爬
+        return id == floor.id ? below() : dropToFloor()
+    }
+
+    /// 往那扇窗口去的第一步：直接跳过去；在地上就找窗框爬；在窗口上就在窗口之间跳过去。出发了返回 true
+    private mutating func startRoute(to goal: RoamSurface, from here: RoamSurface, world: RoamWorld) -> Bool {
+        let k = world.scale
         if let hop = hopPlan(from: here, at: pos.x, to: goal, k: k, jitter: 0.5) {
             startHop(hop, from: here, to: goal, k: k, run: true)
-            return
+            return true
         }
-        if id == floor.id {
+        if here.id == world.floor.id {
             let reachable = world.walls.filter {
                 $0.surfaceID == goal.id && max($0.minY, here.y) - here.y <= Self.maxJumpUp * k * 0.8
             }
-            if let wall = reachable.min(by: { abs($0.x - pos.x) < abs($1.x - pos.x) }) {
-                startClimb(wall, from: here, k: k, run: true)
-                return
-            }
-        } else if let (next, hop) = nextHop(from: here, at: pos.x, world: world, isGoal: { $0.id == goal.id }) {
-            startHop(hop, from: here, to: next, k: k, run: true)
+            guard let wall = reachable.min(by: { abs($0.x - pos.x) < abs($1.x - pos.x) }) else { return false }
+            startClimb(wall, from: here, k: k, run: true)
+            return true
+        }
+        guard let (next, hop) = nextHop(from: here, at: pos.x, world: world, isGoal: { $0.id == goal.id }) else {
+            return false
+        }
+        startHop(hop, from: here, to: next, k: k, run: true)
+        return true
+    }
+
+    /// 从地上（座位旁）能不能到那段窗口上沿：直接跳上去、顺着窗框爬、或者在窗口之间跳过去
+    private func reachable(_ target: RoamSurface, world: RoamWorld) -> Bool {
+        let k = world.scale
+        let floor = world.floor
+        let x = world.seat.x
+        if hopPlan(from: floor, at: x, to: target, k: k, jitter: 0.5) != nil { return true }
+        if world.walls.contains(where: { $0.surfaceID == target.id && $0.minY - floor.y <= Self.maxJumpUp * k * 0.8 }) {
+            return true
+        }
+        return nextHop(from: floor, at: x, world: world, isGoal: { $0.id == target.id }) != nil
+    }
+
+    // MARK: Knock Things Off
+
+    /// 出门时偶尔叼走你桌上的一样小东西，打算找扇窗口把它推下去
+    private mutating func considerKnockErrand(world: RoamWorld) {
+        let force = forcedKnock
+        forcedKnock = false
+        guard force || world.knockAllowed else { return }
+        guard force || random() < Self.knockChance, let goal = pickKnockGoal(world: world) else { return }
+        knockGoal = goal
+        trinket = CarriedTrinket(kind: Int(random() * 5) % 5, surfaceID: nil, at: world.seat)
+        budget = max(budget, 2)
+    }
+
+    /// 挑一扇够宽的窗口，随便往哪边推
+    private func pickKnockGoal(world: RoamWorld) -> KnockGoal? {
+        let k = world.scale
+        let need = (Self.trinketReach + Self.tapPush.upperBound * 3 + 70) * k
+        // 只挑够宽、而且到得了的窗口（太高又没窗框可爬的不去）
+        let options = world.windowTops.filter { $0.width >= need && reachable($0, world: world) }
+        guard !options.isEmpty else { return nil }
+        let pick = options[Int(random() * Double(options.count)) % options.count]
+        return KnockGoal(surfaceID: pick.id, dir: random() < 0.5 ? -1 : 1)
+    }
+
+    /// 坐在哪儿放东西：东西放下时离边还有三四下的距离
+    private func knockSpot(_ goal: KnockGoal, on surface: RoamSurface, k: CGFloat) -> CGFloat {
+        let edge = goal.dir > 0 ? surface.maxX : surface.minX
+        return edge - goal.dir * (Self.trinketReach + 38) * k
+    }
+
+    private mutating func planKnockStep(world: RoamWorld) {
+        guard let goal = knockGoal, let surface = world.surface(id: goal.surfaceID) else {
+            // 那扇窗口没了：东西丢下，接着溜达
+            releaseTrinket()
             return
         }
-        // 上不去那扇窗口：在它正下方的屏幕底边举牌
-        activity = id == floor.id ? sitHere(at: target.x) : dropToFloor()
+        let target = RoamSignTarget(surfaceID: goal.surfaceID, x: knockSpot(goal, on: surface, k: world.scale))
+        switch travelStep(to: target, world: world, belowIsFine: false) {
+        case .moving:
+            break
+        case .unreachable:
+            releaseTrinket()
+        case .arrived:
+            facing = goal.dir
+            activity = .knock(Knock(phase: .setDown))
+        }
+    }
+
+    private mutating func stepKnock(_ knock: inout Knock, dt: CGFloat, world: RoamWorld) {
+        knock.t += dt
+        let k = world.scale
+        guard let goal = knockGoal, surfaceID == goal.surfaceID, let surface = world.surface(id: goal.surfaceID) else {
+            releaseTrinket()
+            activity = nil
+            return
+        }
+        facing = goal.dir
+        switch knock.phase {
+        case .setDown:
+            // 低头把嘴里的东西放在面前
+            if knock.t >= 0.3 { putDownTrinket(on: surface, k: k) }
+            if knock.t >= 0.55 { knock = Knock(phase: .stare, hold: 1.2 + CGFloat(random()) * 0.9) }
+        case .stare:
+            if knock.t >= knock.hold { knock = Knock(phase: .tap) }
+        case .tap:
+            stepTap(&knock, dt: dt, surface: surface, k: k)
+            knock = followUpTap(knock)
+        case .watch:
+            // 探头看它掉下去
+            if knock.t >= 1.5 {
+                knockGoal = nil
+                activity = nil
+                return
+            }
+        }
+        activity = .knock(knock)
+    }
+
+    /// 拨完一下之后：推下去了就探头看；没推下去多半接着拨，偶尔停下来再盯一会儿（像在想「推不推呢」）
+    private mutating func followUpTap(_ knock: Knock) -> Knock {
+        if trinket == nil { return Knock(phase: .watch) }
+        guard knock.t >= Self.tapDuration else { return knock }
+        return random() < 0.35 ? Knock(phase: .stare, hold: 0.5 + CGFloat(random()) * 0.5) : Knock(phase: .tap)
+    }
+
+    /// 嘴里的东西放到面前的窗口顶上（已经放下了就什么都不做）
+    private mutating func putDownTrinket(on surface: RoamSurface, k: CGFloat) {
+        guard var item = trinket, item.surfaceID == nil else { return }
+        let x = pos.x + facing * Self.trinketReach * k
+        item.surfaceID = surface.id
+        item.dx = x - surface.minX
+        item.at = CGPoint(x: x, y: surface.y)
+        trinket = item
+    }
+
+    /// 一下拨爪：碰到的那一刻把东西往边上推一段，推过了边就掉下去；之后往前挪一点跟上
+    private mutating func stepTap(_ knock: inout Knock, dt: CGFloat, surface: RoamSurface, k: CGFloat) {
+        guard var item = trinket, item.surfaceID != nil else { return }
+        if !knock.hit && knock.t >= Self.tapContact {
+            knock.hit = true
+            let range = Self.tapPush
+            let push = (range.lowerBound + CGFloat(random()) * (range.upperBound - range.lowerBound)) * k
+            item.dx += facing * push
+            item.at.x = surface.minX + item.dx
+            let edge = facing > 0 ? surface.maxX : surface.minX
+            if facing * (item.at.x - edge) > 0 {
+                // 推过了边：掉下去
+                pendingEvents.append(.releasedTrinket(kind: item.kind, at: CGPoint(x: item.at.x, y: surface.y),
+                                                      vx: facing * CGFloat(70 + random() * 60)))
+                trinket = nil
+                return
+            }
+            trinket = item
+            knock.scoot = push
+        }
+        // 碰完往前挪，挪到和东西保持原来的距离（别走出窗口）
+        if knock.scoot > 0 {
+            let stepX = min(knock.scoot, Self.walkSpeed * 0.6 * k * dt)
+            let limit = facing > 0 ? surface.maxX - 30 * k : surface.minX + 30 * k
+            pos.x = facing > 0 ? min(pos.x + stepX, limit) : max(pos.x - stepX, limit)
+            knock.scoot -= stepX
+        }
+    }
+
+    /// 放着的东西跟着窗口走；窗口没了就掉下去
+    private mutating func followPlacedTrinket(world: RoamWorld) {
+        guard var item = trinket, let id = item.surfaceID else { return }
+        guard let surface = world.surface(id: id) else {
+            releaseTrinket()
+            return
+        }
+        item.at = CGPoint(x: surface.minX + item.dx, y: surface.y)
+        trinket = item
+    }
+
+    /// 东西离开小猫：从嘴里掉下来，或者留在窗口顶上（调用方接手让它往下掉 / 躺着）
+    private mutating func releaseTrinket() {
+        knockGoal = nil
+        guard let item = trinket else { return }
+        trinket = nil
+        let k = lastScale
+        // 嘴大约在脚前方 65、上方 67（画布单位）
+        let at = item.surfaceID == nil ? CGPoint(x: pos.x + facing * 65 * k, y: pos.y + 67 * k) : item.at
+        pendingEvents.append(.releasedTrinket(kind: item.kind, at: at, vx: 0))
     }
 
     // MARK: Planning
@@ -1221,6 +1506,7 @@ struct RoamDirector {
     private var pendingAim: CGFloat = 0.26
 
     private mutating func beginReturn(world: RoamWorld, run: Bool) {
+        releaseTrinket()
         delivering = false
         if activity == .sign { activity = nil }
         returning = true
@@ -1341,6 +1627,7 @@ struct RoamDirector {
     }
 
     private mutating func arriveHome() {
+        releaseTrinket()
         isHome = true
         snowWalk = 0
         snowTrip = 0

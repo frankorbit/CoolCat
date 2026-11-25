@@ -128,6 +128,10 @@ final class CatSettings {
     var agentSign: Bool {
         didSet { UserDefaults.standard.set(agentSign, forKey: "CoolCat.AgentSign") }
     }
+    /// 把东西推下桌：漫游时偶尔叼走桌上的小东西，到窗口边上一下下拨下去
+    var knockThings: Bool {
+        didSet { UserDefaults.standard.set(knockThings, forKey: "CoolCat.KnockThings") }
+    }
     /// 满屏漫游：闲着时下座位溜达，一打字就跑回来
     var roaming: Bool {
         didSet { UserDefaults.standard.set(roaming, forKey: "CoolCat.Roaming") }
@@ -220,6 +224,7 @@ final class CatSettings {
         holidayDecor = d.object(forKey: "CoolCat.HolidayDecor") as? Bool ?? true
         cursorPlay = d.object(forKey: "CoolCat.CursorPlay") as? Bool ?? true
         agentSign = d.object(forKey: "CoolCat.AgentSign") as? Bool ?? true
+        knockThings = d.object(forKey: "CoolCat.KnockThings") as? Bool ?? true
         accessory = CatAccessory(rawValue: d.string(forKey: "CoolCat.Accessory") ?? "") ?? .none
         customPetID = d.string(forKey: "CoolCat.CustomPetID")
         roaming = d.object(forKey: "CoolCat.Roaming") as? Bool ?? true

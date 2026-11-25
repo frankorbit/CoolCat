@@ -19,9 +19,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastSurfaceScan: CFTimeInterval = 0
     /// 窗口顶的积雪（下雪的季节里）
     private var snowpack = Snowpack()
-    private var snowWindow: SnowOverlayWindow?
+    private var deskWindow: DeskOverlayWindow?
+    /// 被推下桌（或从嘴里掉下来）的小东西
+    private var trinkets = TrinketPhysics()
     /// 这次抖雪已经把雪块甩出去了
     private var snowShakeSpawned = false
+    private let ignoreKeysForRoaming = CommandLine.arguments.contains("--roam-ignore-keys")
+    /// 上沿在扫描里暂时消失的时刻（宽限期用）
+    private var surfaceGraceSince: [Int: CFTimeInterval] = [:]
     /// `--roam-log <文件>`：每半秒记一行漫游状态（调试多屏坐标用）
     private lazy var roamLogPath: String? = {
         guard let i = CommandLine.arguments.firstIndex(of: "--roam-log"), i + 1 < CommandLine.arguments.count else { return nil }
@@ -72,6 +77,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.hopNow() }
         }
         // `--roam-nap`：出门后马上找地方打个盹
+        // `--roam-knock`：叼着东西出门，去窗口边上推下去
+        if CommandLine.arguments.contains("--roam-knock") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.knockNow() }
+        }
         if CommandLine.arguments.contains("--roam-nap") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.napNow() }
         }
@@ -526,46 +535,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return RoamSignTarget(surfaceID: 0, x: min(max(front.rect.midX, visible.minX + 40 * k), visible.maxX - 40 * k))
     }
 
+    /// `--roam-log` 打开时往日志里追加一行（调试用）
+    private func appendRoamLog(_ text: String) {
+        guard let path = roamLogPath else { return }
+        let line = text.hasSuffix("\n") ? text : text + "\n"
+        if let h = FileHandle(forWritingAtPath: path) {
+            h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+        } else {
+            FileManager.default.createFile(atPath: path, contents: Data(line.utf8))
+        }
+    }
+
+    /// 小猫「桌面」上的东西：窗口顶积雪、被推下桌的小东西。都画在同一层点击穿透的覆盖层上
+    private func updateDesk(dt: CGFloat, screen: NSScreen) {
+        updateSnow(dt: dt, screen: screen)
+        let visible = screen.visibleFrame
+        if !trinkets.isEmpty {
+            let floor = RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2)
+            trinkets.update(dt: dt, surfaces: [floor] + roamSurfaces, walls: visible.minX...visible.maxX)
+        }
+        var sprites = trinkets.items.map {
+            TrinketSprite(kind: $0.kind, pos: $0.pos, angle: $0.angle, opacity: TrinketPhysics.opacity(of: $0))
+        }
+        // 放在窗口顶上、正准备拨下去的那个
+        if let placed = roam.placedTrinket, let kind = Trinket(rawValue: placed.kind) {
+            sprites.append(TrinketSprite(kind: kind, pos: placed.at, angle: 0, opacity: 1))
+        }
+        guard snowpack.hasVisibleSnow || !sprites.isEmpty || deskWindow?.isVisible == true else { return }
+        if deskWindow == nil { deskWindow = DeskOverlayWindow() }
+        let k = CatSettings.shared.scale * CatRenderer.walkerArtScale
+        deskWindow?.render(snowpack, trinkets: sprites, pointsPerUnit: k, on: screen)
+    }
+
     /// 窗口顶积雪：下雪的季节（或节日预览）里慢慢积；小猫走过踩脚印、跑起来踢雪、抖爪子甩身子
     private func updateSnow(dt: CGFloat, screen: NSScreen) {
         let physics = overlayWindow.catView.physics
         let snowing = physics.activeHoliday.snow
-        guard snowing || !snowpack.isEmpty else {
-            if snowWindow?.isVisible == true { snowWindow?.orderOut(nil) }
-            return
-        }
+        guard snowing || !snowpack.isEmpty else { return }
         // 真下雪的季节积得慢；预览时几秒就积起来；关掉节日装扮时很快化掉
         let realSeason = CatSettings.shared.holidayDecor && physics.holidaySeason.snow
         let grow = realSeason ? Snowpack.growTime : Snowpack.previewGrowTime
         let melt = CatSettings.shared.holidayDecor ? (realSeason ? Snowpack.meltTime : Snowpack.previewMeltTime) : 3
         snowpack.update(dt: dt, snowing: snowing, growTime: grow, meltTime: melt, surfaces: roamSurfaces,
                         frames: roamScan.frames, floorY: screen.visibleFrame.minY)
-        if !roam.isHome {
-            let pose = roam.pose
-            let k = CatSettings.shared.scale * CatRenderer.walkerArtScale
-            let walker = Snowpack.Walker(pos: roam.pos, surfaceID: roam.surfaceID,
-                                         moving: [.walk, .run, .stalk].contains(pose), running: pose == .run,
-                                         gaitPhase: roam.gaitPhase, facing: roam.facing)
-            snowpack.track(walker, k: k)
-            // 抖到一半（爪子甩出去 / 身子拧开）时把雪甩出去
-            if pose == .pawShake || pose == .bodyShake {
-                if !snowShakeSpawned && roam.shakeProgress > 0.3 {
-                    snowShakeSpawned = true
-                    snowpack.shakeOff(pose == .pawShake ? .paw : .body, at: roam.pos, facing: roam.facing, k: k)
-                }
-            } else {
-                snowShakeSpawned = false
+        guard !roam.isHome else { return }
+        let pose = roam.pose
+        let k = CatSettings.shared.scale * CatRenderer.walkerArtScale
+        let walker = Snowpack.Walker(pos: roam.pos, surfaceID: roam.surfaceID,
+                                     moving: [.walk, .run, .stalk].contains(pose), running: pose == .run,
+                                     gaitPhase: roam.gaitPhase, facing: roam.facing)
+        snowpack.track(walker, k: k)
+        // 抖到一半（爪子甩出去 / 身子拧开）时把雪甩出去
+        if pose == .pawShake || pose == .bodyShake {
+            if !snowShakeSpawned && roam.shakeProgress > 0.3 {
+                snowShakeSpawned = true
+                snowpack.shakeOff(pose == .pawShake ? .paw : .body, at: roam.pos, facing: roam.facing, k: k)
             }
+        } else {
+            snowShakeSpawned = false
         }
-        if snowWindow == nil { snowWindow = SnowOverlayWindow() }
-        snowWindow?.render(snowpack, on: screen)
     }
 
     private func rescanRoamSurfaces(on screen: NSScreen) {
         // 侧身小猫放大后站着约 150 画布点高
         let walkerK = CatSettings.shared.scale * CatRenderer.walkerArtScale
+        let previous = roamScan
         roamScan = RoamSurfaceScanner.scan(on: screen, catHeight: 120 * walkerK, minWidth: 110 * walkerK)
-        roamSurfaces = roamScan.surfaces
+        roamSurfaces = roamScan.surfaces + surfacesInGrace(previous: previous, now: CACurrentMediaTime())
+    }
+
+    /// 窗口还在、也没挪，只是这一次扫描里它的上沿没了（一闪而过的菜单、提示框挡了一下）：
+    /// 先留着这段上沿 0.8 秒，免得站在上面的小猫和东西凭空掉下去。窗口真关了、挪了就立刻不算
+    private func surfacesInGrace(previous: RoamScanReport, now: CFTimeInterval) -> [RoamSurface] {
+        let present = Set(roamScan.surfaces.map(\.id))
+        surfaceGraceSince = surfaceGraceSince.filter { !present.contains($0.key) }
+        var kept: [RoamSurface] = []
+        for old in roamSurfaces where !present.contains(old.id) {
+            guard let window = Snowpack.windowID(of: old.id),
+                  let frame = roamScan.frames[window], let before = previous.frames[window],
+                  !Snowpack.moved(before, frame) else { continue }
+            let since = surfaceGraceSince[old.id] ?? now
+            guard now - since < 0.8 else { continue }
+            surfaceGraceSince[old.id] = since
+            kept.append(old)
+        }
+        return kept
     }
 
     /// 每帧：把屏幕上能落脚的面、座位位置、按键空闲时长喂给漫游逻辑，再摆好侧身小猫
@@ -578,7 +632,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let visible = screen.visibleFrame
         // 窗口上沿：在外面溜达时每秒扫一次，在家时 5 秒一次（出门那一刻用得上）；
         // 窗口顶有雪时 0.3 秒一次：窗口一拖，雪要马上滑下来，不能悬在半空
-        let scanEvery: CFTimeInterval = snowpack.hasVisibleSnow ? 0.3 : (roam.isHome ? 5 : 1)
+        let deskBusy = snowpack.hasVisibleSnow || !trinkets.isEmpty || roam.placedTrinket != nil
+        let scanEvery: CFTimeInterval = deskBusy ? 0.3 : (roam.isHome ? 5 : 1)
         if now - lastSurfaceScan > scanEvery {
             lastSurfaceScan = now
             rescanRoamSurfaces(on: screen)
@@ -586,7 +641,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let engine = InputEngine.shared
         // 启动后还没按过键：从启动那一刻算闲置，免得被当成「人早就走了」而一直不出门
         if roamClockStart == 0 { roamClockStart = now }
-        let keyIdle = now - max(engine.lastKeyActivityTime, roamClockStart)
+        // `--roam-ignore-keys`（调试用）：漫游逻辑当作一直没人打字，方便在打字时实机观察整段行为
+        let keyIdle = ignoreKeysForRoaming ? 1000 : now - max(engine.lastKeyActivityTime, roamClockStart)
         let signTarget = updateSignTarget(screen: screen, keyIdle: keyIdle, now: now)
         let world = RoamWorld(
             floor: RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2),
@@ -608,27 +664,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             cursorSpeed: hypot(engine.mouseVelocity.dx, engine.mouseVelocity.dy),
             walls: roamScan.walls,
             signTarget: signTarget,
-            snowySurfaces: snowpack.snowySurfaces
+            snowySurfaces: snowpack.snowySurfaces,
+            knockAllowed: settings.knockThings
         )
         if let path = roamLogPath, now - lastRoamLog > 0.5 {
             lastRoamLog = now
             let format = "%.1f home=%d pose=%@ pos=(%.0f,%.0f) surf=%@ seat=(%.0f,%.0f) homeFrame=%@ visible=%@ "
-                + "tops=%d win=%@ stay=%d idle=%.0f fp=%@ act=%@ why=%@ dlv=%d snow=%@ scan=%@\n"
+                + "tops=%d win=%@ stay=%d idle=%.0f fp=%@ act=%@ why=%@ dlv=%d snow=%@ knk=%@ scan=%@\n"
             // 积雪：窗口数 / 最厚 / 脚印 / 雪块 / 爪子沾雪
             let snowState = String(format: "%d/%.2f/%d/%d/%.2f", snowpack.caps.count,
                                    snowpack.caps.values.map(\.depth).max() ?? 0, snowpack.prints.count,
                                    snowpack.clumps.count, snowpack.pawSnow)
+            // 推东西：嘴里叼着 / 放在窗口顶上 / 掉下来的个数
+            let holding = roam.carriedTrinket.map { "mouth\($0)" } ?? (roam.placedTrinket != nil ? "placed" : "-")
+            let knockState = "\(holding)/\(trinkets.items.count)"
             let line = String(format: format,
                               now, roam.isHome ? 1 : 0, "\(roam.pose)", roam.pos.x, roam.pos.y, "\(roam.surfaceID.map(String.init) ?? "-")",
                               world.seat.x, world.seat.y, NSStringFromRect(home), NSStringFromRect(visible), roamSurfaces.count,
                               NSStringFromRect(roamWindow?.frame ?? .zero), world.mustStayHome ? 1 : 0, keyIdle, "\(roam.pendingForcedPeek.map { "\($0)" } ?? "-")", "\(roam.activity.map { "\($0)" } ?? "-")".prefix(40).description,
                               physics.stayHomeReason ?? "-", roam.delivering ? 1 : 0,
-                              snowState, roamScan.summary)
-            if let h = FileHandle(forWritingAtPath: path) {
-                h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
-            } else {
-                FileManager.default.createFile(atPath: path, contents: Data(line.utf8))
-            }
+                              snowState, knockState, roamScan.summary)
+            appendRoamLog(line)
         }
         for event in roam.update(dt: dt, world: world) {
             switch event {
@@ -637,9 +693,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .landed: snowpack.puff(at: roam.pos, surfaceID: roam.surfaceID)
             case .caughtCursor: physics.roamPlayResult(caught: true)
             case .missedCursor: physics.roamPlayResult(caught: false)
+            case .releasedTrinket(let kind, let at, let vx):
+                // 推下去的往外翻跟头；从嘴里掉下来的轻轻转一点
+                let spin = vx == 0 ? CGFloat.random(in: -2...2) : vx / 14
+                trinkets.release(Trinket(rawValue: kind) ?? .pen, at: at, vx: vx, spin: spin)
+                appendRoamLog(String(format: "RELEASE vx=%.0f at=(%.0f,%.0f) surf=%@ tops=%@", vx, at.x, at.y,
+                                     roam.surfaceID.map(String.init) ?? "-",
+                                     roamSurfaces.map { "\($0.id):\(Int($0.minX))-\(Int($0.maxX))@\(Int($0.y))" }
+                                        .joined(separator: ",")))
             }
         }
-        updateSnow(dt: dt, screen: screen)
+        updateDesk(dt: dt, screen: screen)
         guard !roam.isHome else {
             if roamWindow?.isVisible == true { roamWindow?.orderOut(nil) }
             return
@@ -659,7 +723,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             peekEdge: roam.peekEdge, peekReveal: roam.peekReveal, sink: roam.sinkDepth,
             curl: roam.napCurl, asleep: roam.napAsleep, hunting: roam.isPlaying,
             santaHat: physics.activeHoliday.christmas, signLines: signLines,
-            shake: roam.shakeProgress, pawSnow: snowpack.pawSnow
+            shake: roam.shakeProgress, pawSnow: snowpack.pawSnow, tap: roam.tapProgress,
+            trinket: roam.carriedTrinket.flatMap(Trinket.init(rawValue:))
         )
         // 屏幕边换算到画布坐标：走出屏幕、偷看时屏幕外的部分不画
         if let c = roam.clipEdge {
@@ -1288,7 +1353,7 @@ extension AppDelegate: SettingsHost {
     func applyWindowBehavior() {
         overlayWindow.applyWindowLevelAndBehavior()
         roamWindow?.applyWindowLevelAndBehavior()
-        snowWindow?.applyWindowLevelAndBehavior()
+        deskWindow?.applyWindowLevelAndBehavior()
     }
 
     func audioSettingsChanged(resetPermission: Bool) {
@@ -1324,7 +1389,7 @@ extension AppDelegate: SettingsHost {
         case .gift: physics.offerGift()
         case .holiday: physics.previewHoliday()
         case .sign: signDemoUntil = CACurrentMediaTime() + 20
-        case .roam, .peek, .nap, .hop:
+        case .roam, .peek, .nap, .hop, .knock:
             // 正在做只能在座位上做的事：提示一下，不然点了像没反应
             if let reason = physics.stayHomeReason {
                 physics.explainCannotRoam(reason)
@@ -1334,6 +1399,15 @@ extension AppDelegate: SettingsHost {
                 roam.peekNow(edge: [RoamEdge.bottom, .left, .right].randomElement())
             } else if demo == .nap {
                 roam.napNow()
+            } else if demo == .knock {
+                // 先现扫一遍：没有够宽的窗口顶就说明原因
+                if let screen = overlayWindow.screen ?? NSScreen.main { rescanRoamSurfaces(on: screen) }
+                let k = CatSettings.shared.scale * CatRenderer.walkerArtScale
+                guard roamScan.surfaces.contains(where: { $0.width >= 170 * k }) else {
+                    physics.showNotice("😼 没有够宽的窗口顶可以推东西。" + roamScan.summary)
+                    return
+                }
+                roam.knockNow()
             } else if demo == .hop {
                 // 先现扫一遍：没有能跳的窗口就说明原因，不然点了像没反应
                 if let screen = overlayWindow.screen ?? NSScreen.main { rescanRoamSurfaces(on: screen) }

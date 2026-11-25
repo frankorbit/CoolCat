@@ -146,6 +146,86 @@ enum ShowcaseArt {
         write(renderAgentSign(english: true), to: dir + "/agent-sign.en.png")
         write(renderSnowpack(english: false), to: dir + "/snowpack.png")
         write(renderSnowpack(english: true), to: dir + "/snowpack.en.png")
+        write(renderKnock(english: false), to: dir + "/knock.png")
+        write(renderKnock(english: true), to: dir + "/knock.en.png")
+    }
+
+    // MARK: Knock Things Off
+
+    /// 推东西下桌配图：左边叼着你的笔出门；右边把橡皮放在窗口边一下下拨，瓶盖正往下掉，笔已经躺在地上
+    private static func renderKnock(english: Bool) -> CGImage? {
+        let width: CGFloat = 1280, height: CGFloat = 460
+        guard let ctx = makeContext(width: width, height: height) else { return nil }
+        CatSettings.shared.accessory = .none
+        ctx.setFillColor(rgb(0xFAFAFC).cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let k: CGFloat = 0.9
+        let left = CGRect(x: 40, y: 40, width: 470, height: 380)
+        let right = CGRect(x: 530, y: 40, width: 710, height: 380)
+        let panels = [
+            (left, english ? "Steals something off your desk" : "叼走你桌上的小东西",
+             english ? "Now and then it heads out with a pen, an eraser or a bottle cap"
+                     : "出门溜达时偶尔叼走一支笔、一块橡皮、一个瓶盖",
+             (rgb(0xFFF1E6), rgb(0xFFE8EE))),
+            (right, english ? "…and knocks it off a window" : "放在窗口边，一下下拨下去",
+             english ? "It sets it by the edge, stares at it, swats it bit by bit, then leans over to watch it fall"
+                     : "放在窗口边上，盯着看一会儿，再用爪子一下下往外拨，掉下去了还探头看",
+             (rgb(0xE8F1FF), rgb(0xF3E8FF)))
+        ]
+        for (rect, title, subtitle, colors) in panels {
+            fillGradient(rect, radius: 18, colors: colors, in: ctx)
+            text(title, at: CGPoint(x: rect.minX + 22, y: rect.minY + 18), size: 20, weight: .heavy,
+                 color: rgb(0x1D1D24), in: ctx)
+            text(subtitle, at: CGPoint(x: rect.minX + 22, y: rect.minY + 50), size: 13, weight: .regular,
+                 color: rgb(0x6B6E78), in: ctx, maxWidth: rect.width - 44)
+            ctx.setStrokeColor(NSColor(calibratedWhite: 0, alpha: 0.12).cgColor)
+            ctx.setLineWidth(1.5)
+            ctx.move(to: CGPoint(x: rect.minX + 18, y: rect.maxY - 30))
+            ctx.addLine(to: CGPoint(x: rect.maxX - 18, y: rect.maxY - 30))
+            ctx.strokePath()
+        }
+        // 左：叼着笔小跑
+        PetLibrary.shared.select(PetLibrary.shared.pet(id: "orange-tabby"))
+        drawWalker(.init(pose: .walk, phase: .pi / 2, facing: 1, air: 0, time: 0.6, blink: false, trinket: .pen),
+                   feet: CGPoint(x: left.midX - 30, y: left.maxY - 30), k: 1.15, alpha: 1, in: ctx)
+        // 右：窗口顶上拨橡皮
+        PetLibrary.shared.select(nil)
+        CatSettings.shared.coatTheme = .siamese
+        CatSettings.shared.eyeTheme = .siameseBlue
+        let win = CGRect(x: right.minX + 70, y: right.minY + 190, width: 430, height: 130)
+        drawFakeWindow(win, title: english ? "Terminal" : "终端", in: ctx)
+        let catX = win.maxX - 80
+        drawWalker(.init(pose: .knockTap, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, tap: 0.45),
+                   feet: CGPoint(x: catX, y: win.minY), k: k, alpha: 1, in: ctx)
+        drawArtTrinket(.eraser, at: CGPoint(x: win.maxX - 6, y: win.minY), angle: 0, k: k, in: ctx)
+        // 先推下去的两样：瓶盖正在半空翻跟头（虚线是它的轨迹），笔已经躺在地上
+        let floorY = right.maxY - 30
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: win.maxX + 4, y: win.minY - 4))
+        path.addQuadCurve(to: CGPoint(x: win.maxX + 92, y: floorY - 110),
+                          control: CGPoint(x: win.maxX + 60, y: win.minY - 30))
+        ctx.saveGState()
+        ctx.setStrokeColor(rgb(0xA6ABBA).cgColor)
+        ctx.setLineWidth(2)
+        ctx.setLineCap(.round)
+        ctx.setLineDash(phase: 0, lengths: [2, 7])
+        ctx.addPath(path)
+        ctx.strokePath()
+        ctx.restoreGState()
+        drawArtTrinket(.bottleCap, at: CGPoint(x: win.maxX + 98, y: floorY - 96), angle: 0.9, k: k, in: ctx)
+        drawArtTrinket(.pen, at: CGPoint(x: win.maxX + 150, y: floorY), angle: .pi, k: k, in: ctx)
+        return ctx.makeImage()
+    }
+
+    /// 画一个小东西：at 是它底边中点（画布 y 向下）
+    private static func drawArtTrinket(_ kind: Trinket, at point: CGPoint, angle: CGFloat, k: CGFloat,
+                                       in ctx: CGContext) {
+        ctx.saveGState()
+        ctx.translateBy(x: point.x, y: point.y - kind.size.height / 2 * k)
+        ctx.rotate(by: angle)
+        ctx.scaleBy(x: k, y: k)
+        CatRenderer.drawTrinket(kind, in: ctx)
+        ctx.restoreGState()
     }
 
     // MARK: Snowpack

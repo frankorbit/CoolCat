@@ -1025,9 +1025,21 @@ func renderWalkPreviewSheet(to path: String) {
         ("甩身子 + 帽", .init(pose: .bodyShake, phase: 0, facing: -1, air: 0, time: 0.046, blink: false, santaHat: true,
                           shake: 0.5))
     ]
+    // COOLCAT_WALK_SET=knock：叼着东西走、跑，放下，拨爪
+    let knockPoses: [(String, CatRenderer.WalkerPose)] = [
+        ("叼笔走", .init(pose: .walk, phase: .pi / 2, facing: 1, air: 0, time: 0.6, blink: false, trinket: .pen)),
+        ("叼橡皮跑", .init(pose: .run, phase: .pi * 0.3, facing: 1, air: 0, time: 0.3, blink: false, trinket: .eraser)),
+        ("叼瓶盖跳", .init(pose: .air, phase: 0, facing: 1, air: 0.3, time: 0.3, blink: false, trinket: .bottleCap)),
+        ("叼纸团爬", .init(pose: .climb, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, trinket: .paperBall)),
+        ("叼发圈放下", .init(pose: .crouch, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, trinket: .hairTie)),
+        ("拨 1", .init(pose: .knockTap, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, tap: 0.2)),
+        ("拨 2", .init(pose: .knockTap, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, tap: 0.45)),
+        ("拨 3", .init(pose: .knockTap, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, tap: 0.75)),
+        ("朝左拨", .init(pose: .knockTap, phase: 0, facing: -1, air: 0, time: 0.3, blink: false, tap: 0.45))
+    ]
     let set = ProcessInfo.processInfo.environment["COOLCAT_WALK_SET"]
     let named = ["nap": napPoses, "run": runPoses, "play": playPoses, "holiday": holidayPoses, "sign": signPoses,
-                 "snow": snowPoses]
+                 "snow": snowPoses, "knock": knockPoses]
     let poses = set.flatMap { named[$0] } ?? walkPoses
     let cw = Int(CatRenderer.walkerCanvas.width), ch = Int(CatRenderer.walkerCanvas.height), scale = 2
     let labelW = 70

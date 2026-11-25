@@ -1,12 +1,21 @@
 import AppKit
 import QuartzCore
 
-// MARK: - Snow Overlay
+// MARK: - Desk Overlay
 
-/// 画窗口顶积雪的全屏透明窗口：点击完全穿透，只在小猫那块屏幕上。
-/// 用不带位图的 layer-hosting 视图 + 几个 CAShapeLayer，全屏也不会多开一张 4K 大小的位图；
-/// 层级比漫游小猫低一档，小猫踩在雪上、雪画在别的窗口上面
-final class SnowOverlayWindow: NSPanel {
+/// 覆盖层上的一个小东西（被推下桌的笔、瓶盖……）
+struct TrinketSprite: Equatable {
+    var kind: Trinket
+    /// 底边中点（屏幕坐标）
+    var pos: CGPoint
+    var angle: CGFloat
+    var opacity: CGFloat
+}
+
+/// 小猫「桌面」上的东西：窗口顶的积雪、被推下桌的小东西。一个全屏透明窗口，点击完全穿透，只在小猫那块屏幕上。
+/// 用不带位图的 layer-hosting 视图 + 几个 CALayer，全屏也不会多开一张 4K 大小的位图；
+/// 层级比漫游小猫低一档，小猫踩在雪上、东西画在别的窗口上面
+final class DeskOverlayWindow: NSPanel {
     private let capLayer = CAShapeLayer()
     private let shadeLayer = CAShapeLayer()
     private let printLayer = CAShapeLayer()
@@ -14,6 +23,10 @@ final class SnowOverlayWindow: NSPanel {
     /// 上次画的时候积雪的「指纹」：厚度、脚印深浅都没变就不重建路径
     private var drawnSignature: Int?
     private var hadClumps = false
+    /// 小东西：每个一个 CALayer（位图按种类缓存）
+    private var trinketLayers: [CALayer] = []
+    private var trinketImages: [String: CGImage] = [:]
+    private var drawnSprites: [TrinketSprite] = []
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -58,9 +71,10 @@ final class SnowOverlayWindow: NSPanel {
         }
     }
 
-    /// 每帧调用：雪层和脚印只在厚度、脚印深浅、窗口位置变了时重建路径；飞着的雪块每帧更新
-    func render(_ pack: Snowpack, on screen: NSScreen) {
-        guard pack.hasVisibleSnow else {
+    /// 每帧调用：雪层和脚印只在厚度、脚印深浅、窗口位置变了时重建路径；飞着的雪块、小东西变了才更新
+    /// - Parameter pointsPerUnit: 侧身小猫画布单位到屏幕点的缩放（小东西和猫一起缩放）
+    func render(_ pack: Snowpack, trinkets: [TrinketSprite], pointsPerUnit: CGFloat, on screen: NSScreen) {
+        guard pack.hasVisibleSnow || !trinkets.isEmpty || !drawnSprites.isEmpty else {
             if isVisible { orderOut(nil) }
             return
         }
@@ -72,8 +86,9 @@ final class SnowOverlayWindow: NSPanel {
         let origin = screen.frame.origin
         let signature = Self.signature(of: pack)
         let animating = !pack.clumps.isEmpty || hadClumps
-        // 什么都没变（积满了、没有脚印、没有飞着的雪块）：这一帧不碰 Core Animation
-        guard signature != drawnSignature || animating || capLayer.contentsScale != scale else {
+        // 什么都没变（积满了、没有脚印、没有飞着的雪块、东西都躺着）：这一帧不碰 Core Animation
+        let changed = signature != drawnSignature || trinkets != drawnSprites || capLayer.contentsScale != scale
+        guard changed || animating else {
             if !isVisible { orderFrontRegardless() }
             return
         }
@@ -94,8 +109,54 @@ final class SnowOverlayWindow: NSPanel {
         for layer in [capLayer, shadeLayer, printLayer, clumpLayer] where layer.contentsScale != scale {
             layer.contentsScale = scale
         }
+        if trinkets != drawnSprites {
+            placeTrinkets(trinkets, origin: origin, pointsPerUnit: pointsPerUnit, pixelScale: scale)
+        }
         CATransaction.commit()
-        if !isVisible { orderFrontRegardless() }
+        setShown(pack.hasVisibleSnow || !trinkets.isEmpty)
+    }
+
+    private func setShown(_ shown: Bool) {
+        if shown && !isVisible {
+            orderFrontRegardless()
+        } else if !shown && isVisible {
+            orderOut(nil)
+        }
+    }
+
+    /// 每个小东西一个 layer：位置、角度、透明度跟着物理走，位图按种类和缩放缓存
+    private func placeTrinkets(_ sprites: [TrinketSprite], origin: CGPoint, pointsPerUnit: CGFloat,
+                               pixelScale: CGFloat) {
+        drawnSprites = sprites
+        while trinketLayers.count < sprites.count {
+            let layer = CALayer()
+            layer.contentsGravity = .resize
+            contentView?.layer?.addSublayer(layer)
+            trinketLayers.append(layer)
+        }
+        for (i, layer) in trinketLayers.enumerated() {
+            guard i < sprites.count else {
+                layer.isHidden = true
+                continue
+            }
+            let sprite = sprites[i]
+            let key = "\(sprite.kind.rawValue)@\(pointsPerUnit)x\(pixelScale)"
+            if trinketImages[key] == nil {
+                trinketImages[key] = CatRenderer.trinketImage(sprite.kind, pointsPerUnit: pointsPerUnit,
+                                                              pixelScale: pixelScale)
+            }
+            let size = CatRenderer.trinketImageSize(sprite.kind, pointsPerUnit: pointsPerUnit)
+            layer.isHidden = false
+            layer.contents = trinketImages[key]
+            layer.contentsScale = pixelScale
+            layer.bounds = CGRect(origin: .zero, size: size)
+            // 底边中点在 pos：中心往上半个东西的高度
+            let half = sprite.kind.size.height / 2 * pointsPerUnit
+            layer.position = CGPoint(x: sprite.pos.x - origin.x, y: sprite.pos.y - origin.y + half)
+            // 画布 y 向下、屏幕 y 向上：转向反过来
+            layer.setAffineTransform(CGAffineTransform(rotationAngle: -sprite.angle))
+            layer.opacity = Float(sprite.opacity)
+        }
     }
 
     /// 厚度按 1%、脚印按 2 秒一档：积满之后、没有脚印时完全不用重画
