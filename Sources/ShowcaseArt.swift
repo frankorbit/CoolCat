@@ -124,16 +124,20 @@ enum ShowcaseArt {
         let saved = (settings.coatTheme, settings.eyeTheme, settings.accessory, settings.meetingMode,
                      settings.keyboardNoiseReminder, settings.lifeNight, settings.keyHabitReactions,
                      settings.musicVisualizer, settings.musicDance, settings.keyboardTheme)
+        let savedPet = settings.customPetID
         defer {
             (settings.coatTheme, settings.eyeTheme, settings.accessory, settings.meetingMode,
              settings.keyboardNoiseReminder, settings.lifeNight, settings.keyHabitReactions,
              settings.musicVisualizer, settings.musicDance, settings.keyboardTheme) = saved
+            settings.customPetID = savedPet
         }
         settings.musicVisualizer = true
         settings.musicDance = true
         settings.keyboardTheme = .classicMilk
         write(renderFeatures(), to: dir + "/features.png")
         write(renderHero(), to: dir + "/hero.png")
+        write(renderRoam(english: false), to: dir + "/roam.png")
+        write(renderRoam(english: true), to: dir + "/roam.en.png")
     }
 
     private static func write(_ image: CGImage?, to path: String) {
@@ -309,7 +313,8 @@ enum ShowcaseArt {
         text("你打字它跟着按键，你听歌它戴上耳机跟着鼓点跳舞。", at: CGPoint(x: left, y: 280), size: 16, weight: .regular,
              color: NSColor(calibratedWhite: 1, alpha: 0.62), in: ctx)
 
-        let chips = ["🎧 鼓点跳舞", "🤖 Claude Code", "🎙 会议模式", "🌙 生活陪伴", "🪶 光标逗猫", "🐟 喂小鱼干", "💞 亲密度装扮", "⚙️ 设置面板"]
+        let chips = ["🎧 鼓点跳舞", "🤖 Claude Code", "🐾 满屏漫游", "🎙 会议模式", "🌙 生活陪伴", "🪶 光标逗猫",
+                     "🐟 喂小鱼干", "💞 亲密度装扮", "⚙️ 设置面板"]
         var cx = left, cy: CGFloat = 330
         for chip in chips {
             let font = NSFont.systemFont(ofSize: 14, weight: .semibold)
@@ -329,6 +334,171 @@ enum ShowcaseArt {
         text("基于 chanke17/KuroCat 魔改 · MIT", at: CGPoint(x: left, y: 530), size: 13, weight: .medium,
              color: NSColor(calibratedWhite: 1, alpha: 0.45), in: ctx)
         return ctx.makeImage()
+    }
+
+    // MARK: Roam
+
+    /// 满屏漫游配图：桌面上几扇窗口当跳台，小猫走到桌边起跳、在另一扇窗口上打盹、在屏幕底边偷看，键盘前的座位空着
+    private static func renderRoam(english: Bool) -> CGImage? {
+        let width: CGFloat = 1280, height: CGFloat = 700
+        guard let ctx = makeContext(width: width, height: height) else { return nil }
+        let settings = CatSettings.shared
+        settings.accessory = .none
+        ctx.setFillColor(rgb(0xFAFAFC).cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        text(english ? "Roams your whole screen" : "满屏漫游", at: CGPoint(x: 40, y: 30), size: 30, weight: .heavy, color: rgb(0x1D1D24), in: ctx)
+        text(english ? "When you're idle it hops off the keyboard and treats your windows like tables. Start typing and it runs back."
+                     : "闲下来它会跳下键盘，把窗口当成一张张桌子跳来跳去；你一打字，它就跑回来",
+             at: CGPoint(x: 40, y: 74), size: 15, weight: .regular, color: rgb(0x6B6E78), in: ctx)
+
+        // 桌面：圆角屏幕 + 菜单栏
+        let desk = CGRect(x: 40, y: 112, width: 1200, height: 560)
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: 6), blur: 18, color: NSColor(calibratedWhite: 0, alpha: 0.16).cgColor)
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.addPath(CGPath(roundedRect: desk, cornerWidth: 20, cornerHeight: 20, transform: nil))
+        ctx.fillPath()
+        ctx.restoreGState()
+        ctx.saveGState()
+        ctx.addPath(CGPath(roundedRect: desk, cornerWidth: 20, cornerHeight: 20, transform: nil))
+        ctx.clip()
+        fillGradient(desk, radius: 0, colors: (rgb(0xB9CDF0), rgb(0xEBD3EE)), in: ctx)
+        ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.55).cgColor)
+        ctx.fill(CGRect(x: desk.minX, y: desk.minY, width: desk.width, height: 24))
+
+        // 三扇窗口（桌子）
+        let w1 = CGRect(x: 80, y: 372, width: 360, height: 400)
+        let w2 = CGRect(x: 560, y: 262, width: 300, height: 290)
+        let w3 = CGRect(x: 930, y: 300, width: 200, height: 150)
+        drawFakeWindow(w1, title: english ? "notes.md" : "笔记.md", in: ctx)
+        drawFakeWindow(w2, title: "main.swift", in: ctx)
+        drawFakeWindow(w3, title: english ? "Music" : "音乐", in: ctx)
+
+        // 键盘前的座位空着（小猫出门了）
+        let home = CatPhysics()
+        idle(home, frames: 10)
+        home.catAway = true
+        drawCat(home, cursor: nil, in: CGRect(x: 960, y: 420, width: 280, height: 249), ctx: ctx)
+
+        let k: CGFloat = 0.95
+        // ① 大橘：沿窗口顶走到桌边 → 蹲下瞄准 → 跳向另一扇窗
+        PetLibrary.shared.select(PetLibrary.shared.pet(id: "orange-tabby"))
+        let launch = CGPoint(x: w1.maxX - 10, y: w1.minY)
+        let land = CGPoint(x: w2.minX + 60, y: w2.minY)
+        let control = CGPoint(x: (launch.x + land.x) / 2, y: min(launch.y, land.y) - 120)
+        func arcPoint(_ t: CGFloat) -> CGPoint {
+            let u = 1 - t
+            return CGPoint(x: u * u * launch.x + 2 * u * t * control.x + t * t * land.x,
+                           y: u * u * launch.y + 2 * u * t * control.y + t * t * land.y)
+        }
+        // 跳跃轨迹（虚线抛物线）
+        let arc = CGMutablePath()
+        arc.move(to: launch)
+        arc.addQuadCurve(to: land, control: control)
+        ctx.saveGState()
+        ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.95).cgColor)
+        ctx.setLineWidth(3)
+        ctx.setLineCap(.round)
+        ctx.setLineDash(phase: 0, lengths: [2, 9])
+        ctx.addPath(arc)
+        ctx.strokePath()
+        ctx.restoreGState()
+        drawWalker(.init(pose: .walk, phase: .pi / 2, facing: 1, air: 0, time: 0.3, blink: false),
+                   feet: CGPoint(x: w1.minX + 95, y: w1.minY), k: k, alpha: 0.35, in: ctx)
+        drawWalker(.init(pose: .crouch, phase: 0, facing: 1, air: 0, time: 0.3, blink: false),
+                   feet: CGPoint(x: launch.x - 55, y: w1.minY), k: k, alpha: 0.6, in: ctx)
+        let mid = arcPoint(0.55)
+        drawWalker(.init(pose: .air, phase: 0, facing: 1, air: 0.5, time: 0.3, blink: false),
+                   feet: CGPoint(x: mid.x - 10, y: mid.y + 52), k: k, alpha: 1, in: ctx)
+
+        // ② 暹罗：在窗口顶上蜷成一团打盹
+        PetLibrary.shared.select(nil)
+        settings.coatTheme = .siamese
+        settings.eyeTheme = .siameseBlue
+        drawWalker(.init(pose: .curl, phase: 0, facing: -1, air: 0, time: 1.2, blink: false, curl: 1, asleep: true),
+                   feet: CGPoint(x: w2.maxX - 80, y: w2.minY), k: k, alpha: 1, in: ctx)
+
+        // ③ 三花：躲在屏幕底边偷看
+        PetLibrary.shared.select(PetLibrary.shared.pet(id: "calico"))
+        drawWalker(.init(pose: .peek, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, peekEdge: .bottom, peekReveal: 1),
+                   feet: CGPoint(x: 520, y: desk.maxY), k: k, alpha: 1, in: ctx)
+
+        // ④ 奶牛猫：听到打字声，沿屏幕底部跑回键盘
+        PetLibrary.shared.select(PetLibrary.shared.pet(id: "tuxedo"))
+        drawWalker(.init(pose: .run, phase: .pi * 0.3, facing: 1, air: 0, time: 0.3, blink: false),
+                   feet: CGPoint(x: 800, y: desk.maxY - 4), k: k, alpha: 1, in: ctx)
+        ctx.restoreGState()
+
+        // 标注
+        let notes: [(String, CGPoint)] = english ? [
+            ("① Walk to the edge, aim, leap!", CGPoint(x: 96, y: 196)),
+            ("② Curl up for a nap", CGPoint(x: 860, y: 190)),
+            ("③ Peek from the screen edge", CGPoint(x: 330, y: 574)),
+            ("④ Type and it runs home", CGPoint(x: 975, y: 545))
+        ] : [
+            ("① 走到桌边 · 瞄准 · 跳！", CGPoint(x: 100, y: 196)),
+            ("② 蜷成一团打个盹", CGPoint(x: 860, y: 190)),
+            ("③ 躲在屏幕边偷看", CGPoint(x: 360, y: 574)),
+            ("④ 一打字就跑回键盘", CGPoint(x: 985, y: 545))
+        ]
+        for (label, at) in notes {
+            let font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+            let w = (label as NSString).size(withAttributes: [.font: font]).width + 24
+            let r = CGRect(x: at.x, y: at.y, width: w, height: 30)
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 0, height: 2), blur: 6, color: NSColor(calibratedWhite: 0, alpha: 0.15).cgColor)
+            ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.94).cgColor)
+            ctx.addPath(CGPath(roundedRect: r, cornerWidth: 15, cornerHeight: 15, transform: nil))
+            ctx.fillPath()
+            ctx.restoreGState()
+            text(label, at: CGPoint(x: at.x + 12, y: at.y + 6), size: 14, weight: .semibold, color: rgb(0x33343C), in: ctx)
+        }
+        return ctx.makeImage()
+    }
+
+    /// 简化的 macOS 窗口：白底、红黄绿三个按钮、标题、几行内容条
+    private static func drawFakeWindow(_ rect: CGRect, title: String, in ctx: CGContext) {
+        let path = CGPath(roundedRect: rect, cornerWidth: 12, cornerHeight: 12, transform: nil)
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: 8), blur: 22, color: NSColor(calibratedWhite: 0, alpha: 0.18).cgColor)
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.addPath(path)
+        ctx.fillPath()
+        ctx.restoreGState()
+        ctx.saveGState()
+        ctx.addPath(path)
+        ctx.clip()
+        ctx.setFillColor(rgb(0xF2F2F5).cgColor)
+        ctx.fill(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: 30))
+        for (i, color) in [0xFF5F57, 0xFEBC2E, 0x28C840].enumerated() {
+            ctx.setFillColor(rgb(color).cgColor)
+            ctx.fillEllipse(in: CGRect(x: rect.minX + 12 + CGFloat(i) * 18, y: rect.minY + 10, width: 11, height: 11))
+        }
+        text(title, at: CGPoint(x: rect.minX + 72, y: rect.minY + 7), size: 12, weight: .semibold, color: rgb(0x8A8C96), in: ctx)
+        ctx.setFillColor(rgb(0xE6E7EC).cgColor)
+        var y = rect.minY + 50
+        var i = 0
+        while y < rect.maxY - 20 {
+            let w = (rect.width - 40) * [0.8, 0.55, 0.7, 0.4, 0.65][i % 5]
+            ctx.addPath(CGPath(roundedRect: CGRect(x: rect.minX + 20, y: y, width: w, height: 9), cornerWidth: 4.5, cornerHeight: 4.5,
+                               transform: nil))
+            ctx.fillPath()
+            y += 24
+            i += 1
+        }
+        ctx.restoreGState()
+    }
+
+    /// 把侧身小猫画在 feet（脚底中点）处；alpha < 1 用透明图层画，叠在一起的部件不会透出接缝
+    private static func drawWalker(_ pose: CatRenderer.WalkerPose, feet: CGPoint, k: CGFloat, alpha: CGFloat, in ctx: CGContext) {
+        ctx.saveGState()
+        ctx.setAlpha(alpha)
+        ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+        ctx.translateBy(x: feet.x - CatRenderer.walkerFeet.x * k, y: feet.y - CatRenderer.walkerFeet.y * k)
+        ctx.scaleBy(x: k, y: k)
+        CatRenderer.drawWalker(in: ctx, pose: pose)
+        ctx.endTransparencyLayer()
+        ctx.restoreGState()
     }
 
     private static func rgb(_ hex: Int) -> NSColor { CatRenderer.rgb(hex) }
