@@ -193,6 +193,8 @@ struct RoamDirector {
     static let idleBeforeWander: Double = 30
     /// 闲置这么久（人大概离开了）就不再出门，安心在座位上睡觉
     static let napAfter: Double = 600
+    /// 在地上溜达时突然狂奔的概率
+    static let zoomiesChance = 0.25
     static let walkSpeed: CGFloat = 70
     static let runSpeed: CGFloat = 230
     static let gravity: CGFloat = 1800
@@ -370,9 +372,12 @@ struct RoamDirector {
             facing = dx >= 0 ? 1 : -1
             let step = min(abs(dx), speed * dt)
             pos.x += step * facing
-            // 一个步态周期大约走 40 个画布点
-            gaitPhase += step / (40 * k) * .pi * 2
-            if abs(toX - pos.x) < 0.5 { activity = nil }
+            // 一个步态周期：走路约 40 个画布点；飞奔一步跨得远（约 75），步频约 3 次/秒，和真猫差不多
+            gaitPhase += step / ((run ? 75 : 40) * k) * .pi * 2
+            if abs(toX - pos.x) < 0.5 {
+                // 疯跑到地方：压低身子急刹一下（往家跑时不刹，直接接着跳）
+                activity = run && !returning ? .land(remaining: 0.3) : nil
+            }
         case .crouch(let remaining, let jump):
             activity = remaining - dt <= 0 ? .jump(jump) : .crouch(remaining: remaining - dt, then: jump)
         case .jump(var j):
@@ -521,7 +526,7 @@ struct RoamDirector {
         // 刚跳下座位：多半先走远一段再说，不然总在键盘边上打转
         let free = forcedHops == 0 && !forcedNap
         if free, stepsThisTrip == 1, id == world.floor.id, random() < 0.7 {
-            activity = .walk(toX: exploreTarget(on: here, k: k), run: false)
+            activity = .walk(toX: exploreTarget(on: here, k: k), run: random() < Self.zoomiesChance)
             return
         }
         // 打盹：一趟最多一次，先溜达过再睡；窗口顶上（高处）更想睡，闲得越久越困
@@ -579,8 +584,8 @@ struct RoamDirector {
             }
             return
         }
-        // 沿着脚下这张桌子溜达
-        activity = .walk(toX: exploreTarget(on: here, k: k), run: false)
+        // 沿着脚下这张桌子溜达；在地上偶尔突然发疯狂奔一段（猫的 zoomies）
+        activity = .walk(toX: exploreTarget(on: here, k: k), run: id == world.floor.id && random() < Self.zoomiesChance)
     }
 
     /// 溜达的目的地：离当前位置至少桌面宽度的三成，空间大的那一侧更容易被选中（往没去过的地方走）

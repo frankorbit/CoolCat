@@ -134,13 +134,22 @@ extension CatRenderer {
         var tilt: CGFloat = 0
         var stretch: CGFloat = 1
         let p = pose.phase
+        // 飞奔（旋转式奔跑，和猎豹一样）：u 是一个步幅周期里的进度。
+        // u = 0 伸展腾空：前腿往前探、后腿往后蹬直、脊柱拉长；u = 0.5 收拢腾空：脊柱弓起、后腿收到肚子底下
+        let galloping = pose.pose == .run
+        let cycle = p / (2 * .pi)
+        let u = galloping ? cycle - floor(cycle) : 0
+        let flex = cos(2 * .pi * u) // 1 = 伸展，-1 = 收拢
+        let arch = galloping ? max(0, -flex) * 9 - max(0, flex) * 2 : 0
         switch pose.pose {
         case .walk:
             lift += sin(p * 2) * 1.6
         case .run:
-            lift += sin(p * 2) * 3.5
-            stretch = 1.1
-            bodyH = 21
+            // 两次腾空时身体最高，四爪着地时最低；伸展时身子拉长变薄，收拢时缩短变厚；前脚着地时低头、后脚蹬地时抬头
+            lift = 45 + 6 * (0.5 + 0.5 * cos(4 * .pi * u))
+            stretch = 1.05 + 0.17 * flex
+            bodyH = 21.5 - 1.5 * flex
+            tilt = 0.08 * sin(2 * .pi * u)
         case .crouch:
             lift = 35
             bodyH = 24
@@ -163,12 +172,27 @@ extension CatRenderer {
         ctx.translateBy(x: center.x, y: center.y)
         ctx.rotate(by: tilt)
 
-        // 身体由三块组成：躯干胶囊 + 胸口 + 圆鼓鼓的大腿根；腿从胸口和大腿根里长出来
-        let torso = CGPath(roundedRect: CGRect(x: -halfLen, y: -bodyH, width: halfLen * 2, height: bodyH * 2),
+        // 身体由三块组成：躯干 + 胸口 + 圆鼓鼓的大腿根；腿从胸口和大腿根里长出来
+        let torso: CGPath
+        if galloping {
+            // 飞奔时躯干是一条会弯的脊柱：收拢时背弓起来、肚子收进去，伸展时微微塌腰
+            let spine = CGMutablePath()
+            spine.move(to: CGPoint(x: -halfLen, y: 0))
+            spine.addCurve(to: CGPoint(x: halfLen, y: 0),
+                           control1: CGPoint(x: -halfLen, y: -bodyH * 1.33 - arch), control2: CGPoint(x: halfLen, y: -bodyH * 1.33 - arch))
+            spine.addCurve(to: CGPoint(x: -halfLen, y: 0),
+                           control1: CGPoint(x: halfLen, y: bodyH * 1.3 - arch * 0.7), control2: CGPoint(x: -halfLen, y: bodyH * 1.3 - arch * 0.7))
+            spine.closeSubpath()
+            torso = spine
+        } else {
+            torso = CGPath(roundedRect: CGRect(x: -halfLen, y: -bodyH, width: halfLen * 2, height: bodyH * 2),
                            cornerWidth: bodyH, cornerHeight: bodyH, transform: nil)
-        let chestRect = CGRect(x: halfLen * 0.3, y: -bodyH * 0.95, width: halfLen * 0.92, height: bodyH * 1.88)
+        }
+        // 飞奔时胸口和屁股一伸一缩：伸展时拉开，收拢时挤到一起、屁股往上拱
+        let spread = galloping ? flex * 3 : 0
+        let chestRect = CGRect(x: halfLen * 0.3 + spread, y: -bodyH * 0.95, width: halfLen * 0.92, height: bodyH * 1.88)
         let chest = CGPath(ellipseIn: chestRect, transform: nil)
-        let haunchRect = CGRect(x: -halfLen * 1.08, y: -bodyH * 0.9, width: halfLen * 1.0, height: bodyH * 1.95)
+        let haunchRect = CGRect(x: -halfLen * 1.08 - spread, y: -bodyH * 0.9 - arch * 0.45, width: halfLen * 1.0, height: bodyH * 1.95)
         let haunch = CGPath(ellipseIn: haunchRect, transform: nil)
         let bodyParts = [torso, chest, haunch]
 
@@ -177,6 +201,29 @@ extension CatRenderer {
         let hip = CGPoint(x: haunchRect.midX + 2, y: haunchRect.midY)
         let groundY = lift / max(0.6, cos(tilt)) // 身体坐标里地面的大致位置
         let limb = CGFloat(pet?.shape.limbWidth ?? 1).squareRoot()
+
+        /// 飞奔时一条腿的落点和弯曲程度。前腿在 u≈0.22 附近着地、后腿在 u≈0.72 附近着地；
+        /// 着地时腿伸直从前往后扫，悬空时折起来（腕关节、跗关节收拢）往前摆。远侧腿比近侧早一点（旋转式奔跑）
+        func gallopLeg(_ joint: CGPoint, front: Bool, near: Bool) -> (end: CGPoint, fold: CGFloat) {
+            let v = u + (near ? 0 : 0.07)
+            // 偏离竖直的角度，正 = 往前。前腿以往前探为主（+0.95 … -0.6），后腿以往后蹬为主（-0.95 … +0.7）
+            let c = cos(2 * .pi * v)
+            let theta = front ? 0.18 + 0.77 * c : -0.12 - 0.83 * c
+            let contactAt: CGFloat = front ? 0.22 : 0.72
+            var d = v - contactAt
+            d -= floor(d + 0.5) // 环形距离，-0.5...0.5
+            let full = groundY - joint.y
+            if abs(d) < 0.17 {
+                let len = min(full / max(0.4, cos(theta)), full * 1.25)
+                return (CGPoint(x: joint.x + sin(theta) * len, y: joint.y + cos(theta) * len), 0)
+            }
+            // 悬空：从着地结束（d = 0.17）到下一次着地（d = -0.17 + 1）之间，中段折得最厉害
+            let swing = (d > 0 ? d - 0.17 : d + 1 - 0.17) / 0.66
+            // 刚离地时腿还是直的（蹬出去的那一下），摆到中段才折起来，快落地时再伸直
+            let fold = pow(max(0, sin(.pi * (swing - 0.15) / 0.85)), 1.4)
+            let len = full * (1 - 0.4 * fold)
+            return (CGPoint(x: joint.x + sin(theta) * len, y: joint.y + cos(theta) * len - fold * 4), fold)
+        }
 
         func legEnd(_ joint: CGPoint, offset: CGFloat, front: Bool) -> CGPoint {
             switch pose.pose {
@@ -196,9 +243,10 @@ extension CatRenderer {
         }
 
         /// 一条腿：上宽下窄的弯曲肢体 + 椭圆爪子。后腿往后弯出跗关节的弧度，前腿在腕部微微前挺
-        func leg(_ joint: CGPoint, _ end: CGPoint, front: Bool) -> (limb: CGPath, paw: CGPath) {
+        func leg(_ joint: CGPoint, _ end: CGPoint, front: Bool, fold: CGFloat = 0) -> (limb: CGPath, paw: CGPath) {
             let mid = CGPoint(x: (joint.x + end.x) / 2, y: (joint.y + end.y) / 2)
-            let bend: CGFloat = front ? 2.5 : -9
+            // 折腿时：前腿腕关节往前顶，后腿跗关节往后撅
+            let bend: CGFloat = front ? 2.5 + 11 * fold : -9 - 9 * fold
             let control = CGPoint(x: mid.x + bend, y: mid.y)
             let w0 = (front ? 15 : 19) * limb, w1 = 7.2 * limb
             let path = taperedLimb(from: joint, control: control, to: CGPoint(x: end.x, y: end.y - 3), startWidth: w0, endWidth: w1)
@@ -216,8 +264,18 @@ extension CatRenderer {
         }
 
         // 远侧两条腿（画在身体后面，颜色暗一点）；只描露在身体外面的轮廓
-        let farFront = leg(CGPoint(x: shoulder.x - 5, y: shoulder.y - 2), legEnd(CGPoint(x: shoulder.x - 5, y: shoulder.y), offset: .pi, front: true), front: true)
-        let farHind = leg(CGPoint(x: hip.x + 5, y: hip.y - 2), legEnd(CGPoint(x: hip.x + 5, y: hip.y), offset: 0, front: false), front: false)
+        /// 走路用钟摆步态，飞奔用上面的 gallopLeg
+        func makeLeg(_ joint: CGPoint, top: CGPoint, offset: CGFloat, front: Bool, near: Bool) -> (limb: CGPath, paw: CGPath) {
+            if galloping {
+                let g = gallopLeg(joint, front: front, near: near)
+                return leg(top, g.end, front: front, fold: g.fold)
+            }
+            return leg(top, legEnd(joint, offset: offset, front: front), front: front)
+        }
+        let farFront = makeLeg(CGPoint(x: shoulder.x - 5, y: shoulder.y), top: CGPoint(x: shoulder.x - 5, y: shoulder.y - 2),
+                               offset: .pi, front: true, near: false)
+        let farHind = makeLeg(CGPoint(x: hip.x + 5, y: hip.y), top: CGPoint(x: hip.x + 5, y: hip.y - 2),
+                              offset: 0, front: false, near: false)
         for l in [farFront, farHind] {
             fillLeg(l, far: true)
             strokeOuterOutline(in: ctx, [l.limb, l.paw], color: pal.outline, width: 1.4, alsoOutside: bodyParts)
@@ -226,12 +284,20 @@ extension CatRenderer {
         // 尾巴：从屁股往上翘，走路时左右甩
         let sway = sin(pose.time * 3.2 + p * 0.5) * 6
         let tailRoot = CGPoint(x: -halfLen * 0.92, y: -bodyH * 0.25)
-        let tailUp: CGFloat = pose.pose == .run || pose.pose == .air ? 0.45 : 1
-        let tailTip = CGPoint(x: -halfLen - 20 + sway * 0.4, y: -bodyH - 30 * tailUp + sway * 0.3)
+        let tailUp: CGFloat = pose.pose == .air ? 0.45 : 1
         let tail = CGMutablePath()
         tail.move(to: tailRoot)
-        tail.addCurve(to: tailTip, control1: CGPoint(x: tailRoot.x - 18, y: tailRoot.y + 4),
-                      control2: CGPoint(x: tailTip.x - 10 + sway, y: tailTip.y + 16))
+        if galloping {
+            // 飞奔：尾巴往后拉直当平衡杆，跟着身体一伸一缩上下甩
+            let whip = sin(2 * .pi * u - 0.8) * 7
+            let tailTip = CGPoint(x: -halfLen - 40, y: -bodyH * 0.9 + whip)
+            tail.addCurve(to: tailTip, control1: CGPoint(x: tailRoot.x - 14, y: tailRoot.y - 4),
+                          control2: CGPoint(x: tailTip.x + 14, y: tailTip.y - whip * 0.6))
+        } else {
+            let tailTip = CGPoint(x: -halfLen - 20 + sway * 0.4, y: -bodyH - 30 * tailUp + sway * 0.3)
+            tail.addCurve(to: tailTip, control1: CGPoint(x: tailRoot.x - 18, y: tailRoot.y + 4),
+                          control2: CGPoint(x: tailTip.x - 10 + sway, y: tailTip.y + 16))
+        }
         let tailW = 8.5 * CGFloat(pet?.shape.tailWidth ?? 1)
         // 尾巴是一块实心形状：根部被身体盖住，轮廓和身体一起只描外圈，接缝处没有线
         let tailShape = tail.copy(strokingWithWidth: tailW, lineCap: .round, lineJoin: .round, miterLimit: 10)
@@ -239,8 +305,8 @@ extension CatRenderer {
         ctx.addPath(tailShape); ctx.fillPath()
 
         // 近侧两条腿：先画，身体盖住腿的上端，接缝融进身体
-        let nearHind = leg(hip, legEnd(hip, offset: .pi, front: false), front: false)
-        let nearFront = leg(shoulder, legEnd(shoulder, offset: 0, front: true), front: true)
+        let nearHind = makeLeg(hip, top: hip, offset: .pi, front: false, near: true)
+        let nearFront = makeLeg(shoulder, top: shoulder, offset: 0, front: true, near: true)
         fillLeg(nearHind, far: false)
         fillLeg(nearFront, far: false)
 
@@ -303,11 +369,19 @@ extension CatRenderer {
         ctx.strokePath()
 
         // 头：在身体前上方，走路时和身体反着轻轻点头
-        let nod: CGFloat = pose.pose == .walk || pose.pose == .run ? -sin(p * 2) * 1.2 : 0
-        let headCenter = CGPoint(x: halfLen * 0.95 + 10, y: -bodyH - 15 + nod)
+        let nod: CGFloat = pose.pose == .walk ? -sin(p * 2) * 1.2 : 0
+        // 飞奔时头往前探、压低，并抵消身体的俯仰，眼睛始终平视前方（猎豹那种稳定的头）
+        let headCenter = galloping
+            ? CGPoint(x: halfLen * 0.95 + 14, y: -bodyH - 9 - arch * 0.3)
+            : CGPoint(x: halfLen * 0.95 + 10, y: -bodyH - 15 + nod)
         // 头和身体重叠的那段（脖子）不描线，看起来是长在身体上的
-        drawWalkerHead(in: ctx, center: headCenter, pose: pose, pal: pal, lookDown: pose.pose == .crouch,
-                       fuse: bodyParts, fuseCTM: ctx.ctm)
+        let bodyCTM = ctx.ctm
+        ctx.saveGState()
+        ctx.translateBy(x: headCenter.x, y: headCenter.y)
+        ctx.rotate(by: galloping ? -tilt * 0.9 : 0)
+        drawWalkerHead(in: ctx, center: .zero, pose: pose, pal: pal, lookDown: pose.pose == .crouch,
+                       fuse: bodyParts, fuseCTM: bodyCTM)
+        ctx.restoreGState()
         ctx.restoreGState()
     }
 
