@@ -42,6 +42,10 @@ struct RoamWorld {
     var scale: CGFloat = 1
     /// 可用区域顶部（菜单栏下沿）：侧边偷看时别探到菜单栏里
     var screenTop: CGFloat = 10_000
+    /// 光标（屏幕坐标）；nil = 不在这块屏上，或者设置里关了「光标逗猫」
+    var cursor: CGPoint?
+    /// 光标速度（屏幕点/秒）
+    var cursorSpeed: CGFloat = 0
 
     var surfaces: [RoamSurface] { [floor] + windowTops }
 
@@ -54,6 +58,10 @@ enum RoamPose: Equatable {
     case stand, walk, run, crouch, air, land, sit
     /// 扒着屏幕边偷看：只露脑袋和两只爪子
     case peek
+    /// 压低身子慢慢挪近（盯上光标了）
+    case stalk
+    /// 蹲着扭屁股蓄力，马上要扑
+    case wiggle
     /// 蜷成一团睡觉（趴下 → 蜷起来 → 醒来伸展）
     case curl
 }
@@ -70,6 +78,10 @@ enum RoamEvent: Equatable {
     case arrivedHome
     /// 落地（跳下来或从窗口上掉下来）
     case landed
+    /// 漫游时扑到了光标
+    case caughtCursor
+    /// 扑空
+    case missedCursor
 }
 
 /// 满屏漫游的纯逻辑：什么时候出门、走到哪、跳到哪、什么时候回家。坐标都是屏幕坐标（y 向上），位置是脚底中点。
@@ -163,6 +175,10 @@ struct RoamDirector {
         case nap(Nap)
         case crouch(remaining: CGFloat, then: Jump)
         case jump(Jump)
+        /// 盯上光标：发现 → 潜伏 → 扭屁股；光标一甩就冲刺追
+        case stalk(Stalk)
+        /// 朝光标扑过去；飞行途中前爪碰到光标就算抓到
+        case pounce(Pounce)
         case land(remaining: CGFloat)
         case sit(remaining: CGFloat)
         case fall(vy: CGFloat)
@@ -212,7 +228,14 @@ struct RoamDirector {
         switch activity {
         case .walk(_, let run): return run ? .run : .walk
         case .crouch: return .crouch
-        case .jump, .fall: return .air
+        case .jump, .fall, .pounce: return .air
+        case .stalk(let s):
+            switch s.phase {
+            case .notice: return .stand
+            case .creep: return .stalk
+            case .wiggle: return .wiggle
+            case .dash: return .run
+            }
         case .land: return .land
         case .sit: return .sit
         case .peek(let p): return p.t < p.start ? .crouch : .peek
@@ -280,6 +303,7 @@ struct RoamDirector {
     /// 跳跃进度 0...1（腾空时身体前倾 → 后仰）
     var airProgress: CGFloat {
         if case .jump(let j) = activity { return j.t }
+        if case .pounce(let p) = activity { return p.jump.t }
         return 0.5
     }
 
@@ -312,6 +336,13 @@ struct RoamDirector {
     private var forcedPeek: RoamEdge?
     private var forcedNap = false
     private var forcedHops = 0
+    /// 这一轮光标逗猫：扑了几次、玩了多久；玩够了歇一会儿
+    private var playSession = false
+    private var playPounces = 0
+    private var playTime: CGFloat = 0
+    private var playCooldown: CGFloat = 0
+    /// 扑完落地后接着盯
+    private var resumeStalk = false
     /// 这一趟已经睡过了：一趟最多睡一觉
     private var nappedThisTrip = false
     /// 这一趟已经安排了几件事（第一件多半是先走远一点）
@@ -349,7 +380,7 @@ struct RoamDirector {
         // 你一打字、或者有事要它待在座位上：跑回家
         let urgent = world.userActive || world.mustStayHome || attentionRaised
         // 睡着时不因为到点就叫醒，睡完这一觉再回家
-        let tripOver = tripTime > Self.maxTrip && !isNapping
+        let tripOver = tripTime > Self.maxTrip && !isNapping && !playSession
         if !returning && (urgent || tripOver || (!tripForced && !world.wanderAllowed)) {
             beginReturn(world: world, run: urgent)
         } else if returning && urgent && !returningUrgently {
@@ -369,6 +400,9 @@ struct RoamDirector {
                 activity = .fall(vy: 0)
             }
         }
+
+        playCooldown = max(0, playCooldown - dt)
+        if !returning { considerCursorPlay(world: world) }
 
         switch activity {
         case .walk(let toX, let run):
@@ -403,6 +437,29 @@ struct RoamDirector {
                 }
             } else {
                 activity = .jump(j)
+            }
+        case .stalk(var stalk):
+            stepStalk(&stalk, dt: dt, world: world)
+        case .pounce(var pounce):
+            pounce.jump.t = min(1, pounce.jump.t + dt / pounce.jump.duration)
+            pos = pounce.jump.point(at: pounce.jump.t)
+            // 前爪大约在脚前方 24、上方 62（画布点）：碰到光标就算抓到，一次扑只算一次
+            if !pounce.caught, let cursor = world.cursor {
+                let paw = CGPoint(x: pos.x + facing * 24 * k, y: pos.y + 62 * k)
+                if hypot(cursor.x - paw.x, cursor.y - paw.y) < 42 * k {
+                    pounce.caught = true
+                    events.append(.caughtCursor)
+                }
+            }
+            if pounce.jump.t >= 1 {
+                pos = pounce.jump.to
+                surfaceID = pounce.jump.surface
+                if !pounce.caught { events.append(.missedCursor) }
+                playPounces += 1
+                resumeStalk = playSession
+                activity = .land(remaining: 0.3)
+            } else {
+                activity = .pounce(pounce)
             }
         case .land(let remaining):
             activity = remaining - dt <= 0 ? nil : .land(remaining: remaining - dt)
@@ -440,6 +497,14 @@ struct RoamDirector {
             break
         }
 
+        if activity == nil, resumeStalk {
+            resumeStalk = false
+            if !returning, playSession, playPounces < Self.maxPounces, cursorInterest(world: world) != nil {
+                activity = .stalk(Stalk(phase: .notice, wiggleNeeded: 0.5 + CGFloat(random()) * 0.6))
+            } else {
+                endPlay()
+            }
+        }
         if activity == nil, let edge = pendingPeek {
             // 走出屏幕侧边了：在这条边的某个高度探头
             pendingPeek = nil
@@ -464,9 +529,168 @@ struct RoamDirector {
 
     private func isGrounded(_ a: Activity) -> Bool {
         switch a {
-        case .walk, .sit, .land, .crouch, .nap: return true
-        case .jump, .fall, .peek: return false
+        case .walk, .sit, .land, .crouch, .nap, .stalk: return true
+        case .jump, .fall, .peek, .pounce: return false
         }
+    }
+
+    // MARK: Cursor Play
+
+    /// 漫游时的光标逗猫（键盘前那套的漫游版）：慢慢晃 → 盯上 → 潜伏挪近 → 扭屁股 → 扑；甩得快就冲刺追
+    struct Stalk: Equatable {
+        enum Phase: Equatable {
+            /// 停下来盯着看
+            case notice
+            /// 压低身子慢慢挪近
+            case creep
+            /// 蹲着扭屁股蓄力
+            case wiggle
+            /// 光标甩远了：飞奔去追
+            case dash
+        }
+        var phase: Phase
+        var t: CGFloat = 0
+        /// 扭够这么久才扑（真猫扑之前会扭上一阵子）
+        var wiggleNeeded: CGFloat
+    }
+
+    struct Pounce: Equatable {
+        var jump: Jump
+        var caught = false
+    }
+
+    /// 光标在这个水平距离内才会被注意到（画布点，乘 scale）
+    static let playNotice: CGFloat = 420
+    /// 扑击距离：离光标这么远时开始扭屁股
+    static let pounceNear: CGFloat = 70
+    static let pounceFar: CGFloat = 240
+    static let creepSpeed: CGFloat = 34
+    /// 光标比这个快算"甩"：去追；比 30 慢算没在动
+    static let flickSpeed: CGFloat = 900
+    /// 一轮最多扑几次、玩多久；之后歇一会儿
+    static let maxPounces = 3
+    static let maxPlayTime: CGFloat = 25
+
+    var isPlaying: Bool { playSession }
+
+    /// 光标在不在逗猫范围里：返回它相对脚下这张桌子的水平距离和高度
+    /// - Parameter chasing: 正在追（光标被甩远了）：不限水平距离，追不上靠 6 秒上限兜底
+    private func cursorInterest(world: RoamWorld,
+                                chasing: Bool = false) -> (dx: CGFloat, height: CGFloat, here: RoamSurface)? {
+        guard let cursor = world.cursor, let id = surfaceID, let here = world.surface(id: id) else { return nil }
+        let k = world.scale
+        let dx = cursor.x - pos.x
+        let height = cursor.y - here.y
+        guard chasing || abs(dx) < Self.playNotice * k * 1.6,
+              height > -60 * k, height < Self.maxJumpUp * k else { return nil }
+        return (dx, height, here)
+    }
+
+    /// 溜达、坐着、刚落地发呆时，光标在附近晃动：开始一轮逗猫
+    private mutating func considerCursorPlay(world: RoamWorld) {
+        guard !playSession, playCooldown <= 0 else { return }
+        switch activity {
+        case nil, .sit: break
+        case .walk(_, let run) where !run: break
+        default: return
+        }
+        guard world.cursorSpeed > 30, world.cursorSpeed < 1500, let interest = cursorInterest(world: world),
+              abs(interest.dx) < Self.playNotice * world.scale else { return }
+        // 半路被光标吸引：原本要去偷看、要去起跳的计划作废
+        pendingPeek = nil
+        pendingJump = nil
+        playSession = true
+        playPounces = 0
+        playTime = 0
+        activity = .stalk(Stalk(phase: .notice, wiggleNeeded: 0.7 + CGFloat(random()) * 0.6))
+    }
+
+    private mutating func endPlay() {
+        guard playSession else { return }
+        playSession = false
+        // 玩够了歇久一点，被打断的很快又能玩
+        playCooldown = playPounces >= Self.maxPounces || playTime >= Self.maxPlayTime ? 15 : 5
+    }
+
+    private mutating func stepStalk(_ stalk: inout Stalk, dt: CGFloat, world: RoamWorld) {
+        let k = world.scale
+        let chasing = stalk.phase == .dash || world.cursorSpeed > Self.flickSpeed
+        guard playSession, let interest = cursorInterest(world: world, chasing: chasing), let cursor = world.cursor,
+              playTime < Self.maxPlayTime else {
+            endPlay()
+            activity = nil
+            return
+        }
+        playTime += dt
+        stalk.t += dt
+        let here = interest.here
+        let dist = abs(interest.dx)
+        facing = interest.dx >= 0 ? 1 : -1
+        let flicked = world.cursorSpeed > Self.flickSpeed
+        let inRange = dist <= Self.pounceFar * k
+        /// 沿脚下这张桌子往 goal 挪 speed 的距离，步态按 stride 走
+        func move(toward goal: CGFloat, speed: CGFloat, stride: CGFloat) {
+            let clamped = min(max(goal, here.minX + 20 * k), here.maxX - 20 * k)
+            let step = min(abs(clamped - pos.x), speed * k * dt)
+            pos.x += step * (clamped >= pos.x ? 1 : -1)
+            gaitPhase += step / (stride * k) * .pi * 2
+        }
+        switch stalk.phase {
+        case .notice:
+            if stalk.t >= 0.4 {
+                stalk.phase = flicked ? .dash : (inRange ? .wiggle : .creep)
+                stalk.t = 0
+            }
+        case .creep:
+            if flicked {
+                stalk.phase = .dash
+                stalk.t = 0
+            } else if inRange {
+                stalk.phase = .wiggle
+                stalk.t = 0
+            } else {
+                move(toward: cursor.x - facing * 160 * k, speed: Self.creepSpeed, stride: 26)
+            }
+        case .wiggle:
+            if flicked {
+                stalk.phase = .dash
+                stalk.t = 0
+            } else if dist > Self.pounceFar * k * 1.2 {
+                stalk.phase = .creep
+                stalk.t = 0
+            } else if stalk.t >= stalk.wiggleNeeded {
+                startPounce(at: cursor, from: here, k: k)
+                return
+            }
+        case .dash:
+            move(toward: cursor.x - facing * 130 * k, speed: Self.runSpeed, stride: 75)
+            if !flicked && inRange && stalk.t > 0.3 {
+                // 追上了：短短扭一下就扑
+                stalk.phase = .wiggle
+                stalk.t = 0
+                stalk.wiggleNeeded = 0.35
+            } else if stalk.t > 6 {
+                endPlay()
+                activity = nil
+                return
+            }
+        }
+        activity = .stalk(stalk)
+    }
+
+    /// 朝光标扑：落在光标正下方稍远一点的位置；光标在半空就跳到差不多的高度去够
+    private mutating func startPounce(at cursor: CGPoint, from here: RoamSurface, k: CGFloat) {
+        // 前爪比脚高约 55、靠前约 24：弧线顶点让前爪正好够到光标
+        let reachUp = max(0, cursor.y - here.y - 55 * k)
+        // 光标在半空：弧线最高点在起跳和落点正中间，所以落点放到光标后面，让最高点正好在光标下方；
+        // 光标贴着桌面：直接扑到它身上
+        let rawX = reachUp > 30 * k ? 2 * (cursor.x - facing * 24 * k) - pos.x : cursor.x + facing * 12 * k
+        let toX = min(max(rawX, here.minX + 20 * k), here.maxX - 20 * k)
+        let apex = min(Self.maxJumpUp * k, max(28 * k, reachUp + 10 * k))
+        let dist = abs(toX - pos.x)
+        let duration = min(0.75, max(0.35, 0.28 + dist / (1100 * k) + apex / (1800 * k)))
+        let jump = Jump(from: pos, to: CGPoint(x: toX, y: here.y), duration: duration, apex: apex, surface: here.id)
+        activity = .pounce(Pounce(jump: jump))
     }
 
     // MARK: Planning
@@ -698,6 +922,8 @@ struct RoamDirector {
         budget = 0
         // 正在跳的那一下让它跳完，落地后再规划
         if case .jump = activity { return }
+        if case .pounce = activity { return }
+        endPlay()
         if case .fall = activity { return }
         if case .nap(var n) = activity {
             // 在睡觉：醒过来（被吵醒的话一激灵），醒透了再回家
@@ -811,6 +1037,8 @@ struct RoamDirector {
         pendingPeek = nil
         forcedNap = false
         forcedHops = 0
+        playSession = false
+        resumeStalk = false
         cooldown = 60 + CGFloat(random() * 60)
         checkTimer = 5
     }

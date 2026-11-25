@@ -828,6 +828,23 @@ final class CatPhysics {
         }
     }
 
+    /// 漫游时连抓几下光标
+    private var roamCatchStreak = 0
+
+    /// 漫游时扑光标的结果：抓到了给亲密度（和键盘前逗猫同一个来源，共用每日上限），连抓三下多给一点
+    func roamPlayResult(caught: Bool) {
+        guard caught else {
+            roamCatchStreak = 0
+            return
+        }
+        roamCatchStreak += 1
+        addBond(.catchToy, bonus: roamCatchStreak >= 3 ? 2 : 0)
+        if roamCatchStreak >= 3 {
+            roamCatchStreak = 0
+            toast = Toast(text: "🐾 满屏追着光标，连抓三下！", style: .habit)
+        }
+    }
+
     // MARK: - Bond
 
     private static var todayKey: String { LifeCompanion.dayKey(Date(), calendar: .current) }

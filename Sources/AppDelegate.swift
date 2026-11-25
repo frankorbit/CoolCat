@@ -486,7 +486,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             needsAttention: physics.agentNeedsYou,
             // 走路速度、跳跃距离跟着侧身小猫的体型放大
             scale: k * CatRenderer.walkerArtScale,
-            screenTop: visible.maxY
+            screenTop: visible.maxY,
+            // 光标逗猫：只看小猫这块屏幕上的光标；设置里关了就当没有
+            cursor: settings.cursorPlay && screen.frame.contains(NSEvent.mouseLocation) ? NSEvent.mouseLocation : nil,
+            cursorSpeed: hypot(engine.mouseVelocity.dx, engine.mouseVelocity.dy)
         )
         if let path = roamLogPath, now - lastRoamLog > 0.5 {
             lastRoamLog = now
@@ -506,6 +509,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .leftSeat: physics.catAway = true
             case .arrivedHome: physics.landBackInSeat()
             case .landed: break
+            case .caughtCursor: physics.roamPlayResult(caught: true)
+            case .missedCursor: physics.roamPlayResult(caught: false)
             }
         }
         guard !roam.isHome else {
@@ -524,7 +529,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pose: roam.pose, phase: roam.gaitPhase, facing: roam.facing, air: roam.airProgress,
             time: physics.time, blink: physics.time.truncatingRemainder(dividingBy: 4.1) < 0.13,
             peekEdge: roam.peekEdge, peekReveal: roam.peekReveal, sink: roam.sinkDepth,
-            curl: roam.napCurl, asleep: roam.napAsleep
+            curl: roam.napCurl, asleep: roam.napAsleep, hunting: roam.isPlaying
         )
         // 屏幕边换算到画布坐标：走出屏幕、偷看时屏幕外的部分不画
         if let c = roam.clipEdge {

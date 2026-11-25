@@ -715,7 +715,8 @@ private struct InteractionPane: View {
             SettingsCard(title: "和小猫玩") {
                 ToggleRow(title: "摸头 / 摸背闭眼", subtitle: "光标在小猫头上、背上来回划", isOn: store.binding(\.petInteraction))
                 RowDivider()
-                ToggleRow(title: "光标逗猫", subtitle: "在小猫身前慢慢晃光标：盯上 → 扭屁股 → 出爪拍", isOn: store.binding(\.cursorPlay))
+                ToggleRow(title: "光标逗猫", subtitle: "在小猫身前慢慢晃光标：盯上 → 扭屁股 → 出爪拍；出门溜达时会追着光标满屏扑",
+                          isOn: store.binding(\.cursorPlay))
                 RowDivider()
                 ToggleRow(title: "空闲时的小动作", subtitle: "打哈欠、伸懒腰、踩奶、慢眨眼……", isOn: store.binding(\.idleAnimations))
                 RowDivider()

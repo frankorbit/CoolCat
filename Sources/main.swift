@@ -916,8 +916,17 @@ func renderWalkPreviewSheet(to path: String) {
     let runPoses: [(String, CatRenderer.WalkerPose)] = (0..<8).map { i in
         ("飞奔 \(i)", .init(pose: .run, phase: CGFloat(i) / 8 * 2 * .pi, facing: 1, air: 0, time: 0.3, blink: false))
     }
+    // COOLCAT_WALK_SET=play：漫游时逗猫的几个姿势
+    let playPoses: [(String, CatRenderer.WalkerPose)] = [
+        ("盯上", .init(pose: .stand, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, hunting: true)),
+        ("潜伏 1", .init(pose: .stalk, phase: 0, facing: 1, air: 0, time: 0.3, blink: false)),
+        ("潜伏 2", .init(pose: .stalk, phase: .pi, facing: 1, air: 0, time: 0.6, blink: false)),
+        ("扭屁股 1", .init(pose: .wiggle, phase: 0, facing: 1, air: 0, time: 0.1, blink: false)),
+        ("扭屁股 2", .init(pose: .wiggle, phase: 0, facing: 1, air: 0, time: 0.2, blink: false)),
+        ("扑", .init(pose: .air, phase: 0, facing: 1, air: 0.3, time: 0.3, blink: false, hunting: true))
+    ]
     let set = ProcessInfo.processInfo.environment["COOLCAT_WALK_SET"]
-    let poses = set == "nap" ? napPoses : (set == "run" ? runPoses : walkPoses)
+    let poses = set == "nap" ? napPoses : (set == "run" ? runPoses : (set == "play" ? playPoses : walkPoses))
     let cw = Int(CatRenderer.walkerCanvas.width), ch = Int(CatRenderer.walkerCanvas.height), scale = 2
     let labelW = 70
     guard let ctx = CGContext(

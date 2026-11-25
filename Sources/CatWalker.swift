@@ -28,6 +28,8 @@ extension CatRenderer {
         var curl: CGFloat = 0
         /// 睡着了：闭眼、呼吸起伏、冒 Zzz
         var asleep = false
+        /// 盯上光标：瞳孔放大成圆圆的大黑眼
+        var hunting = false
     }
 
     /// 侧身小猫的配色：从主画面的取色工具里推出来，保证和坐着时是同一只猫
@@ -162,6 +164,17 @@ extension CatRenderer {
         case .land:
             lift = 38
             bodyH = 25
+        case .stalk:
+            // 潜伏：肚子快贴地，头比肩低，一步一步慢慢挪
+            lift = 36 + sin(p * 2) * 0.8
+            bodyH = 23.5
+            stretch = 1.05
+            tilt = 0.05
+        case .wiggle:
+            // 扭屁股蓄力：前低后高，屁股左右扭（画在大腿根上）
+            lift = 33
+            bodyH = 24.5
+            tilt = 0.09
         case .stand, .sit, .peek, .curl:
             lift += sin(pose.time * 2.1) * 0.8
         }
@@ -192,7 +205,11 @@ extension CatRenderer {
         let spread = galloping ? flex * 3 : 0
         let chestRect = CGRect(x: halfLen * 0.3 + spread, y: -bodyH * 0.95, width: halfLen * 0.92, height: bodyH * 1.88)
         let chest = CGPath(ellipseIn: chestRect, transform: nil)
-        let haunchRect = CGRect(x: -halfLen * 1.08 - spread, y: -bodyH * 0.9 - arch * 0.45, width: halfLen * 1.0, height: bodyH * 1.95)
+        // 扭屁股：大腿根抬高一点、左右快速扭
+        let wiggleX = pose.pose == .wiggle ? sin(pose.time * 16) * 3.2 : 0
+        let wiggleUp: CGFloat = pose.pose == .wiggle ? 8 : 0
+        let haunchRect = CGRect(x: -halfLen * 1.08 - spread + wiggleX, y: -bodyH * 0.9 - arch * 0.45 - wiggleUp,
+                                width: halfLen * 1.0, height: bodyH * 1.95)
         let haunch = CGPath(ellipseIn: haunchRect, transform: nil)
         let bodyParts = [torso, chest, haunch]
 
@@ -231,11 +248,12 @@ extension CatRenderer {
                 // 腾空：前腿往前伸，后腿往后蹬
                 let len = groundY - joint.y - 4
                 return CGPoint(x: joint.x + (front ? len * 0.75 : -len * 0.75), y: joint.y + len * 0.62)
-            case .walk, .run:
-                let amp: CGFloat = pose.pose == .run ? 0.6 : 0.4
+            case .walk, .run, .stalk:
+                // 潜伏时步子小、爪子几乎不离地
+                let amp: CGFloat = pose.pose == .run ? 0.6 : (pose.pose == .stalk ? 0.28 : 0.4)
                 let a = sin(p + offset) * amp
                 let len = groundY - joint.y
-                let raise = max(0, cos(p + offset)) * (pose.pose == .run ? 9 : 5.5)
+                let raise = max(0, cos(p + offset)) * (pose.pose == .run ? 9 : (pose.pose == .stalk ? 2.5 : 5.5))
                 return CGPoint(x: joint.x + sin(a) * len, y: joint.y + cos(a) * len - raise)
             default:
                 return CGPoint(x: joint.x + (front ? 2 : -3), y: groundY)
@@ -282,9 +300,11 @@ extension CatRenderer {
         }
 
         // 尾巴：从屁股往上翘，走路时左右甩
-        let sway = sin(pose.time * 3.2 + p * 0.5) * 6
-        let tailRoot = CGPoint(x: -halfLen * 0.92, y: -bodyH * 0.25)
-        let tailUp: CGFloat = pose.pose == .air ? 0.45 : 1
+        let hunting = pose.pose == .stalk || pose.pose == .wiggle
+        // 盯上猎物时尾巴放低，只有尾巴尖在快速抽动
+        let sway = hunting ? sin(pose.time * 18) * 7 : sin(pose.time * 3.2 + p * 0.5) * 6
+        let tailRoot = CGPoint(x: -halfLen * 0.92 + wiggleX, y: -bodyH * 0.25 - wiggleUp)
+        let tailUp: CGFloat = pose.pose == .air ? 0.45 : (hunting ? 0.25 : 1)
         let tail = CGMutablePath()
         tail.move(to: tailRoot)
         if galloping {
@@ -371,14 +391,16 @@ extension CatRenderer {
         // 头：在身体前上方，走路时和身体反着轻轻点头
         let nod: CGFloat = pose.pose == .walk ? -sin(p * 2) * 1.2 : 0
         // 飞奔时头往前探、压低，并抵消身体的俯仰，眼睛始终平视前方（猎豹那种稳定的头）
+        // 潜伏、扭屁股时头往前伸、压到肩膀高度，死死盯着
         let headCenter = galloping
             ? CGPoint(x: halfLen * 0.95 + 14, y: -bodyH - 9 - arch * 0.3)
-            : CGPoint(x: halfLen * 0.95 + 10, y: -bodyH - 15 + nod)
+            : (hunting ? CGPoint(x: halfLen * 0.95 + 15, y: -bodyH - 6)
+                       : CGPoint(x: halfLen * 0.95 + 10, y: -bodyH - 15 + nod))
         // 头和身体重叠的那段（脖子）不描线，看起来是长在身体上的
         let bodyCTM = ctx.ctm
         ctx.saveGState()
         ctx.translateBy(x: headCenter.x, y: headCenter.y)
-        ctx.rotate(by: galloping ? -tilt * 0.9 : 0)
+        ctx.rotate(by: galloping || hunting ? -tilt * 0.9 : 0)
         drawWalkerHead(in: ctx, center: .zero, pose: pose, pal: pal, lookDown: pose.pose == .crouch,
                        fuse: bodyParts, fuseCTM: bodyCTM)
         ctx.restoreGState()
@@ -497,7 +519,8 @@ extension CatRenderer {
             ctx.setFillColor(pal.eye.cgColor)
             ctx.fillEllipse(in: CGRect(x: eye.x - ew, y: eye.y - eh, width: ew * 2, height: eh * 2))
             ctx.setFillColor(catBlack.cgColor)
-            let pw = pal.cute ? ew * 1.05 : ew * 0.5
+            // 狩猎时瞳孔放大成圆圆的大黑眼（竖瞳的猫也是）
+            let pw = pose.hunting || pose.pose == .stalk || pose.pose == .wiggle ? ew * 1.35 : (pal.cute ? ew * 1.05 : ew * 0.5)
             ctx.fillEllipse(in: CGRect(x: eye.x - pw * 0.6 + 1.2, y: eye.y - eh * 0.82, width: pw * 1.2, height: eh * 1.64))
             ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.95).cgColor)
             ctx.fillEllipse(in: CGRect(x: eye.x + 0.2, y: eye.y - eh * 0.6, width: ew * 0.7, height: ew * 0.7))
