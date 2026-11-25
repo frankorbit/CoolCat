@@ -31,6 +31,14 @@ struct RoamWall: Equatable {
     var surfaceID: Int
 }
 
+/// 举牌提醒的目的地：agent 等你批准时，小猫跑到你正在看的窗口顶上（或它正下方的屏幕底边）坐着举牌
+struct RoamSignTarget: Equatable {
+    /// 坐在哪个面上：窗口上沿的 id，或者 0 = 屏幕底部
+    var surfaceID: Int
+    /// 坐在哪儿（屏幕 x）
+    var x: CGFloat
+}
+
 /// 每帧喂给漫游逻辑的外部状态（全部由调用方采集，逻辑本身不碰 AppKit）
 struct RoamWorld {
     /// 屏幕底部（Dock 上方）
@@ -61,6 +69,8 @@ struct RoamWorld {
     var cursorSpeed: CGFloat = 0
     /// 能爬的窗框侧边
     var walls: [RoamWall] = []
+    /// 举牌提醒：有值时小猫放下手头的事，跑过去坐下举牌，直到它变回 nil
+    var signTarget: RoamSignTarget?
 
     var surfaces: [RoamSurface] { [floor] + windowTops }
 
@@ -79,6 +89,8 @@ enum RoamPose: Equatable {
     case wiggle
     /// 顺着窗框侧边往上爬
     case climb
+    /// 坐着举牌（agent 等你批准）
+    case sign
     /// 蜷成一团睡觉（趴下 → 蜷起来 → 醒来伸展）
     case curl
 }
@@ -200,6 +212,8 @@ struct RoamDirector {
         case pounce(Pounce)
         /// 顺着窗框侧边往上爬，到顶翻上窗口
         case climb(Climb)
+        /// 坐着举牌，直到 signTarget 没了
+        case sign
         case land(remaining: CGFloat)
         case sit(remaining: CGFloat)
         case fall(vy: CGFloat)
@@ -262,6 +276,7 @@ struct RoamDirector {
         case .peek(let p): return p.t < p.start ? .crouch : .peek
         case .nap: return .curl
         case .climb: return .climb
+        case .sign: return .sign
         case nil: return .stand
         }
     }
@@ -365,6 +380,9 @@ struct RoamDirector {
     private var playCooldown: CGFloat = 0
     /// 扑完落地后接着盯
     private var resumeStalk = false
+    /// 正在送牌（跑去举牌提醒的路上，或者正举着）
+    private(set) var delivering = false
+    var isHoldingSign: Bool { activity == .sign }
     /// 走到窗框旁边后要开始的那次攀爬；跳上窗框侧边后接着爬的那次
     private var pendingClimb: Climb?
     private var wallJumpClimb: Climb?
@@ -385,6 +403,14 @@ struct RoamDirector {
             cooldown = max(0, cooldown - dt)
             checkTimer -= dt
             lastNeedsAttention = world.needsAttention
+            // 举牌提醒：不管冷却、不管漫游开没开（调用方已经判断过），直接跳下座位出发
+            if world.signTarget != nil, !world.mustStayHome, !world.userActive {
+                tripForced = true
+                startTrip(world: world, toFloor: true)
+                delivering = true
+                events.append(.leftSeat)
+                return events
+            }
             guard !world.mustStayHome, !world.userActive, cooldown <= 0 else { forced = false; return events }
             let idleEnough = world.keyIdle > Self.idleBeforeWander && world.keyIdle < Self.napAfter
             if forced || (world.wanderAllowed && idleEnough && checkTimer <= 0 && random() < 0.3) {
@@ -402,11 +428,12 @@ struct RoamDirector {
         // agent 刚开始等你：跑回去提醒（手动出门时本来就在等的不算）
         let attentionRaised = world.needsAttention && !lastNeedsAttention
         lastNeedsAttention = world.needsAttention
-        // 你一打字、或者有事要它待在座位上：跑回家
-        let urgent = world.userActive || world.mustStayHome || attentionRaised
+        updateDelivery(world: world)
+        // 你一打字、或者有事要它待在座位上：跑回家（送牌的路上 agent 本来就在等你，不算叫它回来）
+        let urgent = world.userActive || world.mustStayHome || (attentionRaised && !delivering)
         // 睡着时不因为到点就叫醒，睡完这一觉再回家
-        let tripOver = tripTime > Self.maxTrip && !isNapping && !playSession
-        if !returning && (urgent || tripOver || (!tripForced && !world.wanderAllowed)) {
+        let tripOver = tripTime > Self.maxTrip && !isNapping && !playSession && !delivering
+        if !returning && (urgent || tripOver || (!tripForced && !world.wanderAllowed && !delivering)) {
             beginReturn(world: world, run: urgent)
         } else if returning && urgent && !returningUrgently {
             // 正慢慢往回走时你开始打字：别闲逛了，立刻飞奔回去
@@ -427,7 +454,7 @@ struct RoamDirector {
         }
 
         playCooldown = max(0, playCooldown - dt)
-        if !returning { considerCursorPlay(world: world) }
+        if !returning && !delivering { considerCursorPlay(world: world) }
 
         switch activity {
         case .walk(let toX, let run):
@@ -495,6 +522,11 @@ struct RoamDirector {
                 events.append(.landed)
             } else {
                 activity = .climb(climb)
+            }
+        case .sign:
+            // 你切到了别的窗口（目的地变了）：起身改去新的地方
+            if let target = world.signTarget, target.surfaceID != surfaceID || abs(target.x - pos.x) > 80 * k {
+                activity = nil
             }
         case .stalk(var stalk):
             stepStalk(&stalk, dt: dt, world: world)
@@ -577,7 +609,9 @@ struct RoamDirector {
             activity = .crouch(remaining: pendingAim, then: jump)
             pendingAim = 0.26
         } else if activity == nil {
-            if returning {
+            if delivering && !returning {
+                planDeliveryStep(world: world)
+            } else if returning {
                 planReturnStep(world: world, run: returningUrgently)
             } else if budget <= 0 {
                 beginReturn(world: world, run: false)
@@ -591,7 +625,7 @@ struct RoamDirector {
 
     private func isGrounded(_ a: Activity) -> Bool {
         switch a {
-        case .walk, .sit, .land, .crouch, .nap, .stalk: return true
+        case .walk, .sit, .land, .crouch, .nap, .stalk, .sign: return true
         case .jump, .fall, .peek, .pounce, .climb: return false
         }
     }
@@ -784,11 +818,11 @@ struct RoamDirector {
     }
 
     /// 先走到窗框旁边（窗口外侧）
-    private mutating func startClimb(_ wall: RoamWall, from here: RoamSurface, k: CGFloat) {
+    private mutating func startClimb(_ wall: RoamWall, from here: RoamSurface, k: CGFloat, run: Bool = false) {
         let standX = wall.x + (wall.windowOnRight ? -16 : 16) * k
         let climb = Climb(wall: wall, y: max(wall.minY, here.y))
         if abs(standX - pos.x) > 1 {
-            activity = .walk(toX: standX, run: false)
+            activity = .walk(toX: standX, run: run)
             pendingClimb = climb
         } else {
             activity = nil
@@ -811,9 +845,93 @@ struct RoamDirector {
         }
     }
 
+    // MARK: Sign Delivery
+
+    /// 举牌提醒开始 / 结束：开始时放下手头的事（正在跳、在掉、在扑的让它落地）；结束时放下牌子回家
+    private mutating func updateDelivery(world: RoamWorld) {
+        if world.signTarget != nil, !delivering, !world.userActive, !world.mustStayHome {
+            delivering = true
+            returning = false
+            returningUrgently = false
+            endPlay()
+            pendingPeek = nil
+            pendingJump = nil
+            pendingClimb = nil
+            resumeStalk = false
+            switch activity {
+            case .jump, .fall, .pounce, .crouch, .climb:
+                break                                   // 让这一下做完，落地后再规划
+            case .nap(var nap):
+                nap.wakeNow(startled: true)             // 一激灵醒来再去
+                activity = .nap(nap)
+            case .peek(var peek):
+                let hideAt = peek.start + Peek.revealTime
+                peek.hold = min(peek.hold, max(0, peek.t - hideAt))
+                activity = .peek(peek)
+            default:
+                activity = nil
+            }
+        } else if world.signTarget == nil, delivering {
+            // 你批准了（或者 agent 不等了）：放下牌子回家
+            delivering = false
+            if activity == .sign { activity = .land(remaining: 0.3) }
+            if !returning { beginReturn(world: world, run: false) }
+        }
+    }
+
+    /// 送牌的下一步：到了就坐下举牌；在别处就按跳台 / 爬窗 / 下地的顺序赶过去
+    private mutating func planDeliveryStep(world: RoamWorld) {
+        guard let target = world.signTarget else { return }
+        let k = world.scale
+        guard let id = surfaceID, let here = world.surface(id: id) else {
+            activity = .fall(vy: 0)
+            return
+        }
+        let floor = world.floor
+        /// 在脚下这张桌子上走到 x 坐下举牌
+        func sitHere(at x: CGFloat) -> Activity {
+            let spot = min(max(x, here.minX + 30 * k), here.maxX - 30 * k)
+            return abs(spot - pos.x) > 3 * k ? .walk(toX: spot, run: true) : .sign
+        }
+        /// 从窗口顶跳到地上，落在离目标近的那一侧
+        func dropToFloor() -> Activity {
+            let downX = min(max(pos.x + (target.x > pos.x ? 60 : -60) * k, floor.minX + 20 * k), floor.maxX - 20 * k)
+            return .crouch(remaining: 0.12, then: makeJump(from: pos, to: CGPoint(x: downX, y: floor.y),
+                                                           surface: floor.id, k: k))
+        }
+        if id == target.surfaceID {
+            activity = sitHere(at: target.x)
+            return
+        }
+        guard target.surfaceID != floor.id, let goal = world.surface(id: target.surfaceID) else {
+            // 目的地是屏幕底部（或那扇窗口没了）：下地，走到窗口正下方
+            activity = id == floor.id ? sitHere(at: target.x) : dropToFloor()
+            return
+        }
+        if let hop = hopPlan(from: here, at: pos.x, to: goal, k: k, jitter: 0.5) {
+            startHop(hop, from: here, to: goal, k: k, run: true)
+            return
+        }
+        if id == floor.id {
+            let reachable = world.walls.filter {
+                $0.surfaceID == goal.id && max($0.minY, here.y) - here.y <= Self.maxJumpUp * k * 0.8
+            }
+            if let wall = reachable.min(by: { abs($0.x - pos.x) < abs($1.x - pos.x) }) {
+                startClimb(wall, from: here, k: k, run: true)
+                return
+            }
+        } else if let (next, hop) = nextHop(from: here, at: pos.x, world: world, isGoal: { $0.id == goal.id }) {
+            startHop(hop, from: here, to: next, k: k, run: true)
+            return
+        }
+        // 上不去那扇窗口：在它正下方的屏幕底边举牌
+        activity = id == floor.id ? sitHere(at: target.x) : dropToFloor()
+    }
+
     // MARK: Planning
 
-    private mutating func startTrip(world: RoamWorld) {
+    /// - Parameter toFloor: 一定先跳到地上（送牌时不随机跳上旁边的窗口，路线交给送牌规划）
+    private mutating func startTrip(world: RoamWorld, toFloor: Bool = false) {
         isHome = false
         returning = false
         returningUrgently = false
@@ -835,7 +953,7 @@ struct RoamDirector {
                   !world.homeRect.contains(CGPoint(x: landX, y: top.y + 20 * k)) else { return nil }
             return (top.id, CGPoint(x: landX, y: top.y))
         }
-        if !landings.isEmpty, forcedHops > 0 || random() < 0.5 {
+        if !toFloor, !landings.isEmpty, forcedHops > 0 || random() < 0.5 {
             let pick = landings[Int(random() * Double(landings.count)) % landings.count]
             activity = .crouch(remaining: 0.35, then: makeJump(from: seat, to: pick.at, surface: pick.id, k: k))
             return
@@ -1013,6 +1131,12 @@ struct RoamDirector {
 
     /// 回家路线：只踩窗口顶，最多跳几下能到一个够得着座位的窗口。返回第一跳；找不到返回 nil（那就先下地）
     private func nextHopHome(from here: RoamSurface, at x: CGFloat, world: RoamWorld) -> (RoamSurface, Hop)? {
+        nextHop(from: here, at: x, world: world) { seatLaunchX(from: $0, world: world) != nil }
+    }
+
+    /// 只踩窗口顶，最多跳 4 下到达满足 isGoal 的那张桌子：返回第一跳
+    private func nextHop(from here: RoamSurface, at x: CGFloat, world: RoamWorld,
+                         isGoal: (RoamSurface) -> Bool) -> (RoamSurface, Hop)? {
         let k = world.scale
         let tops = world.windowTops.filter { $0.width > 90 * k }
         // 广度优先：(当前面, 落脚 x, 第一跳)
@@ -1024,7 +1148,7 @@ struct RoamDirector {
                 for target in tops where !seen.contains(target.id) {
                     guard let hop = hopPlan(from: surface, at: at, to: target, k: k, jitter: 0.5) else { continue }
                     let firstHop = first ?? (target, hop)
-                    if seatLaunchX(from: target, world: world) != nil { return firstHop }
+                    if isGoal(target) { return firstHop }
                     seen.insert(target.id)
                     next.append((target, hop.landX, firstHop))
                 }
@@ -1041,6 +1165,8 @@ struct RoamDirector {
     private var pendingAim: CGFloat = 0.26
 
     private mutating func beginReturn(world: RoamWorld, run: Bool) {
+        delivering = false
+        if activity == .sign { activity = nil }
         returning = true
         returningUrgently = returningUrgently || run
         budget = 0
@@ -1172,6 +1298,7 @@ struct RoamDirector {
         resumeStalk = false
         pendingClimb = nil
         wallJumpClimb = nil
+        delivering = false
         cooldown = 60 + CGFloat(random() * 60)
         checkTimer = 5
     }

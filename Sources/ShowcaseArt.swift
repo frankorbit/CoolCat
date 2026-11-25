@@ -142,6 +142,69 @@ enum ShowcaseArt {
         write(renderGallop(english: true), to: dir + "/gallop.en.png")
         write(renderRoamPlay(english: false), to: dir + "/roam-play.png")
         write(renderRoamPlay(english: true), to: dir + "/roam-play.en.png")
+        write(renderAgentSign(english: false), to: dir + "/agent-sign.png")
+        write(renderAgentSign(english: true), to: dir + "/agent-sign.en.png")
+    }
+
+    // MARK: Agent sign
+
+    /// 举牌提醒配图：左边坐在你正在看的窗口顶上举牌，右边窗口顶上不去就在它正下方的屏幕底边举
+    private static func renderAgentSign(english: Bool) -> CGImage? {
+        let width: CGFloat = 1280, height: CGFloat = 460
+        guard let ctx = makeContext(width: width, height: height) else { return nil }
+        CatSettings.shared.accessory = .none
+        ctx.setFillColor(rgb(0xFAFAFC).cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let k: CGFloat = 0.9
+        let panels: [(rect: CGRect, title: String, subtitle: String, colors: (NSColor, NSColor))] = [
+            (CGRect(x: 40, y: 40, width: 590, height: 380),
+             english ? "Holds up a sign on your window" : "跑到你正在看的窗口上举牌",
+             english ? "An agent needs approval, you idle for 3 s: it sits atop your frontmost window"
+                     : "Claude Code 等你批准、你 3 秒没打字：小猫跑到最前面那扇窗口顶上坐下举牌",
+             (rgb(0xE8F1FF), rgb(0xF3E8FF))),
+            (CGRect(x: 650, y: 40, width: 590, height: 380),
+             english ? "Or right below it" : "上不去就在正下方举",
+             english ? "Too tall to reach? It sits right below. Approve or type and it heads home"
+                     : "窗口顶太高够不着：坐在它正下方的屏幕底边举；你一批准或开始打字就回家",
+             (rgb(0xFFF1E6), rgb(0xFFE8EE)))
+        ]
+        for panel in panels {
+            fillGradient(panel.rect, radius: 18, colors: panel.colors, in: ctx)
+            text(panel.title, at: CGPoint(x: panel.rect.minX + 22, y: panel.rect.minY + 18), size: 20, weight: .heavy,
+                 color: rgb(0x1D1D24), in: ctx)
+            text(panel.subtitle, at: CGPoint(x: panel.rect.minX + 22, y: panel.rect.minY + 50), size: 13,
+                 weight: .regular, color: rgb(0x6B6E78), in: ctx, maxWidth: panel.rect.width - 44)
+            let floorY = panel.rect.maxY - 30
+            ctx.setStrokeColor(NSColor(calibratedWhite: 0, alpha: 0.12).cgColor)
+            ctx.setLineWidth(1.5)
+            ctx.move(to: CGPoint(x: panel.rect.minX + 18, y: floorY))
+            ctx.addLine(to: CGPoint(x: panel.rect.maxX - 18, y: floorY))
+            ctx.strokePath()
+        }
+        // 左：窗口顶上举牌
+        let left = panels[0].rect
+        let window = CGRect(x: left.minX + 70, y: left.maxY - 130, width: 450, height: 100)
+        drawFakeWindow(window, title: english ? "Browser" : "浏览器", in: ctx)
+        PetLibrary.shared.select(nil)
+        CatSettings.shared.coatTheme = .siamese
+        CatSettings.shared.eyeTheme = .siameseBlue
+        let approval = english ? "Claude Code needs approval" : "Claude Code 等你批准"
+        drawWalker(.init(pose: .sign, phase: 0, facing: 1, air: 0, time: 0.4, blink: false, signLines: [approval, "CoolCat"]),
+                   feet: CGPoint(x: window.midX - 20, y: window.minY), k: k, alpha: 1, in: ctx)
+        // 右：窗口太高，在正下方的屏幕底边举
+        let right = panels[1].rect
+        ctx.saveGState()
+        ctx.addPath(CGPath(roundedRect: right, cornerWidth: 18, cornerHeight: 18, transform: nil))
+        ctx.clip()
+        let tall = CGRect(x: right.minX + 40, y: right.minY + 96, width: 510, height: 150)
+        drawFakeWindow(tall, title: english ? "Terminal" : "终端", in: ctx)
+        ctx.restoreGState()
+        PetLibrary.shared.select(PetLibrary.shared.pet(id: "orange-tabby"))
+        let reply = english ? "Codex is waiting for you" : "Codex 等你回复"
+        drawWalker(.init(pose: .sign, phase: 0, facing: -1, air: 0, time: 1.1, blink: false, signLines: [reply, "api-server"]),
+                   feet: CGPoint(x: tall.midX + 20, y: right.maxY - 30), k: k, alpha: 1, in: ctx)
+        PetLibrary.shared.select(nil)
+        return ctx.makeImage()
     }
 
     // MARK: Roam play

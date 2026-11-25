@@ -32,6 +32,8 @@ extension CatRenderer {
         var hunting = false
         /// 圣诞季：戴圣诞帽
         var santaHat = false
+        /// 举牌提醒：牌子上的字（第一行粗体，第二行小字）
+        var signLines: [String] = []
     }
 
     /// 侧身小猫的配色：从主画面的取色工具里推出来，保证和坐着时是同一只猫
@@ -139,10 +141,17 @@ extension CatRenderer {
         }
         switch pose.pose {
         case .sit: drawSittingWalker(in: ctx, pose: pose, pal: pal)
+        case .sign:
+            drawSittingWalker(in: ctx, pose: pose, pal: pal)
+            drawSignStick(in: ctx, pose: pose, pal: pal)
         case .curl: drawCurledWalker(in: ctx, pose: pose, pal: pal)
         default: drawMovingWalker(in: ctx, pose: pose, pal: pal)
         }
         ctx.restoreGState()
+        // 牌子上的字不跟着朝向翻转
+        if pose.pose == .sign {
+            drawSignBoard(in: ctx, pose: pose)
+        }
         // Zzz 不跟着朝向翻转（字母不能镜像）
         if pose.pose == .curl && pose.asleep {
             let head = curledHeadCenter(curl: pose.curl)
@@ -206,7 +215,7 @@ extension CatRenderer {
             lift = 31 + sin(p * 2) * 1.2
             bodyH = 22
             stretch = 1.1
-        case .stand, .sit, .peek, .curl:
+        case .stand, .sit, .peek, .curl, .sign:
             lift += sin(pose.time * 2.1) * 0.8
         }
         let center = CGPoint(x: feet.x - 6, y: ground - lift)
@@ -1153,6 +1162,78 @@ extension CatRenderer {
             ctx.setLineWidth(1.7)
             ctx.addPath(z); ctx.strokePath()
         }
+        ctx.restoreGState()
+    }
+
+    // MARK: Sign
+
+    /// 举牌：木棍立在鼻尖前面，一只前爪从胸口伸出来攥着（画布坐标，朝右）
+    static let signStickX: CGFloat = 148
+    static let signBoardBottom: CGFloat = 40
+
+    private static func drawSignStick(in ctx: CGContext, pose: WalkerPose, pal: WalkerPalette) {
+        let sway = sin(pose.time * 3) * 2
+        ctx.saveGState()
+        ctx.setStrokeColor(rgb(0x8B5A2B).cgColor)
+        ctx.setLineWidth(3.2)
+        ctx.setLineCap(.round)
+        ctx.move(to: CGPoint(x: signStickX, y: 150))
+        ctx.addLine(to: CGPoint(x: signStickX + sway, y: signBoardBottom))
+        ctx.strokePath()
+        // 前臂：从胸口伸出来，爪子攥在木棍上（胸口高度，不挡脸）
+        let limb = CGFloat(pet?.shape.limbWidth ?? 1).squareRoot()
+        let arm = taperedLimb(from: CGPoint(x: 104, y: 136), control: CGPoint(x: 126, y: 146),
+                              to: CGPoint(x: signStickX - 5, y: 132), startWidth: 13 * limb, endWidth: 9 * limb)
+        let paw = CGPath(ellipseIn: CGRect(x: signStickX - 7, y: 126, width: 14, height: 12), transform: nil)
+        ctx.setFillColor(pal.legs.cgColor)
+        ctx.addPath(arm)
+        ctx.fillPath()
+        ctx.setFillColor(pal.paws.cgColor)
+        ctx.addPath(paw)
+        ctx.fillPath()
+        strokeOuterOutline(in: ctx, [arm, paw], color: pal.outline, width: 1.3)
+        ctx.restoreGState()
+    }
+
+    /// 牌子：米色小木牌 + 两行字，轻轻晃着引人注意。宽度按字算，不出画布
+    private static func drawSignBoard(in ctx: CGContext, pose: WalkerPose) {
+        guard !pose.signLines.isEmpty else { return }
+        let fonts: [NSFont] = [.systemFont(ofSize: 10.5, weight: .bold), .systemFont(ofSize: 9, weight: .medium)]
+        let colors: [NSColor] = [rgb(0x3A2A1A), rgb(0x7A6A5A)]
+        let lines = pose.signLines.prefix(2).enumerated().map { i, text in
+            NSAttributedString(string: text, attributes: [.font: fonts[i], .foregroundColor: colors[i]])
+        }
+        let width = min(walkerCanvas.width - 8, (lines.map { $0.size().width }.max() ?? 0) + 16)
+        let height = lines.reduce(8) { $0 + $1.size().height }
+        let stickX = pose.facing < 0 ? walkerCanvas.width - signStickX : signStickX
+        let centerX = min(max(stickX, width / 2 + 4), walkerCanvas.width - width / 2 - 4)
+        let board = CGRect(x: centerX - width / 2, y: signBoardBottom - height, width: width, height: height)
+        ctx.saveGState()
+        // 以木棍顶端为轴轻轻晃
+        let pivot = CGPoint(x: stickX, y: signBoardBottom)
+        ctx.translateBy(x: pivot.x, y: pivot.y)
+        ctx.rotate(by: sin(pose.time * 3) * 0.04)
+        ctx.translateBy(x: -pivot.x, y: -pivot.y)
+        let path = CGPath(roundedRect: board, cornerWidth: 5, cornerHeight: 5, transform: nil)
+        let shadow = NSColor(calibratedWhite: 0, alpha: 0.25).cgColor
+        ctx.setShadow(offset: CGSize(width: 0, height: 1.5), blur: 3, color: shadow)
+        ctx.setFillColor(rgb(0xFFF6E2).cgColor)
+        ctx.addPath(path)
+        ctx.fillPath()
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
+        ctx.setStrokeColor(rgb(0x8B5A2B).cgColor)
+        ctx.setLineWidth(1.6)
+        ctx.addPath(path)
+        ctx.strokePath()
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        var y = board.minY + 4
+        for line in lines {
+            let size = line.size()
+            line.draw(at: CGPoint(x: board.midX - size.width / 2, y: y))
+            y += size.height
+        }
+        NSGraphicsContext.restoreGraphicsState()
         ctx.restoreGState()
     }
 }

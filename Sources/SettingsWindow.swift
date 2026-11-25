@@ -25,7 +25,7 @@ protocol SettingsHost: AnyObject {
 }
 
 enum SettingsDemo {
-    case typing, life, meeting, claude, codex, gift, roam, peek, nap, hop, holiday
+    case typing, life, meeting, claude, codex, gift, roam, peek, nap, hop, holiday, sign
 }
 
 // MARK: - Store
@@ -734,6 +734,14 @@ private struct InteractionPane: View {
                           subtitle: "30 秒没打字就自己跳下键盘溜达、跳上窗口顶、躲到屏幕边偷看；"
                               + "你一打字就跑回来，Claude / Codex 等你批准时也会回来提醒；放歌时守在键盘前跟着节奏摇",
                           isOn: store.binding(\.roaming))
+                RowDivider()
+                ToggleRow(title: "举牌提醒 🙋",
+                          subtitle: "Claude Code / Codex 等你批准、你又在看别的窗口时，小猫跑到那扇窗口顶上举牌；你一回应它就回家",
+                          isOn: store.binding(\.agentSign))
+                RowDivider()
+                ActionRow(title: "举牌预览", subtitle: "假装 agent 等你批准 20 秒，看小猫跑去你最前面的窗口", button: "举牌") {
+                    store.host.runDemo(.sign)
+                }
                 RowDivider()
                 ActionRow(title: "现在去溜达一圈", subtitle: "预览用：不等闲置，立刻出门（敲一下键盘就回来）", button: "出发") {
                     store.host.runDemo(.roam)

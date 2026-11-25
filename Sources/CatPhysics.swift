@@ -124,6 +124,10 @@ final class CatSettings {
     var cursorPlay: Bool {
         didSet { UserDefaults.standard.set(cursorPlay, forKey: "CoolCat.CursorPlay") }
     }
+    /// 举牌提醒：Claude Code / Codex 等你批准时，小猫跑到你正在看的窗口上举牌
+    var agentSign: Bool {
+        didSet { UserDefaults.standard.set(agentSign, forKey: "CoolCat.AgentSign") }
+    }
     /// 满屏漫游：闲着时下座位溜达，一打字就跑回来
     var roaming: Bool {
         didSet { UserDefaults.standard.set(roaming, forKey: "CoolCat.Roaming") }
@@ -215,6 +219,7 @@ final class CatSettings {
         lifeNight = d.object(forKey: "CoolCat.LifeNight") as? Bool ?? true
         holidayDecor = d.object(forKey: "CoolCat.HolidayDecor") as? Bool ?? true
         cursorPlay = d.object(forKey: "CoolCat.CursorPlay") as? Bool ?? true
+        agentSign = d.object(forKey: "CoolCat.AgentSign") as? Bool ?? true
         accessory = CatAccessory(rawValue: d.string(forKey: "CoolCat.Accessory") ?? "") ?? .none
         customPetID = d.string(forKey: "CoolCat.CustomPetID")
         roaming = d.object(forKey: "CoolCat.Roaming") as? Bool ?? true
@@ -509,6 +514,9 @@ final class CatPhysics {
 
     /// 在听歌（戴着耳机）：和戴耳机用的是同一个判断，设置里关掉「听歌戴耳机」就不算
     var isEnjoyingMusic: Bool { isListening && CatSettings.shared.musicHeadphones }
+
+    /// 在开会（麦克风 / 摄像头开着）：举牌提醒也不出门
+    var isInMeeting: Bool { micActive || cameraActive }
 
     /// Claude / Codex 在等你（批准权限、回复）：不自己出门；在外面溜达时一出现就跑回来提醒你
     var agentNeedsYou: Bool { claudeStatusIsWaiting }

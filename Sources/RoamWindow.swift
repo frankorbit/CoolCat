@@ -102,6 +102,29 @@ enum RoamSurfaceScanner {
         scan(on: screen, catHeight: catHeight, minWidth: minWidth).surfaces
     }
 
+    /// 小猫这块屏幕上最靠前的普通窗口（多半是你正在看的那扇）：只读位置。跳过小猫自己的窗口（设置窗口）
+    static func frontmostWindow(on screen: NSScreen) -> (id: Int, rect: CGRect)? {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]],
+              let primary = NSScreen.screens.first else { return nil }
+        let myPID = Int(ProcessInfo.processInfo.processIdentifier)
+        for info in raw {
+            guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  ((info[kCGWindowAlpha as String] as? Double) ?? 1) > 0.05,
+                  let b = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let id = info[kCGWindowNumber as String] as? Int else { continue }
+            let cg = CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0)
+            guard cg.width >= 120, cg.height >= 80 else { continue }
+            // 小猫自己的设置窗口不算，看它后面那一扇（在设置里点「举牌预览」时最前面就是设置窗口）
+            guard (info[kCGWindowOwnerPID as String] as? Int) != myPID else { continue }
+            let rect = CGRect(x: cg.minX, y: primary.frame.maxY - cg.maxY, width: cg.width, height: cg.height)
+            // 最前面的窗口在别的屏幕上（小猫过不去）：看小猫这块屏幕上最靠前的那扇，免得目标忽有忽无
+            guard screen.frame.contains(CGPoint(x: rect.midX, y: rect.midY)) else { continue }
+            return (id, rect)
+        }
+        return nil
+    }
+
     /// 侧边被前面的窗口挡住了三成以上：不爬（看起来像爬在别的窗口上）
     private static func sideCovered(x: CGFloat, from bottom: CGFloat, to top: CGFloat, by fronts: [CGRect]) -> Bool {
         var covered: CGFloat = 0

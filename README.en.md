@@ -22,7 +22,7 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
 
 - 🎧 **Dances to your music** — headphones on when a music player is playing, a vertical LED spectrum wall behind the cat, real beat tracking via a system audio tap (macOS 14.2+) aligned to your output latency, with tap-along calibration. Moves hit the beat and accent the downbeat ([more](#-hitting-the-beat)). Strong beats get head-bobs, calm songs get slow sways. While music plays it stays at the keyboard instead of wandering off.
 - 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, gallops around like a cheetah, treats window tops like tables to jump between (climbing the frame when they're too high), chases your cursor, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
-- 🤖 **Claude Code integration** — one-click hooks; a bubble shows *project · action · elapsed* per session, the cat waves when a session needs your approval and throws confetti when it is done.
+- 🤖 **Claude Code integration** — one-click hooks; a bubble shows *project · action · elapsed* per session, the cat waves when a session needs your approval — and if you're looking at another window, [holds up a sign](#-agent-sign) on it — and throws confetti when it is done.
 - ⌨️ **Codex integration** — one-click hooks in `~/.codex/hooks.json` (trust them once via `/hooks` in Codex); Codex sessions share the bubble with Claude Code, marked by a blue spinner.
 - 🎙 **Meeting mode** — headset when the mic is on, a "shh" when you type too loudly, a quick face wash before the camera turns on.
 - 🌙 **Life companion** — nightcap late at night, morning coffee, sleepy on low battery, a water reminder after 50 minutes of work.
@@ -56,9 +56,24 @@ After 30 seconds without typing the cat leaves its keyboard and wanders around i
   <img src="assets/coolcat/gallop.en.png" alt="Gallop cycle: extended and gathered flight" />
 </p>
 
-- **Comes back when needed** — typing sends it running home (a napping cat wakes with a start); it stays home during meetings or snacks, sticks to the keyboard dancing along while music plays (and gallops back if a song starts mid-walk), and comes back to remind you when Claude Code / Codex is waiting for your approval. After 10 minutes away from the keyboard it stops wandering and naps at its seat.
+- **Comes back when needed** — typing sends it running home (a napping cat wakes with a start); it stays home during meetings or snacks, sticks to the keyboard dancing along while music plays (and gallops back if a song starts mid-walk), and comes back to remind you when Claude Code / Codex is waiting for your approval (or, if you're busy in another window, runs over and [holds up a sign](#-agent-sign)). After 10 minutes away from the keyboard it stops wandering and naps at its seat.
 
 Turn roaming off under *Settings → Interaction*, where preview buttons trigger a walk, a peek, window hops or a nap on demand.
+
+## 🙋 Agent sign
+
+<p align="center">
+  <img src="assets/coolcat/agent-sign.en.png" alt="Agent sign: holds up a sign on your frontmost window, or right below it" />
+</p>
+
+When Claude Code or Codex stops to wait for your approval or reply while you're reading docs in another window and haven't typed for 3 seconds, the cat hops off the keyboard, runs to the frontmost window on its screen, sits on top of it and holds up a little sign reading "Claude Code needs approval" with the project name.
+
+- **Getting there** — it jumps if it can, climbs the frame when the window is too tall, and sits on the screen edge right below the window when there's no room on top (a maximized window, say). Switch windows and it moves over to the new one.
+- **Knows when to stop** — once you approve (or the agent stops waiting) it puts the sign down and strolls home; start typing on the way and it takes that as "I'm on it" and won't come back for that wait.
+- **Stays polite** — it skips this during meetings but still goes while music plays (an agent waiting on you beats dancing). A napping cat wakes with a start first.
+- It only reads window positions and sizes, never their contents, and needs no screen-recording permission.
+
+Turn it off under *Settings → Interaction*; the *Sign preview* button pretends an agent is waiting for 20 seconds so you can see it right away.
 
 ## 🎚 Hitting the beat
 

@@ -1002,9 +1002,18 @@ func renderWalkPreviewSheet(to path: String) {
         ("偷看", .init(pose: .peek, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, peekEdge: .bottom, peekReveal: 1,
                      santaHat: true))
     ]
+    // COOLCAT_WALK_SET=sign：举牌提醒
+    let signPoses: [(String, CatRenderer.WalkerPose)] = [
+        ("举牌（朝右）", .init(pose: .sign, phase: 0, facing: 1, air: 0, time: 0.3, blink: false,
+                         signLines: ["Claude Code 等你批准", "CoolCat"])),
+        ("举牌（朝左）", .init(pose: .sign, phase: 0, facing: -1, air: 0, time: 0.6, blink: false,
+                         signLines: ["Codex 等你回复", "today-platform-ios"])),
+        ("举牌 + 圣诞帽", .init(pose: .sign, phase: 0, facing: 1, air: 0, time: 0.9, blink: false, santaHat: true,
+                          signLines: ["Claude Code 等你批准", "Faceplant"]))
+    ]
     let set = ProcessInfo.processInfo.environment["COOLCAT_WALK_SET"]
     let poses = set == "nap" ? napPoses : (set == "run" ? runPoses : (set == "play" ? playPoses
-        : (set == "holiday" ? holidayPoses : walkPoses)))
+        : (set == "holiday" ? holidayPoses : (set == "sign" ? signPoses : walkPoses))))
     let cw = Int(CatRenderer.walkerCanvas.width), ch = Int(CatRenderer.walkerCanvas.height), scale = 2
     let labelW = 70
     guard let ctx = CGContext(

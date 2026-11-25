@@ -50,6 +50,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--beat-log"), i + 1 < CommandLine.arguments.count {
             overlayWindow.catView.physics.beatLogPath = CommandLine.arguments[i + 1]
         }
+        // `--sign-demo`：启动后假装 agent 等你批准 12 秒，看小猫跑去举牌
+        if CommandLine.arguments.contains("--sign-demo") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.signDemoUntil = CACurrentMediaTime() + 20
+            }
+        }
         // `--holiday-preview`：启动后预览 30 秒节日装扮（圣诞帽、小雪、圣诞礼物）
         if CommandLine.arguments.contains("--holiday-preview") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -463,6 +469,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 最近一次跳台扫描（设置里显示有几处能跳、为什么不能跳）
     private var roamScan = RoamScanReport()
 
+    // MARK: 举牌提醒
+
+    /// 这次等待已经送过牌、你也回应过了：不再反复跑过去（等 agent 不等了再重置）
+    private var signEpisodeDone = false
+    /// 你正在看的窗口（每 0.5 秒看一次）
+    private var frontWindow: (id: Int, rect: CGRect)?
+    private var lastFrontScan: CFTimeInterval = 0
+    /// 设置里「举牌预览」：到这个时刻为止当作 agent 在等你
+    private var signDemoUntil: CFTimeInterval = 0
+    /// 牌子上的字
+    private var signLines: [String] = []
+
+    /// agent 等你批准、你 3 秒没打字（多半在看别的窗口）：小猫去你最前面的窗口顶上举牌；
+    /// 窗口顶站不上去就在它正下方的屏幕底边举。每次等待只送一次，开会时不去
+    private func updateSignTarget(screen: NSScreen, keyIdle: Double, now: CFTimeInterval) -> RoamSignTarget? {
+        let physics = overlayWindow.catView.physics
+        let demo = now < signDemoUntil
+        let waiting = physics.agentNeedsYou || demo
+        guard waiting else {
+            signEpisodeDone = false
+            frontWindow = nil
+            return nil
+        }
+        // 送牌路上你打字了：你已经在回应了，这次等待不再送
+        if roam.delivering && keyIdle < 0.4 && !demo { signEpisodeDone = true }
+        guard CatSettings.shared.agentSign, !signEpisodeDone, !physics.isInMeeting,
+              demo || keyIdle >= 3 || roam.delivering else { return nil }
+        if now - lastFrontScan > 0.5 {
+            let wasNone = frontWindow == nil && !roam.delivering
+            lastFrontScan = now
+            frontWindow = RoamSurfaceScanner.frontmostWindow(on: screen)
+            // 刚开始送：现扫一遍跳台，路线用最新的窗口位置
+            if wasNone { rescanRoamSurfaces(on: screen) }
+        }
+        guard let front = frontWindow else { return nil }
+        if demo {
+            signLines = ["Claude Code 等你批准", "举牌提醒预览"]
+        } else if let line = physics.claudeLines.first(where: { $0.kind == .waiting }) {
+            signLines = ["\(line.agent.displayName) \(line.detail)", line.project]
+        }
+        let k = CatSettings.shared.scale * CatRenderer.walkerArtScale
+        // 窗口上沿的 id = 窗口号 × 8 + 段号 + 1：挑这扇窗口离中间最近的那段
+        let segments = roamScan.surfaces.filter { ($0.id - 1) / 8 == front.id }
+        let offCenter = { (seg: RoamSurface) in abs((seg.minX + seg.maxX) / 2 - front.rect.midX) }
+        if let seg = segments.min(by: { offCenter($0) < offCenter($1) }) {
+            let x = min(max(front.rect.midX, seg.minX + 40 * k), seg.maxX - 40 * k)
+            return RoamSignTarget(surfaceID: seg.id, x: x)
+        }
+        let visible = screen.visibleFrame
+        return RoamSignTarget(surfaceID: 0, x: min(max(front.rect.midX, visible.minX + 40 * k), visible.maxX - 40 * k))
+    }
+
     private func rescanRoamSurfaces(on screen: NSScreen) {
         // 侧身小猫放大后站着约 150 画布点高
         let walkerK = CatSettings.shared.scale * CatRenderer.walkerArtScale
@@ -488,14 +546,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 启动后还没按过键：从启动那一刻算闲置，免得被当成「人早就走了」而一直不出门
         if roamClockStart == 0 { roamClockStart = now }
         let keyIdle = now - max(engine.lastKeyActivityTime, roamClockStart)
+        let signTarget = updateSignTarget(screen: screen, keyIdle: keyIdle, now: now)
         let world = RoamWorld(
             floor: RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2),
             windowTops: roamSurfaces,
             seat: CGPoint(x: home.minX + CatPhysics.seatAnchor.x * k, y: home.maxY - CatPhysics.seatAnchor.y * k),
             homeRect: home,
             keyIdle: keyIdle,
-            userActive: keyIdle < 0.4,
-            mustStayHome: physics.prefersStayingHome,
+            // 举牌预览期间不管打字：你可能正在别处打字，预览也要看得到
+            userActive: keyIdle < 0.4 && now >= signDemoUntil,
+            // 送牌时只有开会才拦得住（听歌时也去：agent 等你比跟着歌摇更要紧）
+            mustStayHome: signTarget != nil ? physics.isInMeeting : physics.prefersStayingHome,
             wanderAllowed: settings.roaming && !physics.agentNeedsYou,
             needsAttention: physics.agentNeedsYou,
             // 走路速度、跳跃距离跟着侧身小猫的体型放大
@@ -504,15 +565,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 光标逗猫：只看小猫这块屏幕上的光标；设置里关了就当没有
             cursor: settings.cursorPlay && screen.frame.contains(NSEvent.mouseLocation) ? NSEvent.mouseLocation : nil,
             cursorSpeed: hypot(engine.mouseVelocity.dx, engine.mouseVelocity.dy),
-            walls: roamScan.walls
+            walls: roamScan.walls,
+            signTarget: signTarget
         )
         if let path = roamLogPath, now - lastRoamLog > 0.5 {
             lastRoamLog = now
-            let line = String(format: "%.1f home=%d pose=%@ pos=(%.0f,%.0f) surf=%@ seat=(%.0f,%.0f) homeFrame=%@ visible=%@ tops=%d win=%@ stay=%d idle=%.0f fp=%@ act=%@ why=%@ scan=%@\n",
+            let line = String(format: "%.1f home=%d pose=%@ pos=(%.0f,%.0f) surf=%@ seat=(%.0f,%.0f) homeFrame=%@ visible=%@ tops=%d win=%@ stay=%d idle=%.0f fp=%@ act=%@ why=%@ dlv=%d scan=%@\n",
                               now, roam.isHome ? 1 : 0, "\(roam.pose)", roam.pos.x, roam.pos.y, "\(roam.surfaceID.map(String.init) ?? "-")",
                               world.seat.x, world.seat.y, NSStringFromRect(home), NSStringFromRect(visible), roamSurfaces.count,
                               NSStringFromRect(roamWindow?.frame ?? .zero), world.mustStayHome ? 1 : 0, keyIdle, "\(roam.pendingForcedPeek.map { "\($0)" } ?? "-")", "\(roam.activity.map { "\($0)" } ?? "-")".prefix(40).description,
-                              physics.stayHomeReason ?? "-", roamScan.summary)
+                              physics.stayHomeReason ?? "-", roam.delivering ? 1 : 0, roamScan.summary)
             if let h = FileHandle(forWritingAtPath: path) {
                 h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
             } else {
@@ -546,7 +608,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             time: physics.time, blink: physics.time.truncatingRemainder(dividingBy: 4.1) < 0.13,
             peekEdge: roam.peekEdge, peekReveal: roam.peekReveal, sink: roam.sinkDepth,
             curl: roam.napCurl, asleep: roam.napAsleep, hunting: roam.isPlaying,
-            santaHat: physics.activeHoliday.christmas
+            santaHat: physics.activeHoliday.christmas, signLines: signLines
         )
         // 屏幕边换算到画布坐标：走出屏幕、偷看时屏幕外的部分不画
         if let c = roam.clipEdge {
@@ -1209,6 +1271,7 @@ extension AppDelegate: SettingsHost {
         case .codex: runAgentDemo(.codex)
         case .gift: physics.offerGift()
         case .holiday: physics.previewHoliday()
+        case .sign: signDemoUntil = CACurrentMediaTime() + 20
         case .roam, .peek, .nap, .hop:
             // 正在做只能在座位上做的事：提示一下，不然点了像没反应
             if let reason = physics.stayHomeReason {
