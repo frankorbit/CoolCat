@@ -556,10 +556,10 @@ enum ShowcaseArt {
         PetLibrary.shared.select(PetLibrary.shared.pet(id: "orange-tabby"))
         ctx.setFillColor(rgb(0xFAFAFC).cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        text(english ? "Gallops like a cheetah" : "像猎豹一样飞奔", at: CGPoint(x: 40, y: 26), size: 26, weight: .heavy,
+        text(english ? "A bouncy chibi on the move" : "Q 版小猫满屏跑", at: CGPoint(x: 40, y: 26), size: 26, weight: .heavy,
              color: rgb(0x1D1D24), in: ctx)
-        text(english ? "A rotary gallop with a flexing spine and two flight phases — head level, tail streaming back"
-                     : "旋转式飞奔：脊柱一伸一弓、两次腾空，头保持水平，尾巴往后拉直当平衡杆",
+        text(english ? "Planted four-beat walk, a bouncy sprint with ears pinned back, a skidding stop and smooth turns"
+                     : "3/4 侧脸大头：走路四拍脚掌贴地，跑起来轻快大跳、耳朵往后压，到地方压低身子急刹，转身顺滑过渡",
              at: CGPoint(x: 40, y: 64), size: 14, weight: .regular, color: rgb(0x6B6E78), in: ctx)
         let card = CGRect(x: 40, y: 98, width: width - 80, height: 212)
         fillGradient(card, radius: 18, colors: (rgb(0xFDF1E2), rgb(0xF6E3EE)), in: ctx)
@@ -568,27 +568,43 @@ enum ShowcaseArt {
         ctx.setLineWidth(1.5)
         ctx.move(to: CGPoint(x: card.minX + 20, y: ground)); ctx.addLine(to: CGPoint(x: card.maxX - 20, y: ground))
         ctx.strokePath()
-        let frames = 6
-        let step = (card.width - 40) / CGFloat(frames)
-        for i in 0..<frames {
+        // 分镜：走 → 飞奔三帧 → 急刹两帧 → 转身
+        typealias Frame = (pose: CatRenderer.WalkerPose, label: String?)
+        let frames: [Frame] = [
+            (.init(pose: .walk, phase: .pi / 2, facing: 1, air: 0, time: 0.3, blink: false, runBlend: 0, moveBlend: 1),
+             english ? "walk" : "走：脚掌贴地"),
+            (.init(pose: .run, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, runBlend: 1, moveBlend: 1), nil),
+            (.init(pose: .run, phase: 2 * .pi / 3, facing: 1, air: 0, time: 0.3, blink: false,
+                   runBlend: 1, moveBlend: 1),
+             english ? "bouncy sprint" : "飞奔：轻快大跳"),
+            (.init(pose: .run, phase: 4 * .pi / 3, facing: 1, air: 0, time: 0.3, blink: false,
+                   runBlend: 1, moveBlend: 1), nil),
+            (.init(pose: .land, phase: 0, facing: 1, air: 0, time: 0.3, blink: false,
+                   landProgress: 0.25, skidding: true),
+             english ? "skid stop" : "急刹：扬起小烟团"),
+            (.init(pose: .land, phase: 0, facing: 1, air: 0, time: 0.3, blink: false,
+                   landProgress: 0.65, skidding: true), nil),
+            (.init(pose: .walk, phase: .pi / 2, facing: -1, air: 0, time: 0.3, blink: false,
+                   moveBlend: 1, turnScale: -0.45),
+             english ? "turn" : "转身")
+        ]
+        let step = (card.width - 40) / CGFloat(frames.count)
+        for (i, frame) in frames.enumerated() {
             let feet = CGPoint(x: card.minX + 20 + step * (CGFloat(i) + 0.5), y: ground)
-            let pose = CatRenderer.WalkerPose(pose: .run, phase: CGFloat(i) / CGFloat(frames) * 2 * .pi, facing: 1,
-                                              air: 0, time: 0.3, blink: false)
             ctx.saveGState()
             ctx.translateBy(x: feet.x - CatRenderer.walkerFeet.x * 0.9, y: feet.y - CatRenderer.walkerFeet.y * 0.9)
             ctx.scaleBy(x: 0.9, y: 0.9)
-            CatRenderer.drawWalker(in: ctx, pose: pose)
+            CatRenderer.drawWalker(in: ctx, pose: frame.pose)
             ctx.restoreGState()
-            let label: String? = i == 0 ? (english ? "extended flight" : "伸展腾空")
-                : (i == 3 ? (english ? "gathered flight" : "收拢腾空") : nil)
-            if let label {
+            if let label = frame.label {
                 let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
                 let w = (label as NSString).size(withAttributes: [.font: font]).width + 20
                 let r = CGRect(x: feet.x - w / 2, y: ground + 12, width: w, height: 24)
                 ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.95).cgColor)
                 ctx.addPath(CGPath(roundedRect: r, cornerWidth: 12, cornerHeight: 12, transform: nil))
                 ctx.fillPath()
-                text(label, at: CGPoint(x: r.minX + 10, y: r.minY + 4), size: 13, weight: .semibold, color: rgb(0x33343C), in: ctx)
+                text(label, at: CGPoint(x: r.minX + 10, y: r.minY + 4), size: 13, weight: .semibold,
+                     color: rgb(0x33343C), in: ctx)
             }
         }
         return ctx.makeImage()

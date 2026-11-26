@@ -13,6 +13,7 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
 > 🙏 **Credits**: CoolCat is a heavily modified fork of **[chanke17/KuroCat](https://github.com/chanke17/KuroCat)**.
 > The full-state keyboard/mouse capture, 2.5D head tracking, four coat skins and the whole procedural CoreGraphics renderer come from the original project — huge thanks to [@chanke17](https://github.com/chanke17)!
 > The original is MIT licensed; this repository stays MIT and keeps the original copyright notice in [LICENSE](LICENSE).
+> The chibi redesign of the roaming cat (3/4 view, bouncy sprint, skid stops and smooth turns) is by [LuoYangcan](https://github.com/LuoYangcan) — thank you!
 
 ## ✨ Features
 
@@ -21,7 +22,7 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
 </p>
 
 - 🎧 **Dances to your music** — headphones on when a music player is playing, a vertical LED spectrum wall behind the cat, real beat tracking via a system audio tap (macOS 14.2+) aligned to your output latency, with tap-along calibration. Moves hit the beat and accent the downbeat ([more](#-hitting-the-beat)). Strong beats get head-bobs, calm songs get slow sways. While music plays it stays at the keyboard instead of wandering off.
-- 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, gallops around like a cheetah, treats window tops like tables to jump between (climbing the frame when they're too high), chases your cursor, knocks your pen off a window, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
+- 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, sprints around as a bouncy chibi, treats window tops like tables to jump between (climbing the frame when they're too high), chases your cursor, knocks your pen off a window, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
 - 🤖 **Claude Code integration** — one-click hooks; a bubble shows *project · action · elapsed* per session, the cat waves when a session needs your approval — and if you're looking at another window, [holds up a sign](#-agent-sign) on it — and throws confetti when it is done.
 - ⌨️ **Codex integration** — one-click hooks in `~/.codex/hooks.json` (trust them once via `/hooks` in Codex); Codex sessions share the bubble with Claude Code, marked by a blue spinner.
 - 🎙 **Meeting mode** — headset when the mic is on, a "shh" when you type too loudly, a quick face wash before the camera turns on.
@@ -57,10 +58,10 @@ After 30 seconds without typing the cat leaves its keyboard and wanders around i
 
 - **Peeking** — it hides past the bottom or side edge of the screen with only its head and two paws showing, clipped so it never spills onto another display.
 - **Naps** — it curls up into a ball (high window tops are its favourite), breathing slowly with floating Zzz. The longer you're idle, the sleepier it gets.
-- **Gallops like a cheetah** — running is a rotary gallop with a flexing spine and two flight phases per stride, head level and tail streaming back; every now and then it gets the zoomies and sprints off, braking with a crouch when it arrives.
+- **A bouncy chibi on the move** — while roaming it's a 3/4-view chibi with a big head, two big eyes, a pink nose and an ω mouth. It walks with a planted four-beat gait (no foot sliding) and sprints in light leaps two or three times a second, ears pinned back, head steady, an S-shaped tail streaming behind and a little dust and speed lines. Now and then it gets the zoomies, then skids to a crouching stop with squinting eyes and a puff of dust (stopping dead instead when it's about to jump, hold up a sign or set something down). Turns are smooth, it crouches before a jump, squashes on landing, and a soft shadow follows its feet.
 
 <p align="center">
-  <img src="assets/coolcat/gallop.en.png" alt="Gallop cycle: extended and gathered flight" />
+  <img src="assets/coolcat/gallop.en.png" alt="Chibi cat: walk, sprint, skid stop and turn" />
 </p>
 
 - **Comes back when needed** — typing sends it running home (a napping cat wakes with a start); it stays home during meetings or snacks, sticks to the keyboard dancing along while music plays (and gallops back if a song starts mid-walk), and comes back to remind you when Claude Code / Codex is waiting for your approval (or, if you're busy in another window, runs over and [holds up a sign](#-agent-sign)). After 10 minutes away from the keyboard it stops wandering and naps at its seat.
