@@ -270,7 +270,7 @@ struct RoamDirector {
         case walk(toX: CGFloat, run: Bool)
         case peek(Peek)
         case nap(Nap)
-        case crouch(remaining: CGFloat, then: Jump)
+        case crouch(t: CGFloat = 0, duration: CGFloat, then: Jump)
         case jump(Jump)
         /// 盯上光标：发现 → 潜伏 → 扭屁股；光标一甩就冲刺追
         case stalk(Stalk)
@@ -284,7 +284,7 @@ struct RoamDirector {
         case shake(Shake)
         /// 把叼来的东西放在窗口边上，一下下拨下去
         case knock(Knock)
-        case land(remaining: CGFloat)
+        case land(t: CGFloat = 0, duration: CGFloat, skidding: Bool = false)
         case sit(remaining: CGFloat)
         case fall(vy: CGFloat)
     }
@@ -296,6 +296,12 @@ struct RoamDirector {
     private(set) var gaitPhase: CGFloat = 0
     private(set) var surfaceID: Int?
     private(set) var activity: Activity?
+    /// 平滑水平速度（未缩放画布单位/秒）
+    private var currentSpeed: CGFloat = 0
+    /// 0...1 平滑跑步强度、移动强度、转身缩放
+    private(set) var runBlend: CGFloat = 0
+    private(set) var moveBlend: CGFloat = 0
+    private(set) var turnScale: CGFloat = 1
     /// 这次在积雪上连着走了多久（抖完爪子清零）
     private var snowWalk: CGFloat = 0
     /// 这一趟在雪里一共走了多久（甩完身子清零）
@@ -322,8 +328,8 @@ struct RoamDirector {
     static let napAfter: Double = 600
     /// 在地上溜达时突然狂奔的概率
     static let zoomiesChance = 0.25
-    static let walkSpeed: CGFloat = 70
-    static let runSpeed: CGFloat = 230
+    static let walkSpeed: CGFloat = 76
+    static let runSpeed: CGFloat = 240
     static let gravity: CGFloat = 1800
     /// 一跳最远能跳多远、多高（画布点，乘 scale）
     static let maxJumpDX: CGFloat = 420
@@ -447,6 +453,24 @@ struct RoamDirector {
         if case .jump(let j) = activity { return j.t }
         if case .pounce(let p) = activity { return p.jump.t }
         return 0.5
+    }
+
+    /// 蓄力下蹲进度 0...1
+    var crouchProgress: CGFloat {
+        if case .crouch(let t, let duration, _) = activity { return min(1, t / max(0.01, duration)) }
+        return 0
+    }
+
+    /// 落地/急刹进度 0...1
+    var landProgress: CGFloat {
+        if case .land(let t, let duration, _) = activity { return min(1, t / max(0.01, duration)) }
+        return 0
+    }
+
+    /// 是否处于急刹滑行
+    var isSkidding: Bool {
+        if case .land(_, _, let skidding) = activity { return skidding }
+        return false
     }
 
     /// 立刻出门溜达一圈（设置里的演示按钮）
@@ -589,24 +613,52 @@ struct RoamDirector {
 
         switch activity {
         case .walk(let toX, let run):
-            let speed = (run ? Self.runSpeed : Self.walkSpeed) * k
             let dx = toX - pos.x
-            facing = dx >= 0 ? 1 : -1
-            let step = min(abs(dx), speed * dt)
+            let dist = abs(dx)
+            let newFacing: CGFloat = dx >= 0 ? 1 : -1
+            if newFacing != facing {
+                currentSpeed *= 0.25
+                facing = newFacing
+            }
+            let distCanvas = dist / max(0.01, k)
+            let targetSpeed: CGFloat
+            let accel: CGFloat
+            let decel: CGFloat
+            if run {
+                targetSpeed = (!returning && distCanvas < 48)
+                    ? max(Self.runSpeed * 0.45, Self.runSpeed * (distCanvas / 48))
+                    : Self.runSpeed
+                accel = 1100
+                decel = 900
+            } else {
+                targetSpeed = distCanvas < 18
+                    ? max(Self.walkSpeed * 0.35, Self.walkSpeed * (distCanvas / 18))
+                    : Self.walkSpeed
+                accel = 520
+                decel = 480
+            }
+            if currentSpeed < targetSpeed {
+                currentSpeed = min(targetSpeed, currentSpeed + accel * dt)
+            } else {
+                currentSpeed = max(targetSpeed, currentSpeed - decel * dt)
+            }
+            let step = min(dist, currentSpeed * k * dt)
             pos.x += step * facing
-            // 一个步态周期：走路约 40 个画布点；飞奔一步跨得远（约 75），步频约 3 次/秒，和真猫差不多
-            gaitPhase += step / ((run ? 75 : 40) * k) * .pi * 2
+            // 飞奔步幅约 88 点（~2.7 次轻快大跳/秒），走路步幅约 44 点
+            gaitPhase += step / ((run ? 88 : 44) * k) * .pi * 2
             if let id = surfaceID, world.snowySurfaces.contains(id) {
                 snowWalk += dt
                 snowTrip += dt
             }
             if abs(toX - pos.x) < 0.5 {
-                // 疯跑到地方：压低身子急刹一下（往家跑时不刹，直接接着跳）
-                activity = run && !returning ? .land(remaining: 0.3) : nil
+                // 疯跑到地方：压低身子带惯性急刹（往家跑时不刹，直接接着跳）
+                activity = run && !returning ? .land(duration: 0.38, skidding: true) : nil
             }
-        case .crouch(let remaining, let jump):
-            activity = remaining - dt <= 0 ? .jump(jump) : .crouch(remaining: remaining - dt, then: jump)
+        case .crouch(let t, let duration, let jump):
+            let nt = t + dt
+            activity = nt >= duration ? .jump(jump) : .crouch(t: nt, duration: duration, then: jump)
         case .jump(var j):
+            currentSpeed *= exp(-18 * dt)
             j.t = min(1, j.t + dt / j.duration)
             pos = j.point(at: j.t)
             facing = j.to.x >= j.from.x ? 1 : -1
@@ -623,7 +675,7 @@ struct RoamDirector {
                     wallJumpClimb = nil
                 } else if let surface = j.surface {
                     surfaceID = surface
-                    activity = .land(remaining: 0.22)
+                    activity = .land(duration: 0.24)
                     events.append(.landed)
                 } else {
                     // 跳回座位
@@ -635,6 +687,7 @@ struct RoamDirector {
                 activity = .jump(j)
             }
         case .climb(var climb):
+            currentSpeed *= exp(-18 * dt)
             // 窗口挪动了就跟着挪；关掉了就掉下来
             guard let wall = world.walls.first(where: { $0.surfaceID == climb.wall.surfaceID
                 && $0.windowOnRight == climb.wall.windowOnRight && abs($0.x - climb.wall.x) < 40 }) else {
@@ -653,12 +706,13 @@ struct RoamDirector {
                 // 爬到顶：翻上窗口，站在离角落一点点的地方
                 pos = CGPoint(x: wall.x + (wall.windowOnRight ? 22 : -22) * k, y: wall.top)
                 surfaceID = wall.surfaceID
-                activity = .land(remaining: 0.25)
+                activity = .land(duration: 0.26)
                 events.append(.landed)
             } else {
                 activity = .climb(climb)
             }
         case .sign:
+            currentSpeed *= exp(-18 * dt)
             // 你切到了别的窗口（目的地变了）：起身改去新的地方
             if let target = world.signTarget, target.surfaceID != surfaceID || abs(target.x - pos.x) > 80 * k {
                 activity = nil
@@ -666,6 +720,7 @@ struct RoamDirector {
         case .stalk(var stalk):
             stepStalk(&stalk, dt: dt, world: world)
         case .pounce(var pounce):
+            currentSpeed *= exp(-18 * dt)
             pounce.jump.t = min(1, pounce.jump.t + dt / pounce.jump.duration)
             pos = pounce.jump.point(at: pounce.jump.t)
             // 前爪大约在脚前方 24、上方 62（画布点）：碰到光标就算抓到，一次扑只算一次
@@ -682,20 +737,34 @@ struct RoamDirector {
                 if !pounce.caught { events.append(.missedCursor) }
                 playPounces += 1
                 resumeStalk = playSession
-                activity = .land(remaining: 0.3)
+                activity = .land(duration: 0.30)
             } else {
                 activity = .pounce(pounce)
             }
         case .shake(var shake):
+            currentSpeed *= exp(-18 * dt)
             shake.t += dt
             activity = shake.t >= shake.duration ? nil : .shake(shake)
         case .knock(var knock):
+            currentSpeed *= exp(-18 * dt)
             stepKnock(&knock, dt: dt, world: world)
-        case .land(let remaining):
-            activity = remaining - dt <= 0 ? nil : .land(remaining: remaining - dt)
+        case .land(let t, let duration, let skidding):
+            if skidding {
+                currentSpeed *= exp(-9.5 * dt)
+                if let id = surfaceID, let here = world.surface(id: id) {
+                    let nextX = pos.x + currentSpeed * k * dt * facing
+                    pos.x = min(max(nextX, here.minX + 20 * k), here.maxX - 20 * k)
+                }
+            } else {
+                currentSpeed *= exp(-18 * dt)
+            }
+            let nt = t + dt
+            activity = nt >= duration ? nil : .land(t: nt, duration: duration, skidding: skidding)
         case .sit(let remaining):
+            currentSpeed *= exp(-18 * dt)
             activity = remaining - dt <= 0 ? nil : .sit(remaining: remaining - dt)
         case .peek(var p):
+            currentSpeed *= exp(-18 * dt)
             p.t += dt
             if p.t >= p.total {
                 finishPeek(p, world: world)
@@ -703,10 +772,12 @@ struct RoamDirector {
                 activity = .peek(p)
             }
         case .nap(var n):
+            currentSpeed *= exp(-18 * dt)
             n.t += dt * n.speed
             // 醒了：伸个懒腰（落地那种压低身子的姿势）再接着溜达
-            activity = n.t >= n.total ? .land(remaining: 0.45) : .nap(n)
+            activity = n.t >= n.total ? .land(duration: 0.45) : .nap(n)
         case .fall(let vy):
+            currentSpeed *= exp(-18 * dt)
             let newVy = vy - Self.gravity * k * dt
             let newY = pos.y + newVy * dt
             // 落到脚下最高的那个面（窗口上沿或屏幕底）
@@ -716,7 +787,7 @@ struct RoamDirector {
             if let landing = below ?? (newY <= world.floor.y ? world.floor : nil) {
                 pos.y = landing.y
                 surfaceID = landing.id
-                activity = .land(remaining: 0.28)
+                activity = .land(duration: 0.28)
                 events.append(.landed)
                 if returning { planReturnStep(world: world, run: returningUrgently) }
             } else {
@@ -724,7 +795,7 @@ struct RoamDirector {
                 activity = .fall(vy: newVy)
             }
         case nil:
-            break
+            currentSpeed *= exp(-18 * dt)
         }
 
         if activity == nil, pendingJump == nil, pendingPeek == nil, pendingClimb == nil, !resumeStalk {
@@ -749,7 +820,7 @@ struct RoamDirector {
         } else if activity == nil, let jump = pendingJump {
             // 走到起跳点了：蹲一下再跳
             pendingJump = nil
-            activity = .crouch(remaining: pendingAim, then: jump)
+            activity = .crouch(duration: pendingAim, then: jump)
             pendingAim = 0.26
         } else if activity == nil {
             if delivering && !returning {
@@ -765,7 +836,23 @@ struct RoamDirector {
                 planActivity(world: world)
             }
         }
+        updateBlends(dt: dt)
         return events
+    }
+
+    private mutating func updateBlends(dt: CGFloat) {
+        let currentPose = pose
+        let targetRun: CGFloat = currentPose == .run ? min(1, max(0.35, currentSpeed / Self.runSpeed)) : 0
+        let isMovingPose = currentPose == .walk || currentPose == .run || currentPose == .stalk
+        let targetMove: CGFloat = (isMovingPose && currentSpeed > 2) ? min(1, currentSpeed / (Self.walkSpeed * 0.6)) : 0
+        runBlend += (targetRun - runBlend) * min(1, 1 - exp(-11 * dt))
+        moveBlend += (targetMove - moveBlend) * min(1, 1 - exp(-12 * dt))
+        let turnStep = 16 * dt
+        if turnScale < facing {
+            turnScale = min(facing, turnScale + turnStep)
+        } else if turnScale > facing {
+            turnScale = max(facing, turnScale - turnStep)
+        }
     }
 
     /// 一件事做完、下一件还没开始：在雪里走久了就站住抖抖爪子；从积雪的窗口下来就甩甩全身。
@@ -887,12 +974,19 @@ struct RoamDirector {
         /// 沿脚下这张桌子往 goal 挪 speed 的距离，步态按 stride 走
         func move(toward goal: CGFloat, speed: CGFloat, stride: CGFloat) {
             let clamped = min(max(goal, here.minX + 20 * k), here.maxX - 20 * k)
-            let step = min(abs(clamped - pos.x), speed * k * dt)
+            let accel: CGFloat = speed > Self.walkSpeed ? 1100 : 420
+            if currentSpeed < speed {
+                currentSpeed = min(speed, currentSpeed + accel * dt)
+            } else {
+                currentSpeed = max(speed, currentSpeed - 900 * dt)
+            }
+            let step = min(abs(clamped - pos.x), currentSpeed * k * dt)
             pos.x += step * (clamped >= pos.x ? 1 : -1)
             gaitPhase += step / (stride * k) * .pi * 2
         }
         switch stalk.phase {
         case .notice:
+            currentSpeed *= exp(-18 * dt)
             if stalk.t >= 0.4 {
                 stalk.phase = flicked ? .dash : (inRange ? .wiggle : .creep)
                 stalk.t = 0
@@ -905,9 +999,10 @@ struct RoamDirector {
                 stalk.phase = .wiggle
                 stalk.t = 0
             } else {
-                move(toward: cursor.x - facing * 160 * k, speed: Self.creepSpeed, stride: 26)
+                move(toward: cursor.x - facing * 160 * k, speed: Self.creepSpeed, stride: 28)
             }
         case .wiggle:
+            currentSpeed *= exp(-18 * dt)
             if flicked {
                 stalk.phase = .dash
                 stalk.t = 0
@@ -919,7 +1014,7 @@ struct RoamDirector {
                 return
             }
         case .dash:
-            move(toward: cursor.x - facing * 130 * k, speed: Self.runSpeed, stride: 75)
+            move(toward: cursor.x - facing * 130 * k, speed: Self.runSpeed, stride: 88)
             if !flicked && inRange && stalk.t > 0.3 {
                 // 追上了：短短扭一下就扑
                 stalk.phase = .wiggle
@@ -998,7 +1093,7 @@ struct RoamDirector {
             var jump = makeJump(from: pos, to: CGPoint(x: climb.wall.x, y: climb.y), surface: nil, k: k)
             jump.toWall = true
             wallJumpClimb = climb
-            activity = .crouch(remaining: 0.28, then: jump)
+            activity = .crouch(duration: 0.28, then: jump)
         } else {
             pos.x = climb.wall.x
             activity = .climb(climb)
@@ -1035,7 +1130,7 @@ struct RoamDirector {
         } else if world.signTarget == nil, delivering {
             // 你批准了（或者 agent 不等了）：放下牌子回家
             delivering = false
-            if activity == .sign { activity = .land(remaining: 0.3) }
+            if activity == .sign { activity = .land(duration: 0.3) }
             if !returning { beginReturn(world: world, run: false) }
         }
     }
@@ -1072,8 +1167,8 @@ struct RoamDirector {
         /// 从窗口顶跳到地上，落在离目标近的那一侧
         func dropToFloor() -> TravelStep {
             let downX = min(max(pos.x + (target.x > pos.x ? 60 : -60) * k, floor.minX + 20 * k), floor.maxX - 20 * k)
-            activity = .crouch(remaining: 0.12, then: makeJump(from: pos, to: CGPoint(x: downX, y: floor.y),
-                                                               surface: floor.id, k: k))
+            activity = .crouch(duration: 0.12, then: makeJump(from: pos, to: CGPoint(x: downX, y: floor.y),
+                                                              surface: floor.id, k: k))
             return .moving
         }
         func below() -> TravelStep {
@@ -1264,8 +1359,8 @@ struct RoamDirector {
         guard let item = trinket else { return }
         trinket = nil
         let k = lastScale
-        // 嘴大约在脚前方 65、上方 67（画布单位）
-        let at = item.surfaceID == nil ? CGPoint(x: pos.x + facing * 65 * k, y: pos.y + 67 * k) : item.at
+        // 嘴大约在脚前方 46、上方 62（3/4 视角小猫画布单位）
+        let at = item.surfaceID == nil ? CGPoint(x: pos.x + facing * 46 * k, y: pos.y + 62 * k) : item.at
         pendingEvents.append(.releasedTrinket(kind: item.kind, at: at, vx: 0))
     }
 
@@ -1280,6 +1375,9 @@ struct RoamDirector {
         budget = 3 + Int(random() * 3)
         nappedThisTrip = false
         stepsThisTrip = 0
+        currentSpeed = 0
+        runBlend = 0
+        moveBlend = 0
         pos = world.seat
         surfaceID = nil
         let k = world.scale
@@ -1296,7 +1394,10 @@ struct RoamDirector {
         }
         if !toFloor, !landings.isEmpty, forcedHops > 0 || random() < 0.5 {
             let pick = landings[Int(random() * Double(landings.count)) % landings.count]
-            activity = .crouch(remaining: 0.35, then: makeJump(from: seat, to: pick.at, surface: pick.id, k: k))
+            let jump = makeJump(from: seat, to: pick.at, surface: pick.id, k: k)
+            facing = jump.to.x >= jump.from.x ? 1 : -1
+            turnScale = facing
+            activity = .crouch(duration: 0.35, then: jump)
             return
         }
         // 从座位跳到主窗口旁边的地上（左边地方够就往左，否则往右）
@@ -1307,7 +1408,10 @@ struct RoamDirector {
             ? leftX
             : (floor.contains(x: rightX, margin: 20 * k) ? rightX : world.seat.x)
         let to = CGPoint(x: x, y: floor.y)
-        activity = .crouch(remaining: 0.3, then: makeJump(from: world.seat, to: to, surface: floor.id, k: k))
+        let jump = makeJump(from: world.seat, to: to, surface: floor.id, k: k)
+        facing = jump.to.x >= jump.from.x ? 1 : -1
+        turnScale = facing
+        activity = .crouch(duration: 0.30, then: jump)
     }
 
     private mutating func planActivity(world: RoamWorld) {
@@ -1456,7 +1560,7 @@ struct RoamDirector {
             pendingJump = jump
             pendingAim = aim
         } else {
-            activity = .crouch(remaining: aim, then: jump)
+            activity = .crouch(duration: aim, then: jump)
         }
     }
 
@@ -1552,6 +1656,7 @@ struct RoamDirector {
         let y = floor.y + 70 * k + CGFloat(random()) * min(room, 360 * k)
         pos = CGPoint(x: edge == .left ? floor.minX : floor.maxX, y: y)
         facing = edge == .left ? 1 : -1
+        turnScale = facing
         surfaceID = nil
         activity = .peek(Peek(edge: edge, hold: 3.5 + CGFloat(random() * 2.5)))
     }
@@ -1572,6 +1677,7 @@ struct RoamDirector {
             pos = CGPoint(x: left ? floor.minX - 50 * k : floor.maxX + 50 * k, y: floor.y)
             surfaceID = floor.id
             facing = left ? 1 : -1
+            turnScale = facing
             activity = .walk(toX: left ? floor.minX + 120 * k : floor.maxX - 120 * k, run: returningUrgently)
         }
     }
@@ -1586,7 +1692,7 @@ struct RoamDirector {
         // 在地上走到座位旁边了，哪怕座位很高也一个大跳跳回去（不然会原地踏步）
         let onFloorNearSeat = surfaceID == world.floor.id && dx <= Self.maxJumpDX * k * 0.45
         if dx <= Self.maxJumpDX * k * 0.6 && (up <= Self.maxJumpUp * k || onFloorNearSeat) {
-            activity = .crouch(remaining: run ? 0.12 : 0.25, then: makeJump(from: pos, to: seat, surface: nil, k: k))
+            activity = .crouch(duration: run ? 0.12 : 0.25, then: makeJump(from: pos, to: seat, surface: nil, k: k))
             return
         }
         if let id = surfaceID, id != world.floor.id, let here = world.surface(id: id) {
@@ -1598,7 +1704,7 @@ struct RoamDirector {
                     pendingJump = jump
                     pendingAim = run ? 0.12 : 0.25
                 } else {
-                    activity = .crouch(remaining: run ? 0.12 : 0.25, then: jump)
+                    activity = .crouch(duration: run ? 0.12 : 0.25, then: jump)
                 }
                 return
             }
@@ -1612,7 +1718,7 @@ struct RoamDirector {
             let floor = world.floor
             let downX = min(max(pos.x + (seat.x > pos.x ? 60 : -60) * k, floor.minX + 20 * k), floor.maxX - 20 * k)
             let to = CGPoint(x: downX, y: floor.y)
-            activity = .crouch(remaining: 0.12, then: makeJump(from: pos, to: to, surface: world.floor.id, k: k))
+            activity = .crouch(duration: 0.12, then: makeJump(from: pos, to: to, surface: world.floor.id, k: k))
             return
         }
         // 在地上：走到座位水平距离够得着的地方
@@ -1629,6 +1735,9 @@ struct RoamDirector {
     private mutating func arriveHome() {
         releaseTrinket()
         isHome = true
+        currentSpeed = 0
+        runBlend = 0
+        moveBlend = 0
         snowWalk = 0
         snowTrip = 0
         returning = false

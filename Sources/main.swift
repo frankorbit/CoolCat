@@ -966,6 +966,7 @@ func renderWalkPreviewSheet(to path: String) {
         ("走 2", .init(pose: .walk, phase: .pi / 2, facing: 1, air: 0, time: 0.6, blink: false)),
         ("走 3", .init(pose: .walk, phase: .pi, facing: 1, air: 0, time: 0.9, blink: false)),
         ("跑", .init(pose: .run, phase: .pi * 0.3, facing: 1, air: 0, time: 0.3, blink: false)),
+        ("急刹", .init(pose: .land, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, landProgress: 0.35, skidding: true)),
         ("蹲", .init(pose: .crouch, phase: 0, facing: 1, air: 0, time: 0.3, blink: false)),
         ("起跳", .init(pose: .air, phase: 0, facing: 1, air: 0.15, time: 0.3, blink: false)),
         ("下落", .init(pose: .air, phase: 0, facing: 1, air: 0.85, time: 0.3, blink: false)),
@@ -978,10 +979,20 @@ func renderWalkPreviewSheet(to path: String) {
         ("探出一半", .init(pose: .peek, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, peekEdge: .right, peekReveal: 0.5)),
         ("朝左走", .init(pose: .walk, phase: .pi / 2, facing: -1, air: 0, time: 0.6, blink: false))
     ]
-    // COOLCAT_WALK_SET=run：飞奔一个周期的 8 帧
-    let runPoses: [(String, CatRenderer.WalkerPose)] = (0..<8).map { i in
-        ("飞奔 \(i)", .init(pose: .run, phase: CGFloat(i) / 8 * 2 * .pi, facing: 1, air: 0, time: 0.3, blink: false))
+    // COOLCAT_WALK_SET=walk：走路一个周期的 8 帧
+    let walkCyclePoses: [(String, CatRenderer.WalkerPose)] = (0..<8).map { i in
+        ("走 \(i)", .init(pose: .walk, phase: CGFloat(i) / 8 * 2 * .pi, facing: 1, air: 0, time: 0.3, blink: false,
+                        runBlend: 0, moveBlend: 1))
     }
+    // COOLCAT_WALK_SET=run：飞奔一个周期的 8 帧 + 急刹 + 转身
+    let runPoses: [(String, CatRenderer.WalkerPose)] = (0..<8).map { i in
+        ("飞奔 \(i)", .init(pose: .run, phase: CGFloat(i) / 8 * 2 * .pi, facing: 1, air: 0, time: 0.3, blink: false,
+                         runBlend: 1, moveBlend: 1))
+    } + [
+        ("急刹 1", .init(pose: .land, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, landProgress: 0.25, skidding: true)),
+        ("急刹 2", .init(pose: .land, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, landProgress: 0.65, skidding: true)),
+        ("转身", .init(pose: .walk, phase: .pi / 2, facing: 1, air: 0, time: 0.3, blink: false, moveBlend: 1, turnScale: 0.45))
+    ]
     // COOLCAT_WALK_SET=play：漫游时逗猫的几个姿势
     let playPoses: [(String, CatRenderer.WalkerPose)] = [
         ("盯上", .init(pose: .stand, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, hunting: true)),
@@ -1038,8 +1049,8 @@ func renderWalkPreviewSheet(to path: String) {
         ("朝左拨", .init(pose: .knockTap, phase: 0, facing: -1, air: 0, time: 0.3, blink: false, tap: 0.45))
     ]
     let set = ProcessInfo.processInfo.environment["COOLCAT_WALK_SET"]
-    let named = ["nap": napPoses, "run": runPoses, "play": playPoses, "holiday": holidayPoses, "sign": signPoses,
-                 "snow": snowPoses, "knock": knockPoses]
+    let named = ["nap": napPoses, "walk": walkCyclePoses, "run": runPoses, "play": playPoses, "holiday": holidayPoses,
+                 "sign": signPoses, "snow": snowPoses, "knock": knockPoses]
     let poses = set.flatMap { named[$0] } ?? walkPoses
     let cw = Int(CatRenderer.walkerCanvas.width), ch = Int(CatRenderer.walkerCanvas.height), scale = 2
     let labelW = 70
