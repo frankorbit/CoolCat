@@ -619,7 +619,7 @@ extension CatRenderer {
         let headCounter = (rBlend > 0.05 || hunting || pose.skidding) ? -tilt * 0.72 : 0
         ctx.rotate(by: headCounter + sin(t * 34 + 0.7) * 0.28 * shakeEnv)
         drawWalkerHead(in: ctx, center: .zero, pose: pose, pal: pal, lookDown: pose.pose == .crouch,
-                       earPin: earPin, happySprint: rBlend > 0.55, squint: pose.skidding,
+                       earPin: earPin, squint: pose.skidding,
                        fuse: bodyParts, fuseCTM: bodyCTM)
         ctx.restoreGState()
         if shakeEnv > 0.05 {
@@ -704,7 +704,7 @@ extension CatRenderer {
     /// - Parameters:
     ///   - fuse: 头要和哪些身体部件融为一体（在 fuseCTM 那个坐标系下）：头的轮廓线不画在它们上面
     private static func drawWalkerHead(in ctx: CGContext, center: CGPoint, pose: WalkerPose, pal: WalkerPalette, lookDown: Bool,
-                                       earPin: CGFloat = 0, happySprint: Bool = false, squint: Bool = false,
+                                       earPin: CGFloat = 0, squint: Bool = false,
                                        fuse: [CGPath] = [], fuseCTM: CGAffineTransform = .identity) {
         let hs = CGFloat(pet?.shape.headSize ?? 1)
         let r: CGFloat = 30.5 * hs * CGFloat(pet?.shape.headWidth ?? 1).squareRoot()
@@ -864,7 +864,7 @@ extension CatRenderer {
                 ctx.fillEllipse(in: CGRect(x: px + e.rx * 0.14, y: e.c.y + e.ry * 0.18, width: e.rx * 0.25, height: e.rx * 0.25))
             }
         }
-        // 小粉鼻 + ω 微笑嘴（开心飞奔时微微张嘴）+ 双颊腮红 + 左右胡须
+        // 小粉鼻 + ω 微笑嘴 + 双颊腮红 + 左右胡须
         let nose = CGPoint(x: faceX, y: r * 0.23)
         ctx.setFillColor(rgb(pal.cute || pal.mask != nil ? 0xE9808F : 0x3A2A2C).cgColor)
         ctx.move(to: CGPoint(x: nose.x - r * 0.085, y: nose.y - r * 0.045))
@@ -875,10 +875,6 @@ extension CatRenderer {
         let lineColor = HexColor.luminance(muzzleBase) < 0.3
             ? HexColor.mix(pal.body, .white, 0.52)
             : pal.outline.withAlphaComponent(0.85)
-        if happySprint && pose.trinket == nil {
-            ctx.setFillColor(rgb(0xD95F76, 0.95).cgColor)
-            ctx.fillEllipse(in: CGRect(x: nose.x - r * 0.07, y: r * 0.34, width: r * 0.13, height: r * 0.11))
-        }
         ctx.setStrokeColor(lineColor.cgColor); ctx.setLineWidth(1.1); ctx.setLineCap(.round)
         ctx.move(to: CGPoint(x: nose.x - r * 0.15, y: r * 0.36))
         ctx.addQuadCurve(to: CGPoint(x: nose.x, y: r * 0.29), control: CGPoint(x: nose.x - r * 0.075, y: r * 0.42))
