@@ -724,7 +724,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             curl: roam.napCurl, asleep: roam.napAsleep, hunting: roam.isPlaying,
             santaHat: physics.activeHoliday.christmas, signLines: signLines,
             shake: roam.shakeProgress, pawSnow: snowpack.pawSnow, tap: roam.tapProgress,
-            trinket: roam.carriedTrinket.flatMap(Trinket.init(rawValue:))
+            trinket: roam.carriedTrinket.flatMap(Trinket.init(rawValue:)),
+            runBlend: roam.runBlend, moveBlend: roam.moveBlend,
+            crouchProgress: roam.crouchProgress, landProgress: roam.landProgress,
+            skidding: roam.isSkidding, turnScale: roam.turnScale
         )
         // 屏幕边换算到画布坐标：走出屏幕、偷看时屏幕外的部分不画
         if let c = roam.clipEdge {

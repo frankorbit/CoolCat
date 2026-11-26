@@ -42,6 +42,13 @@ extension CatRenderer {
         var tap: CGFloat = 0
         /// 嘴里叼着的东西
         var trinket: Trinket?
+        /// 平滑跑动融合 0...1、移动融合 0...1、蹲跳进度 0...1、落地/急刹进度 0...1、急刹滑行、转身缩放 (-1...1)
+        var runBlend: CGFloat? = nil
+        var moveBlend: CGFloat? = nil
+        var crouchProgress: CGFloat? = nil
+        var landProgress: CGFloat? = nil
+        var skidding: Bool = false
+        var turnScale: CGFloat? = nil
     }
 
     /// 侧身小猫的配色：从主画面的取色工具里推出来，保证和坐着时是同一只猫
@@ -142,18 +149,41 @@ extension CatRenderer {
             ctx.clip(to: CGRect(x: 0, y: 0, width: walkerCanvas.width, height: walkerFeet.y))
             ctx.translateBy(x: 0, y: pose.sink * 110)
         }
-        // 朝左时水平翻转
-        if pose.facing < 0 {
-            ctx.translateBy(x: walkerCanvas.width, y: 0)
-            ctx.scaleBy(x: -1, y: 1)
-        }
         switch pose.pose {
-        case .sit: drawSittingWalker(in: ctx, pose: pose, pal: pal)
+        case .sit:
+            if pose.facing < 0 {
+                ctx.translateBy(x: walkerCanvas.width, y: 0)
+                ctx.scaleBy(x: -1, y: 1)
+            }
+            drawGroundShadow(in: ctx, centerX: walkerFeet.x - 4, feetY: walkerFeet.y, width: 64, airLift: 0,
+                             alpha: 0.14 * max(0, 1 - pose.sink))
+            drawSittingWalker(in: ctx, pose: pose, pal: pal)
         case .sign:
+            if pose.facing < 0 {
+                ctx.translateBy(x: walkerCanvas.width, y: 0)
+                ctx.scaleBy(x: -1, y: 1)
+            }
+            drawGroundShadow(in: ctx, centerX: walkerFeet.x - 4, feetY: walkerFeet.y, width: 64, airLift: 0,
+                             alpha: 0.14 * max(0, 1 - pose.sink))
             drawSittingWalker(in: ctx, pose: pose, pal: pal)
             drawSignStick(in: ctx, pose: pose, pal: pal)
-        case .curl: drawCurledWalker(in: ctx, pose: pose, pal: pal)
-        default: drawMovingWalker(in: ctx, pose: pose, pal: pal)
+        case .curl:
+            if pose.facing < 0 {
+                ctx.translateBy(x: walkerCanvas.width, y: 0)
+                ctx.scaleBy(x: -1, y: 1)
+            }
+            drawGroundShadow(in: ctx, centerX: walkerFeet.x - 8, feetY: walkerFeet.y, width: 78, airLift: 0,
+                             alpha: 0.14 * max(0, 1 - pose.sink))
+            drawCurledWalker(in: ctx, pose: pose, pal: pal)
+        default:
+            // 平滑转身：绕脚底中心水平缩放过渡，永不为 0
+            let rawTurn = pose.turnScale ?? pose.facing
+            let sign: CGFloat = rawTurn >= 0 ? 1 : -1
+            let mag = max(0.22, min(1, abs(rawTurn)))
+            ctx.translateBy(x: walkerFeet.x, y: -(1 - mag) * 4)
+            ctx.scaleBy(x: sign * mag, y: 1)
+            ctx.translateBy(x: -walkerFeet.x, y: 0)
+            drawMovingWalker(in: ctx, pose: pose, pal: pal)
         }
         ctx.restoreGState()
         // 牌子上的字不跟着朝向翻转
@@ -169,186 +199,293 @@ extension CatRenderer {
         }
     }
 
+    /// 地面接触影：腾空时变窄变淡，增加跃动纵深感
+    private static func drawGroundShadow(in ctx: CGContext, centerX: CGFloat, feetY: CGFloat, width: CGFloat,
+                                         airLift: CGFloat, alpha: CGFloat) {
+        guard alpha > 0.005 else { return }
+        let w = width * max(0.45, 1 - airLift * 0.016)
+        let h: CGFloat = 9.5 * max(0.55, 1 - airLift * 0.02)
+        let a = alpha * max(0.35, 1 - airLift * 0.035)
+        ctx.saveGState()
+        ctx.setFillColor(NSColor(calibratedWhite: 0, alpha: a).cgColor)
+        ctx.fillEllipse(in: CGRect(x: centerX - w / 2, y: feetY - h * 0.55, width: w, height: h))
+        ctx.restoreGState()
+    }
+
     private static func drawMovingWalker(in ctx: CGContext, pose: WalkerPose, pal: WalkerPalette) {
         let feet = walkerFeet
         let ground = feet.y
-        let bodyLen: CGFloat = 36 * CGFloat(pet?.shape.bodyWidth ?? 1).squareRoot()
-        // 身体厚一点，和大头的比例协调
-        var bodyH: CGFloat = 23
-        var lift: CGFloat = 50 // 身体中心离地高度
-        var tilt: CGFloat = 0
-        var stretch: CGFloat = 1
+        let widthK = CGFloat(pet?.shape.bodyWidth ?? 1).squareRoot()
+        let bodyLen: CGFloat = 27.5 * widthK
+        let baseH: CGFloat = 22.0
+        let baseLift: CGFloat = 38.0
         let p = pose.phase
-        // 飞奔（旋转式奔跑，和猎豹一样）：u 是一个步幅周期里的进度。
-        // u = 0 伸展腾空：前腿往前探、后腿往后蹬直、脊柱拉长；u = 0.5 收拢腾空：脊柱弓起、后腿收到肚子底下
-        let galloping = pose.pose == .run
+        let t = pose.time
+
+        let rBlend = max(0, min(1, pose.runBlend ?? (pose.pose == .run ? 1 : 0)))
+        let mBlend = max(0, min(1, pose.moveBlend ?? ([.walk, .run, .stalk].contains(pose.pose) ? 1 : 0)))
+        let cProg = max(0, min(1, pose.crouchProgress ?? (pose.pose == .crouch ? 1 : 0)))
+        let lProg = max(0, min(1, pose.landProgress ?? (pose.pose == .land ? 0.35 : 0)))
+
         let cycle = p / (2 * .pi)
-        let u = galloping ? cycle - floor(cycle) : 0
-        let flex = cos(2 * .pi * u) // 1 = 伸展，-1 = 收拢
-        let arch = galloping ? max(0, -flex) * 9 - max(0, flex) * 2 : 0
+        let u = cycle - floor(cycle)
+
+        var lift = baseLift
+        var tilt: CGFloat = 0
+        var scaleX: CGFloat = 1
+        var scaleY: CGFloat = 1
+        var arch: CGFloat = 0
+        var airLift: CGFloat = 0
+        var earPin: CGFloat = 0
+
+        let walkLift = baseLift + abs(sin(p)) * 2.6 * mBlend
+        let walkTilt = sin(p * 2) * 0.03 * mBlend
+        let walkSX = 1 - cos(p * 2) * 0.02 * mBlend
+        let walkSY = 1 + cos(p * 2) * 0.025 * mBlend
+
+        let runAir = pow(max(0, sin(2 * .pi * u + 0.08)), 1.15) * 13.5
+        let stretchWave = cos(2 * .pi * (u - 0.22))
+        let runSX = 1 + 0.11 * stretchWave
+        let runSY = 1 - 0.075 * stretchWave
+        let runTilt = -0.14 * cos(2 * .pi * (u - 0.02))
+        let runArch = max(0, -stretchWave) * 5.5
+        let runLift = 37.5 + runAir - max(0, -stretchWave) * 3.5
         switch pose.pose {
-        case .walk:
-            lift += sin(p * 2) * 1.6
-        case .run:
-            // 两次腾空时身体最高，四爪着地时最低；伸展时身子拉长变薄，收拢时缩短变厚；前脚着地时低头、后脚蹬地时抬头
-            lift = 45 + 6 * (0.5 + 0.5 * cos(4 * .pi * u))
-            stretch = 1.05 + 0.17 * flex
-            bodyH = 21.5 - 1.5 * flex
-            tilt = 0.08 * sin(2 * .pi * u)
-        case .crouch:
-            lift = 35
-            bodyH = 24
-        case .air:
-            // 起跳时抬头、落下时低头
-            tilt = (pose.air - 0.5) * 0.7
-            stretch = 1.12
-            bodyH = 20.5
-            lift = 50
-        case .land:
-            lift = 38
-            bodyH = 25
-        case .stalk:
-            // 潜伏：肚子快贴地，头比肩低，一步一步慢慢挪
-            lift = 36 + sin(p * 2) * 0.8
-            bodyH = 23.5
-            stretch = 1.05
-            tilt = 0.05
-        case .wiggle:
-            // 扭屁股蓄力：前低后高，屁股左右扭（画在大腿根上）
-            lift = 33
-            bodyH = 24.5
-            tilt = 0.09
-        case .climb:
-            // 爬窗框：身体紧贴着墙（转过来后"地面"就是窗框），身子稍微拉长
-            lift = 31 + sin(p * 2) * 1.2
-            bodyH = 22
-            stretch = 1.1
         case .stand, .sit, .peek, .curl, .sign:
-            lift += sin(pose.time * 2.1) * 0.8
+            let breath = sin(t * 2.2)
+            lift = baseLift + breath * 0.6
+            scaleY = 1 + breath * 0.02
+            scaleX = 1 - breath * 0.015
+        case .walk, .run:
+            lift = walkLift + (runLift - walkLift) * rBlend
+            tilt = walkTilt + (runTilt - walkTilt) * rBlend
+            scaleX = walkSX + (runSX - walkSX) * rBlend
+            scaleY = walkSY + (runSY - walkSY) * rBlend
+            arch = runArch * rBlend
+            airLift = runAir * rBlend
+            earPin = (0.26 + 0.06 * stretchWave) * rBlend
+        case .crouch:
+            let e = cProg * cProg * (3 - 2 * cProg)
+            lift = baseLift - 9.0 * e
+            scaleX = 1 + 0.11 * e
+            scaleY = 1 - 0.15 * e
+            tilt = 0.06 * e
+        case .air:
+            tilt = (pose.air - 0.45) * 0.62
+            scaleX = 1.12
+            scaleY = 0.90
+            lift = 42.0
+            earPin = 0.18
+        case .land:
+            if pose.skidding {
+                let e = sin(.pi * pow(lProg, 0.75))
+                tilt = -0.18 * e
+                lift = baseLift - 6.5 * e
+                scaleX = 1 + 0.08 * e
+                scaleY = 1 - 0.10 * e
+                earPin = 0.22 * e
+            } else {
+                let sq = sin(.pi * min(1, lProg * 1.45)) * (1 - lProg * 0.55)
+                lift = baseLift - 7.5 * sq
+                scaleX = 1 + 0.12 * sq
+                scaleY = 1 - 0.13 * sq
+            }
+        case .stalk:
+            lift = 29.0 + sin(p * 2) * 0.7
+            scaleX = 1.07
+            scaleY = 0.93
+            tilt = 0.05
+            earPin = 0.22
+        case .wiggle:
+            lift = 28.0
+            scaleX = 1.04
+            scaleY = 0.95
+            tilt = 0.09
+            earPin = 0.24
+        case .climb:
+            lift = 28.0 + sin(p * 2) * 1.1
+            scaleX = 1.08
+            scaleY = 0.94
         case .pawShake:
-            // 抬一只前爪甩：重心往后移一点
             tilt = -0.04 * sin(.pi * pose.shake)
         case .bodyShake:
-            // 甩身子：整个身子快速左右拧，起伏一下
             let env = sin(.pi * pose.shake)
-            tilt = sin(pose.time * 34) * 0.07 * env
-            lift += abs(sin(pose.time * 34)) * 1.6 * env
+            tilt = sin(t * 34) * 0.07 * env
+            lift += abs(sin(t * 34)) * 1.6 * env
         case .knockTap:
-            // 拨东西：重心往前探一点
             tilt = 0.05 * sin(.pi * pose.tap)
         }
-        let center = CGPoint(x: feet.x - 6, y: ground - lift)
-        let halfLen = bodyLen * stretch
+        if pose.pose != .air && pose.pose != .climb {
+            drawGroundShadow(in: ctx, centerX: feet.x - 4, feetY: ground, width: 64 * widthK * scaleX,
+                             airLift: airLift, alpha: 0.15 * max(0, 1 - pose.sink))
+        }
+        drawRunEffects(in: ctx, feet: feet, centerY: ground - lift, u: u, runBlend: rBlend,
+                       skidding: pose.skidding, landProgress: lProg, isClimb: pose.pose == .climb)
+
+        let bodyH = baseH * scaleY
+        let halfLen = bodyLen * scaleX
+        let center = CGPoint(x: feet.x - 4, y: ground - lift)
 
         ctx.saveGState()
         ctx.translateBy(x: center.x, y: center.y)
         ctx.rotate(by: tilt)
 
-        // 身体由三块组成：躯干 + 胸口 + 圆鼓鼓的大腿根；腿从胸口和大腿根里长出来
+        // 圆润饱满 Q 版豆豆躯干：软曲线脊柱 + 圆胸 + 圆屁股
         let torso: CGPath
-        if galloping {
-            // 飞奔时躯干是一条会弯的脊柱：收拢时背弓起来、肚子收进去，伸展时微微塌腰
+        if arch > 0.1 {
             let spine = CGMutablePath()
             spine.move(to: CGPoint(x: -halfLen, y: 0))
             spine.addCurve(to: CGPoint(x: halfLen, y: 0),
-                           control1: CGPoint(x: -halfLen, y: -bodyH * 1.33 - arch), control2: CGPoint(x: halfLen, y: -bodyH * 1.33 - arch))
+                           control1: CGPoint(x: -halfLen, y: -bodyH * 1.32 - arch),
+                           control2: CGPoint(x: halfLen, y: -bodyH * 1.32 - arch))
             spine.addCurve(to: CGPoint(x: -halfLen, y: 0),
-                           control1: CGPoint(x: halfLen, y: bodyH * 1.3 - arch * 0.7), control2: CGPoint(x: -halfLen, y: bodyH * 1.3 - arch * 0.7))
+                           control1: CGPoint(x: halfLen, y: bodyH * 1.28 - arch * 0.65),
+                           control2: CGPoint(x: -halfLen, y: bodyH * 1.28 - arch * 0.65))
             spine.closeSubpath()
             torso = spine
         } else {
             torso = CGPath(roundedRect: CGRect(x: -halfLen, y: -bodyH, width: halfLen * 2, height: bodyH * 2),
                            cornerWidth: bodyH, cornerHeight: bodyH, transform: nil)
         }
-        // 飞奔时胸口和屁股一伸一缩：伸展时拉开，收拢时挤到一起、屁股往上拱
-        let spread = galloping ? flex * 3 : 0
-        let chestRect = CGRect(x: halfLen * 0.3 + spread, y: -bodyH * 0.95, width: halfLen * 0.92, height: bodyH * 1.88)
+        let spread = rBlend * stretchWave * 2.5
+        let chestRect = CGRect(x: halfLen * 0.24 + spread, y: -bodyH * 0.94, width: halfLen * 0.92, height: bodyH * 1.88)
         let chest = CGPath(ellipseIn: chestRect, transform: nil)
-        // 扭屁股：大腿根抬高一点、左右快速扭
-        let wiggleX = pose.pose == .wiggle ? sin(pose.time * 16) * 3.2 : 0
-        let wiggleUp: CGFloat = pose.pose == .wiggle ? 8 : 0
-        let haunchRect = CGRect(x: -halfLen * 1.08 - spread + wiggleX, y: -bodyH * 0.9 - arch * 0.45 - wiggleUp,
-                                width: halfLen * 1.0, height: bodyH * 1.95)
+        let wiggleX = pose.pose == .wiggle ? sin(t * 16) * 3.5 : 0
+        let wiggleUp: CGFloat = pose.pose == .wiggle ? 6.5 : 0
+        let haunchRect = CGRect(x: -halfLen * 1.06 - spread + wiggleX, y: -bodyH * 0.90 - arch * 0.4 - wiggleUp,
+                                width: halfLen * 1.02, height: bodyH * 1.94)
         let haunch = CGPath(ellipseIn: haunchRect, transform: nil)
         let bodyParts = [torso, chest, haunch]
 
-        // 关节：藏在胸口/大腿根里面，腿的上端被身体盖住，接缝处看不出来
-        let shoulder = CGPoint(x: chestRect.midX + 1, y: chestRect.midY + 2)
-        let hip = CGPoint(x: haunchRect.midX + 2, y: haunchRect.midY)
-        let groundY = lift / max(0.6, cos(tilt)) // 身体坐标里地面的大致位置
+        // 关节藏在身体内部，保证接缝自然融合
+        let shoulder = CGPoint(x: chestRect.midX + 1.5, y: chestRect.midY + 3)
+        let hip = CGPoint(x: haunchRect.midX + 1.5, y: haunchRect.midY + 2)
+        let groundY = lift / max(0.6, cos(tilt))
         let limb = CGFloat(pet?.shape.limbWidth ?? 1).squareRoot()
 
-        /// 飞奔时一条腿的落点和弯曲程度。前腿在 u≈0.22 附近着地、后腿在 u≈0.72 附近着地；
-        /// 着地时腿伸直从前往后扫，悬空时折起来（腕关节、跗关节收拢）往前摆。远侧腿比近侧早一点（旋转式奔跑）
-        func gallopLeg(_ joint: CGPoint, front: Bool, near: Bool) -> (end: CGPoint, fold: CGFloat) {
-            let v = u + (near ? 0 : 0.07)
-            // 偏离竖直的角度，正 = 往前。前腿以往前探为主（+0.95 … -0.6），后腿以往后蹬为主（-0.95 … +0.7）
-            let c = cos(2 * .pi * v)
-            let theta = front ? 0.18 + 0.77 * c : -0.12 - 0.83 * c
-            let contactAt: CGFloat = front ? 0.22 : 0.72
-            var d = v - contactAt
-            d -= floor(d + 0.5) // 环形距离，-0.5...0.5
-            let full = groundY - joint.y
-            if abs(d) < 0.17 {
-                let len = min(full / max(0.4, cos(theta)), full * 1.25)
-                return (CGPoint(x: joint.x + sin(theta) * len, y: joint.y + cos(theta) * len), 0)
+        /// 4 拍不滑步步态：支撑期脚掌贴地从 +amp 线性后推到 -amp，摆动期自然抬起前摆
+        func walkStep(_ joint: CGPoint, phaseOffset: CGFloat, front: Bool, strideAmp: CGFloat,
+                      liftH: CGFloat) -> (end: CGPoint, fold: CGFloat) {
+            let cyc = (p + phaseOffset) / (2 * .pi)
+            let c = cyc - floor(cyc)
+            let baseX = joint.x + (front ? 2 : -1)
+            if c < 0.60 {
+                let s = c / 0.60
+                let dx = strideAmp * (1 - 2 * s)
+                return (CGPoint(x: baseX + dx, y: groundY), 0)
+            } else {
+                let s = (c - 0.60) / 0.40
+                let dx = -strideAmp + 2 * strideAmp * (0.5 - 0.5 * cos(.pi * s))
+                let liftY = sin(.pi * s) * liftH
+                return (CGPoint(x: baseX + dx, y: groundY - liftY), sin(.pi * s) * 0.45)
             }
-            // 悬空：从着地结束（d = 0.17）到下一次着地（d = -0.17 + 1）之间，中段折得最厉害
-            let swing = (d > 0 ? d - 0.17 : d + 1 - 0.17) / 0.66
-            // 刚离地时腿还是直的（蹬出去的那一下），摆到中段才折起来，快落地时再伸直
-            let fold = pow(max(0, sin(.pi * (swing - 0.15) / 0.85)), 1.4)
-            let len = full * (1 - 0.4 * fold)
-            return (CGPoint(x: joint.x + sin(theta) * len, y: joint.y + cos(theta) * len - fold * 4), fold)
         }
 
-        func legEnd(_ joint: CGPoint, offset: CGFloat, front: Bool) -> CGPoint {
+        /// 轻快跃动飞奔腿：前腿往前探再蹬后，后腿往后踢再收回肚子底下，前后分区绝不打结交叉
+        func runStep(_ joint: CGPoint, front: Bool, near: Bool) -> (end: CGPoint, fold: CGFloat) {
+            let vRaw = u + (near ? 0 : 0.06)
+            let v = vRaw - floor(vRaw)
+            if front {
+                let dx: CGFloat
+                let liftY: CGFloat
+                let fold: CGFloat
+                if v < 0.48 {
+                    let s = v / 0.48
+                    dx = 5 + 12 * sin(.pi * min(1, s * 0.72))
+                    liftY = sin(.pi * s) * 14
+                    fold = sin(.pi * s) * 0.35
+                } else if v < 0.84 {
+                    let s = (v - 0.48) / 0.36
+                    dx = 13 - 16 * s
+                    liftY = 0
+                    fold = 0
+                } else {
+                    let s = (v - 0.84) / 0.16
+                    dx = -3 + 8 * s
+                    liftY = sin(.pi * 0.5 * s) * 8
+                    fold = 0.5 * s
+                }
+                return (CGPoint(x: joint.x + dx, y: groundY - liftY), fold)
+            } else {
+                let dx: CGFloat
+                let liftY: CGFloat
+                let fold: CGFloat
+                if v < 0.14 {
+                    let s = v / 0.14
+                    dx = -8 - 9 * s
+                    liftY = s * 6
+                    fold = 0.1 * s
+                } else if v < 0.52 {
+                    let s = (v - 0.14) / 0.38
+                    dx = -17 + 7 * s
+                    liftY = 6 + sin(.pi * s) * 10
+                    fold = 0.25 * sin(.pi * s)
+                } else if v < 0.68 {
+                    let s = (v - 0.52) / 0.16
+                    dx = -10 + 15 * s
+                    liftY = 6 * (1 - s)
+                    fold = 0.55 * (1 - s)
+                } else {
+                    let s = (v - 0.68) / 0.32
+                    dx = 5 - 13 * s
+                    liftY = 0
+                    fold = 0
+                }
+                return (CGPoint(x: joint.x + dx, y: groundY - liftY), fold)
+            }
+        }
+
+        func legEndAndFold(_ joint: CGPoint, offset: CGFloat, front: Bool, near: Bool) -> (end: CGPoint, fold: CGFloat) {
             switch pose.pose {
             case .air:
-                // 腾空：前腿往前伸，后腿往后蹬
-                let len = groundY - joint.y - 4
-                return CGPoint(x: joint.x + (front ? len * 0.75 : -len * 0.75), y: joint.y + len * 0.62)
+                let dx: CGFloat = front ? (near ? 14 : 10) : (near ? -14 : -10)
+                return (CGPoint(x: joint.x + dx, y: groundY - 6), 0.15)
+            case .land where pose.skidding:
+                let dx: CGFloat = front ? (near ? 15 : 11) : (near ? 7 : 4)
+                return (CGPoint(x: joint.x + dx, y: groundY), front ? 0 : 0.2)
             case .climb:
-                // 往上爬：前腿顺着墙往头顶方向够、钩住再往下拉；后腿收在屁股下面蹬墙。
-                // 腿是顺着墙斜着的，不是横着支出来的
                 let c = sin(p + offset)
                 if front {
-                    let reach = 0.5 + 0.5 * c                         // 1 = 够到最远，0 = 拉回到肩膀下
-                    let lift = max(0, cos(p + offset)) * 5            // 往上够的时候爪子稍微离墙
-                    return CGPoint(x: joint.x + 10 + reach * 30, y: groundY - lift)
+                    let reach = 0.5 + 0.5 * c
+                    let lift = max(0, cos(p + offset)) * 5
+                    return (CGPoint(x: joint.x + 10 + reach * 28, y: groundY - lift), 0)
                 }
-                return CGPoint(x: joint.x - 2 + c * 9, y: groundY)
-            case .walk, .run, .stalk:
-                // 潜伏时步子小、爪子几乎不离地
-                let amp: CGFloat = pose.pose == .run ? 0.6 : (pose.pose == .stalk ? 0.28 : 0.4)
-                let a = sin(p + offset) * amp
-                let len = groundY - joint.y
-                let raise = max(0, cos(p + offset)) * (pose.pose == .run ? 9 : (pose.pose == .stalk ? 2.5 : 5.5))
-                return CGPoint(x: joint.x + sin(a) * len, y: joint.y + cos(a) * len - raise)
-            case .knockTap where front && offset == 0:
-                // 近侧前爪：抬起来往前探，在最远处按下去（拍在东西上），再收回来
+                return (CGPoint(x: joint.x - 2 + c * 9, y: groundY), 0.8)
+            case .stalk:
+                let phaseOff: CGFloat = front ? (near ? 0 : .pi) : (near ? 1.5 * .pi : 0.5 * .pi)
+                return walkStep(joint, phaseOffset: phaseOff, front: front, strideAmp: 5.5, liftH: 3.0)
+            case .walk, .run:
+                let phaseOff: CGFloat = front ? (near ? 0 : .pi) : (near ? 1.5 * .pi : 0.5 * .pi)
+                let w = walkStep(joint, phaseOffset: phaseOff, front: front, strideAmp: 9.5 * mBlend, liftH: 7.5 * mBlend)
+                if rBlend < 0.01 { return w }
+                let r = runStep(joint, front: front, near: near)
+                let ex = w.end.x + (r.end.x - w.end.x) * rBlend
+                let ey = w.end.y + (r.end.y - w.end.y) * rBlend
+                return (CGPoint(x: ex, y: ey), w.fold + (r.fold - w.fold) * rBlend)
+            case .knockTap where front && near:
                 let reach = sin(.pi * pose.tap)
                 let raise = max(0, sin(.pi * min(1, pose.tap * 2)))
-                return CGPoint(x: joint.x + 6 + 34 * reach, y: groundY - 10 * raise)
-            case .pawShake where front && offset == 0:
-                // 近侧前爪抬到胸前快速甩：抬起 → 甩几下 → 放下
+                return (CGPoint(x: joint.x + 5 + 32 * reach, y: groundY - 9 * raise), 0.5 * raise)
+            case .pawShake where front && near:
                 let env = sin(.pi * min(1, pose.shake * 1.15))
-                let flick = sin(pose.time * 42) * env
-                return CGPoint(x: joint.x + 10 + flick * 4, y: groundY - 24 * env + cos(pose.time * 42) * 2 * env)
+                let flick = sin(t * 42) * env
+                return (CGPoint(x: joint.x + 9 + flick * 4, y: groundY - 20 * env + cos(t * 42) * 2 * env), 0.75 * env)
             default:
-                return CGPoint(x: joint.x + (front ? 2 : -3), y: groundY)
+                let dx: CGFloat = front ? (near ? 3.5 : 0.5) : (near ? -1.5 : -4.5)
+                return (CGPoint(x: joint.x + dx, y: groundY), 0)
             }
         }
 
-        /// 一条腿：上宽下窄的弯曲肢体 + 椭圆爪子。后腿往后弯出跗关节的弧度，前腿在腕部微微前挺
+        /// Q 版圆润小短腿 + 无接缝小面包爪
         func leg(_ joint: CGPoint, _ end: CGPoint, front: Bool, fold: CGFloat = 0) -> (limb: CGPath, paw: CGPath) {
             let mid = CGPoint(x: (joint.x + end.x) / 2, y: (joint.y + end.y) / 2)
-            // 折腿时：前腿腕关节往前顶，后腿跗关节往后撅
-            let bend: CGFloat = front ? 2.5 + 11 * fold : -9 - 9 * fold
+            let bend: CGFloat = front ? 2.5 + 8 * fold : -6 - 7 * fold
             let control = CGPoint(x: mid.x + bend, y: mid.y)
-            let w0 = (front ? 15 : 19) * limb, w1 = 7.2 * limb
-            let path = taperedLimb(from: joint, control: control, to: CGPoint(x: end.x, y: end.y - 3), startWidth: w0, endWidth: w1)
-            let pw = 11.5 * limb
-            let paw = CGPath(ellipseIn: CGRect(x: end.x - pw * 0.42, y: end.y - 6.5, width: pw, height: 7.5), transform: nil)
+            let w0 = (front ? 14.5 : 16.5) * limb, w1 = 10.2 * limb
+            let path = taperedLimb(from: joint, control: control, to: CGPoint(x: end.x, y: end.y - 3.2),
+                                   startWidth: w0, endWidth: w1)
+            let pw = 13.0 * limb
+            let paw = CGPath(ellipseIn: CGRect(x: end.x - pw * 0.40, y: end.y - 7.5, width: pw, height: 8.2), transform: nil)
             return (path, paw)
         }
 
@@ -356,69 +493,48 @@ extension CatRenderer {
             let shade: CGFloat = far ? 0.16 : 0
             ctx.setFillColor(HexColor.mix(pal.legs, .black, shade).cgColor)
             ctx.addPath(l.limb); ctx.fillPath()
-            // 在雪里走过：爪子沾了雪发白
             let paws = pose.pawSnow > 0.01 ? HexColor.mix(pal.paws, .white, pose.pawSnow * 0.75) : pal.paws
             ctx.setFillColor(HexColor.mix(paws, .black, shade).cgColor)
             ctx.addPath(l.paw); ctx.fillPath()
         }
 
-        // 远侧两条腿（画在身体后面，颜色暗一点）；只描露在身体外面的轮廓
-        /// 走路用钟摆步态，飞奔用上面的 gallopLeg
         func makeLeg(_ joint: CGPoint, top: CGPoint, offset: CGFloat, front: Bool, near: Bool) -> (limb: CGPath, paw: CGPath) {
-            if galloping {
-                let g = gallopLeg(joint, front: front, near: near)
-                return leg(top, g.end, front: front, fold: g.fold)
-            }
-            if pose.pose == .knockTap && front && near {
-                // 拨东西的那只前爪：抬起时腕关节弯着
-                let fold = 0.5 * max(0, sin(.pi * min(1, pose.tap * 2)))
-                return leg(top, legEnd(joint, offset: offset, front: front), front: true, fold: fold)
-            }
-            if pose.pose == .pawShake && front && near {
-                // 抬起来的那只前爪：腕关节弯着，爪尖朝下甩
-                let env = sin(.pi * min(1, pose.shake * 1.15))
-                return leg(top, legEnd(joint, offset: offset, front: front), front: true, fold: 0.75 * env)
-            }
-            if pose.pose == .climb {
-                // 后腿深深弯着（膝盖、跗关节收起来蹬墙），前腿伸直往上够
-                return leg(top, legEnd(joint, offset: offset, front: front), front: front, fold: front ? 0 : 0.8)
-            }
-            return leg(top, legEnd(joint, offset: offset, front: front), front: front)
+            let target = legEndAndFold(joint, offset: offset, front: front, near: near)
+            return leg(top, target.end, front: front, fold: target.fold)
         }
-        let farFront = makeLeg(CGPoint(x: shoulder.x - 5, y: shoulder.y), top: CGPoint(x: shoulder.x - 5, y: shoulder.y - 2),
+        let farFront = makeLeg(CGPoint(x: shoulder.x - 4, y: shoulder.y), top: CGPoint(x: shoulder.x - 4, y: shoulder.y - 2),
                                offset: .pi, front: true, near: false)
-        let farHind = makeLeg(CGPoint(x: hip.x + 5, y: hip.y), top: CGPoint(x: hip.x + 5, y: hip.y - 2),
+        let farHind = makeLeg(CGPoint(x: hip.x + 4, y: hip.y), top: CGPoint(x: hip.x + 4, y: hip.y - 2),
                               offset: 0, front: false, near: false)
         for l in [farFront, farHind] {
             fillLeg(l, far: true)
             strokeOuterOutline(in: ctx, [l.limb, l.paw], color: pal.outline, width: 1.4, alsoOutside: bodyParts)
         }
 
-        // 尾巴：从屁股往上翘，走路时左右甩
+        // 流动 S 形小尾巴：走路翘起轻摆，跑步往后拉出柔和波浪，俯身狩猎时尾尖抽动
         let hunting = pose.pose == .stalk || pose.pose == .wiggle
-        // 盯上猎物时尾巴放低，只有尾巴尖在快速抽动
         let shakeEnv = pose.pose == .bodyShake ? sin(.pi * pose.shake) : 0
-        // 甩身子时尾巴跟着身子慢半拍地甩
-        let sway = hunting ? sin(pose.time * 18) * 7
-            : sin(pose.time * 3.2 + p * 0.5) * 6 + sin(pose.time * 34 - 1.2) * 9 * shakeEnv
-        let tailRoot = CGPoint(x: -halfLen * 0.92 + wiggleX, y: -bodyH * 0.25 - wiggleUp)
-        // 爬窗框时尾巴顺着墙往下垂（转过来后"往后"就是往下）
+        let sway = hunting ? sin(t * 18) * 6.5
+            : sin(t * 3.0 + p * 0.45) * 5.5 + sin(t * 34 - 1.2) * 8.5 * shakeEnv
+        let tailRoot = CGPoint(x: -halfLen * 0.90 + wiggleX, y: -bodyH * 0.28 - wiggleUp)
         let tailUp: CGFloat = pose.pose == .air ? 0.45 : (hunting ? 0.25 : (pose.pose == .climb ? 0.1 : 1))
+        let w1 = sin(p - 0.5) * 6.0
+        let w2 = sin(p - 1.6) * 8.0
+        let standTip = CGPoint(x: -halfLen - 17 + sway * 0.35, y: -bodyH - 27 * tailUp + sway * 0.3)
+        let standC1 = CGPoint(x: tailRoot.x - 16, y: tailRoot.y + 4)
+        let standC2 = CGPoint(x: standTip.x - 9 + sway, y: standTip.y + 14)
+        let runTip = CGPoint(x: -halfLen - 34, y: -bodyH * 0.72 + w2)
+        let runC1 = CGPoint(x: tailRoot.x - 13, y: tailRoot.y - 5 - w1 * 0.5)
+        let runC2 = CGPoint(x: runTip.x + 15, y: runTip.y - w2 * 0.65)
+        func lerpPt(_ a: CGPoint, _ b: CGPoint, _ k: CGFloat) -> CGPoint {
+            CGPoint(x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k)
+        }
         let tail = CGMutablePath()
         tail.move(to: tailRoot)
-        if galloping {
-            // 飞奔：尾巴往后拉直当平衡杆，跟着身体一伸一缩上下甩
-            let whip = sin(2 * .pi * u - 0.8) * 7
-            let tailTip = CGPoint(x: -halfLen - 40, y: -bodyH * 0.9 + whip)
-            tail.addCurve(to: tailTip, control1: CGPoint(x: tailRoot.x - 14, y: tailRoot.y - 4),
-                          control2: CGPoint(x: tailTip.x + 14, y: tailTip.y - whip * 0.6))
-        } else {
-            let tailTip = CGPoint(x: -halfLen - 20 + sway * 0.4, y: -bodyH - 30 * tailUp + sway * 0.3)
-            tail.addCurve(to: tailTip, control1: CGPoint(x: tailRoot.x - 18, y: tailRoot.y + 4),
-                          control2: CGPoint(x: tailTip.x - 10 + sway, y: tailTip.y + 16))
-        }
-        let tailW = 8.5 * CGFloat(pet?.shape.tailWidth ?? 1)
-        // 尾巴是一块实心形状：根部被身体盖住，轮廓和身体一起只描外圈，接缝处没有线
+        tail.addCurve(to: lerpPt(standTip, runTip, rBlend),
+                      control1: lerpPt(standC1, runC1, rBlend),
+                      control2: lerpPt(standC2, runC2, rBlend))
+        let tailW = 9.0 * CGFloat(pet?.shape.tailWidth ?? 1)
         let tailShape = tail.copy(strokingWithWidth: tailW, lineCap: .round, lineJoin: .round, miterLimit: 10)
         ctx.setFillColor(pal.tail.cgColor)
         ctx.addPath(tailShape); ctx.fillPath()
@@ -487,26 +603,80 @@ extension CatRenderer {
         }
         ctx.strokePath()
 
-        // 头：在身体前上方，走路时和身体反着轻轻点头
-        let nod: CGFloat = pose.pose == .walk ? -sin(p * 2) * 1.2 : 0
-        // 飞奔时头往前探、压低，并抵消身体的俯仰，眼睛始终平视前方（猎豹那种稳定的头）
-        // 潜伏、扭屁股时头往前伸、压到肩膀高度，死死盯着；爬窗框时同样贴着墙往上看
-        let headCenter = galloping
-            ? CGPoint(x: halfLen * 0.95 + 14, y: -bodyH - 9 - arch * 0.3)
-            : (hunting || pose.pose == .climb ? CGPoint(x: halfLen * 0.95 + 15, y: -bodyH - 6)
-                       : CGPoint(x: halfLen * 0.95 + 10, y: -bodyH - 15 + nod))
-        // 头和身体重叠的那段（脖子）不描线，看起来是长在身体上的
+        // 头：Q 版 3/4 大头，跑步时稳稳平视、略微压低并伴随微弱弹性滞后
+        let nod = (pose.pose == .walk ? -sin(p * 2) * 1.1 * mBlend : 0) + rBlend * (-sin(2 * .pi * u) * 1.8)
+        let headCenter: CGPoint
+        if hunting || pose.pose == .climb {
+            headCenter = CGPoint(x: halfLen * 0.72 + 12, y: -bodyH - 8)
+        } else {
+            let baseHead = CGPoint(x: halfLen * 0.68 + 8, y: -bodyH - 16 + nod)
+            let runHead = CGPoint(x: halfLen * 0.74 + 10, y: -bodyH - 13 - arch * 0.25 + nod)
+            headCenter = lerpPt(baseHead, runHead, rBlend)
+        }
         let bodyCTM = ctx.ctm
         ctx.saveGState()
         ctx.translateBy(x: headCenter.x, y: headCenter.y)
-        // 甩身子从头开始：头甩得比身子更猛、更早
-        ctx.rotate(by: (galloping || hunting ? -tilt * 0.9 : 0) + sin(pose.time * 34 + 0.7) * 0.28 * shakeEnv)
+        let headCounter = (rBlend > 0.05 || hunting || pose.skidding) ? -tilt * 0.72 : 0
+        ctx.rotate(by: headCounter + sin(t * 34 + 0.7) * 0.28 * shakeEnv)
         drawWalkerHead(in: ctx, center: .zero, pose: pose, pal: pal, lookDown: pose.pose == .crouch,
+                       earPin: earPin, happySprint: rBlend > 0.55, squint: pose.skidding,
                        fuse: bodyParts, fuseCTM: bodyCTM)
         ctx.restoreGState()
         if shakeEnv > 0.05 {
             drawShakeLines(in: ctx, head: headCenter, body: CGSize(width: halfLen, height: bodyH), env: shakeEnv,
                            color: pal.outline)
+        }
+        ctx.restoreGState()
+    }
+
+    /// 奔跑烟尘、速度微风线与急刹滑行小烟团
+    private static func drawRunEffects(in ctx: CGContext, feet: CGPoint, centerY: CGFloat, u: CGFloat,
+                                       runBlend: CGFloat, skidding: Bool, landProgress: CGFloat, isClimb: Bool) {
+        guard !isClimb else { return }
+        ctx.saveGState()
+        if runBlend > 0.35 {
+            let alpha = min(1, (runBlend - 0.35) / 0.65)
+            for i in 0..<3 {
+                let local = (u + CGFloat(i) * 0.33).truncatingRemainder(dividingBy: 1)
+                let a = sin(local * .pi) * 0.55 * alpha
+                guard a > 0.03 else { continue }
+                let x = feet.x - 26 - local * 28
+                let y = feet.y - 4 - local * 10 - CGFloat(i % 2) * 3
+                let r = 3.2 + local * 3.8
+                ctx.setFillColor(NSColor(calibratedWhite: 0.99, alpha: a).cgColor)
+                ctx.fillEllipse(in: CGRect(x: x - r, y: y - r * 0.85, width: r * 2, height: r * 1.7))
+                ctx.setStrokeColor(rgb(0xB8C0CE, a * 0.45).cgColor)
+                ctx.setLineWidth(0.9)
+                ctx.strokeEllipse(in: CGRect(x: x - r, y: y - r * 0.85, width: r * 2, height: r * 1.7))
+            }
+            if runBlend > 0.60 {
+                let wAlpha = min(1, (runBlend - 0.60) / 0.40) * 0.42
+                ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: wAlpha).cgColor)
+                ctx.setLineWidth(1.6)
+                ctx.setLineCap(.round)
+                for (dy, len, phaseOff) in [(-34.0, 22.0, 0.0), (-14.0, 17.0, 0.4)] as [(CGFloat, CGFloat, CGFloat)] {
+                    let s = (u + phaseOff).truncatingRemainder(dividingBy: 1)
+                    let x0 = feet.x - 42 - s * 16
+                    let y0 = centerY + dy
+                    ctx.move(to: CGPoint(x: x0, y: y0))
+                    ctx.addLine(to: CGPoint(x: x0 - len, y: y0))
+                }
+                ctx.strokePath()
+            }
+        }
+        if skidding && landProgress > 0.02 {
+            let fade = sin(.pi * min(1, landProgress))
+            for i in 0..<4 {
+                let fi = CGFloat(i)
+                let x = feet.x + 20 + fi * 6 + landProgress * (8 + fi * 3)
+                let y = feet.y - 3 - fi * 3.5 - landProgress * 6
+                let r = (3.5 + fi * 0.8) * (0.7 + landProgress * 0.7)
+                ctx.setFillColor(NSColor(calibratedWhite: 0.99, alpha: 0.65 * fade).cgColor)
+                ctx.fillEllipse(in: CGRect(x: x - r, y: y - r * 0.85, width: r * 2, height: r * 1.7))
+                ctx.setStrokeColor(rgb(0xB8C0CE, 0.35 * fade).cgColor)
+                ctx.setLineWidth(0.9)
+                ctx.strokeEllipse(in: CGRect(x: x - r, y: y - r * 0.85, width: r * 2, height: r * 1.7))
+            }
         }
         ctx.restoreGState()
     }
@@ -530,190 +700,288 @@ extension CatRenderer {
         ctx.restoreGState()
     }
 
-    /// 侧身的头：圆脑袋 + 前面一个小口鼻，一只看得见的大眼睛，两只耳朵
+    /// 3/4 视角 Q 版大头：圆润饱满无凸出嘴筒，看得见两只大眼睛、粉鼻子、ω 嘴与两只耳朵
     /// - Parameters:
     ///   - fuse: 头要和哪些身体部件融为一体（在 fuseCTM 那个坐标系下）：头的轮廓线不画在它们上面
     private static func drawWalkerHead(in ctx: CGContext, center: CGPoint, pose: WalkerPose, pal: WalkerPalette, lookDown: Bool,
+                                       earPin: CGFloat = 0, happySprint: Bool = false, squint: Bool = false,
                                        fuse: [CGPath] = [], fuseCTM: CGAffineTransform = .identity) {
         let hs = CGFloat(pet?.shape.headSize ?? 1)
-        // 和坐姿一样的大头比例
-        let r: CGFloat = 30 * hs * CGFloat(pet?.shape.headWidth ?? 1).squareRoot()
+        let r: CGFloat = 30.5 * hs * CGFloat(pet?.shape.headWidth ?? 1).squareRoot()
+        let faceX = r * 0.28
         let earSize = CGFloat(pet?.shape.earSize ?? 1)
         let flare = CGFloat(pet?.shape.earFlare ?? 0)
-        let folded = pet?.shape.earStyle == .folded
+        let earStyle = pet?.shape.earStyle ?? .pointed
+        let folded = earStyle == .folded
         ctx.saveGState()
         ctx.translateBy(x: center.x, y: center.y)
-        ctx.rotate(by: lookDown ? 0.25 : 0)
-        // 身体部件换算到头的局部坐标
+        ctx.rotate(by: lookDown ? 0.22 : 0)
         var toLocal = fuseCTM.concatenating(ctx.ctm.inverted())
         let fuseLocal = fuse.compactMap { $0.copy(using: &toLocal) }
 
-        /// 耳朵：头顶上的圆角三角形，大耳朵（德文）往后外撇。耳根埋在头里，画在头后面
-        func ear(base: CGFloat, far: Bool) -> CGPath {
-            let len = r * 0.95 * earSize * (folded ? 0.5 : 1)
-            let angle = -0.25 - flare * 0.6 + (folded ? 0.9 : 0)
-            let b1 = CGPoint(x: base - r * 0.42 * earSize.squareRoot(), y: -r * 0.62)
-            let b2 = CGPoint(x: base + r * 0.38 * earSize.squareRoot(), y: -r * 0.82)
+        /// 3/4 视角两只耳朵：远侧在前右微透视、近侧在后左，跑步时顺势向后压低 (earPin)
+        func ear(far: Bool) -> CGPath {
+            let len = r * 0.88 * earSize * (folded ? 0.48 : (earStyle == .round ? 0.78 : 1))
+            let baseAng: CGFloat = far ? (0.28 + flare * 0.55) : (-0.28 - flare * 0.65)
+            let ang = baseAng - earPin * (far ? 0.85 : 0.95) + (folded ? (far ? 0.55 : -0.55) : 0)
+            let sw = earSize.squareRoot() * (far ? 0.86 : 1.0)
+            let b1 = far ? CGPoint(x: r * 0.06, y: -r * 0.76) : CGPoint(x: -r * 0.80, y: -r * 0.42)
+            let b2 = far ? CGPoint(x: b1.x + r * 0.62 * sw, y: -r * 0.54) : CGPoint(x: b1.x + r * 0.66 * sw, y: -r * 0.82)
             let mid = CGPoint(x: (b1.x + b2.x) / 2, y: (b1.y + b2.y) / 2)
-            let tip = CGPoint(x: mid.x + sin(angle) * len, y: mid.y - cos(angle) * len)
+            let tip = CGPoint(x: mid.x + sin(ang) * len, y: mid.y - cos(ang) * len)
             let path = CGMutablePath()
             path.move(to: b1)
-            path.addQuadCurve(to: tip, control: CGPoint(x: (b1.x + tip.x) / 2 - 2, y: (b1.y + tip.y) / 2))
-            path.addQuadCurve(to: b2, control: CGPoint(x: (b2.x + tip.x) / 2 + 3, y: (b2.y + tip.y) / 2))
+            let roundness: CGFloat = earStyle == .round ? 5 : 2
+            path.addQuadCurve(to: tip, control: CGPoint(x: (b1.x + tip.x) / 2 - roundness, y: (b1.y + tip.y) / 2))
+            path.addQuadCurve(to: b2, control: CGPoint(x: (b2.x + tip.x) / 2 + roundness + 1, y: (b2.y + tip.y) / 2))
             path.closeSubpath()
-            let color = far ? HexColor.mix(pal.ears, .black, 0.18) : pal.ears
+            let color = far ? HexColor.mix(pal.ears, .black, 0.14) : pal.ears
             ctx.setFillColor(color.cgColor)
             ctx.addPath(path); ctx.fillPath()
-            if !far, let inner = pal.earInner, !folded {
-                let i1 = CGPoint(x: b1.x + (tip.x - b1.x) * 0.2 + 2, y: b1.y + (tip.y - b1.y) * 0.2)
-                let i2 = CGPoint(x: b2.x + (tip.x - b2.x) * 0.2 - 2, y: b2.y + (tip.y - b2.y) * 0.2)
+            if let inner = pal.earInner, !folded {
+                let i1 = CGPoint(x: b1.x + (tip.x - b1.x) * 0.22 + 2, y: b1.y + (tip.y - b1.y) * 0.22)
+                let i2 = CGPoint(x: b2.x + (tip.x - b2.x) * 0.22 - 2, y: b2.y + (tip.y - b2.y) * 0.22)
                 let it = CGPoint(x: mid.x + (tip.x - mid.x) * 0.78, y: mid.y + (tip.y - mid.y) * 0.78)
-                ctx.setFillColor(inner.cgColor)
+                ctx.setFillColor((far ? HexColor.mix(inner, .black, 0.10) : inner).cgColor)
                 ctx.move(to: i1); ctx.addLine(to: it); ctx.addLine(to: i2); ctx.closePath(); ctx.fillPath()
             }
             return path
         }
-        let farEar = ear(base: -r * 0.1, far: true)
-        let nearEar = ear(base: r * 0.2, far: false)
+        let farEar = ear(far: true)
+        let nearEar = ear(far: false)
 
-        // 脑袋 + 口鼻
-        let skull = CGPath(ellipseIn: CGRect(x: -r, y: -r, width: r * 2, height: r * 1.92), transform: nil)
-        let snout = CGPath(ellipseIn: CGRect(x: r * 0.35, y: -r * 0.05, width: r * 0.95, height: r * 0.78), transform: nil)
-        let head = CGMutablePath()
-        head.addPath(skull)
-        head.addPath(snout)
+        // 脑袋：圆润饱满微扁椭圆（德文微楔形下巴），去掉突兀侧脸嘴筒
+        let skull: CGPath
+        if pet?.shape.headShape == .wedge {
+            let p = CGMutablePath()
+            p.move(to: CGPoint(x: 0, y: -r * 0.90))
+            p.addCurve(to: CGPoint(x: r * 1.06, y: -r * 0.08),
+                       control1: CGPoint(x: r * 0.62, y: -r * 0.90), control2: CGPoint(x: r * 1.06, y: -r * 0.56))
+            p.addCurve(to: CGPoint(x: faceX * 0.25, y: r * 0.94),
+                       control1: CGPoint(x: r * 1.04, y: r * 0.45), control2: CGPoint(x: r * 0.56, y: r * 0.94))
+            p.addCurve(to: CGPoint(x: -r * 1.04, y: -r * 0.08),
+                       control1: CGPoint(x: -r * 0.52, y: r * 0.94), control2: CGPoint(x: -r * 1.04, y: r * 0.45))
+            p.addCurve(to: CGPoint(x: 0, y: -r * 0.90),
+                       control1: CGPoint(x: -r * 1.04, y: -r * 0.56), control2: CGPoint(x: -r * 0.62, y: -r * 0.90))
+            p.closeSubpath()
+            skull = p
+        } else {
+            skull = CGPath(ellipseIn: CGRect(x: -r * 1.06, y: -r * 0.94, width: r * 2.12, height: r * 1.88), transform: nil)
+        }
         ctx.setFillColor(pal.body.cgColor)
-        ctx.addPath(head); ctx.fillPath()
+        ctx.addPath(skull); ctx.fillPath()
         ctx.saveGState()
-        ctx.addPath(head); ctx.clip()
+        ctx.addPath(skull); ctx.clip()
         if let back = pal.back {
-            // 双色：头顶是色块，口鼻和下巴白（大白脸的猫白得更多）
             ctx.setFillColor(back.cgColor)
-            let whiteFace = pet?.whiteFace == true
-            ctx.fillEllipse(in: CGRect(x: -r * 1.4, y: -r * 1.5, width: r * (whiteFace ? 2.1 : 2.4), height: r * (whiteFace ? 1.95 : 2.2)))
+            ctx.fill(CGRect(x: -r * 1.2, y: -r * 1.2, width: r * 2.4, height: r * 2.4))
+            ctx.setFillColor(pal.body.cgColor)
+            if pet?.whiteFace == true {
+                let m = CGMutablePath()
+                m.move(to: CGPoint(x: faceX, y: -r * 0.92))
+                m.addLine(to: CGPoint(x: faceX + r * 0.14, y: -r * 0.30))
+                m.addQuadCurve(to: CGPoint(x: r * 1.15, y: r * 0.46), control: CGPoint(x: faceX + r * 0.52, y: -r * 0.04))
+                m.addLine(to: CGPoint(x: r * 1.15, y: r * 1.15)); m.addLine(to: CGPoint(x: -r * 1.15, y: r * 1.15))
+                m.addLine(to: CGPoint(x: -r * 1.15, y: r * 0.46))
+                m.addQuadCurve(to: CGPoint(x: faceX - r * 0.14, y: -r * 0.30), control: CGPoint(x: faceX - r * 0.58, y: -r * 0.04))
+                m.closeSubpath()
+                ctx.addPath(m); ctx.fillPath()
+            } else {
+                ctx.fillEllipse(in: CGRect(x: faceX - r * 0.56, y: r * 0.04, width: r * 1.12, height: r * 0.88))
+                ctx.fill(CGRect(x: faceX - r * 0.07, y: -r * 0.88, width: r * 0.14, height: r * 1.0))
+            }
         }
         if let calico = pal.calico {
             ctx.setFillColor(calico.cgColor)
-            ctx.fillEllipse(in: CGRect(x: -r * 1.2, y: -r * 1.3, width: r * 1.1, height: r * 1.2))
+            ctx.fillEllipse(in: CGRect(x: -r * 1.15, y: -r * 1.1, width: r * 1.05, height: r * 1.1))
         }
         if let mask = pal.mask {
-            // 重点色：口鼻和眼周深色，往后渐淡
-            let cols = [mask.cgColor, mask.withAlphaComponent(0.75).cgColor, mask.withAlphaComponent(0).cgColor] as CFArray
-            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: cols, locations: [0, 0.45, 1]) {
-                let c = CGPoint(x: r * 0.7, y: r * 0.2)
-                ctx.drawRadialGradient(g, startCenter: c, startRadius: 0, endCenter: c, endRadius: r * 1.2, options: [])
+            let cols = [mask.cgColor, mask.withAlphaComponent(0.78).cgColor, mask.withAlphaComponent(0).cgColor] as CFArray
+            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: cols, locations: [0, 0.44, 1]) {
+                let c = CGPoint(x: faceX, y: r * 0.10)
+                ctx.drawRadialGradient(g, startCenter: c, startRadius: 0, endCenter: c, endRadius: r * 0.96, options: [])
             }
         }
         if let stripe = pal.stripe, pal.back == nil {
-            ctx.setStrokeColor(stripe.cgColor)
-            ctx.setLineWidth(2.2)
-            ctx.setLineCap(.round)
-            for i in 0..<3 {
-                let x = -r * 0.45 + CGFloat(i) * r * 0.28
-                ctx.move(to: CGPoint(x: x, y: -r * 0.98))
-                ctx.addLine(to: CGPoint(x: x + 1.5, y: -r * 0.62))
+            ctx.setStrokeColor(stripe.cgColor); ctx.setLineWidth(2.2); ctx.setLineCap(.round)
+            for dx in [-0.26, 0, 0.26] as [CGFloat] {
+                let x = faceX + dx * r
+                ctx.move(to: CGPoint(x: x, y: -r * 0.90)); ctx.addLine(to: CGPoint(x: x - dx * 0.12 * r, y: -r * 0.56))
+            }
+            for dy in [0.10, 0.24] as [CGFloat] {
+                ctx.move(to: CGPoint(x: -r * 0.86, y: r * dy))
+                ctx.addLine(to: CGPoint(x: -r * 0.52, y: r * (dy + 0.04)))
             }
             ctx.strokePath()
         }
         if let belly = pal.belly {
             ctx.setFillColor(belly.cgColor)
-            ctx.fillEllipse(in: CGRect(x: r * 0.3, y: r * 0.1, width: r * 1.1, height: r * 0.85))
+            ctx.fillEllipse(in: CGRect(x: faceX - r * 0.46, y: r * 0.08, width: r * 0.92, height: r * 0.78))
         }
         ctx.restoreGState()
-        // 头、口鼻、近侧耳朵合起来只描外轮廓（耳根没有接缝）；远侧耳朵只描露在外面的那段
-        strokeOuterOutline(in: ctx, [skull, snout, nearEar], color: pal.outline, width: 1.4, alsoOutside: fuseLocal)
-        strokeOuterOutline(in: ctx, [farEar], color: pal.outline, width: 1.3, alsoOutside: [skull, snout, nearEar] + fuseLocal)
+        strokeOuterOutline(in: ctx, [skull, nearEar], color: pal.outline, width: 1.45, alsoOutside: fuseLocal)
+        strokeOuterOutline(in: ctx, [farEar], color: pal.outline, width: 1.35, alsoOutside: [skull, nearEar] + fuseLocal)
 
-        // 眼睛：一只看得见的大圆眼 + 高光（眨眼时一条弧线）
-        let eyeScale = CGFloat(pet?.shape.eyeScale ?? 1)
-        let eye = CGPoint(x: r * 0.42, y: -r * 0.12)
-        // 五官跟着头的大小走（原尺寸按 r = 20 设计）
+        // 两只眼睛（3/4 视角）：近侧大圆眼 + 远侧微透视，支持鸳鸯眼、眨眼、急刹眯眼 ^ ^
+        let es = CGFloat(pet?.shape.eyeScale ?? 1)
         let f = r / 20
-        let ew: CGFloat = 5.6 * f * eyeScale, eh: CGFloat = 6.6 * f * eyeScale
-        // 睡着、刚趴下犯困时也闭眼
-        if pose.blink || pose.pose == .land || (pose.pose == .curl && (pose.asleep || pose.curl > 0.35)) {
-            ctx.setStrokeColor((pal.cute ? HexColor.mix(pal.body, .black, 0.6) : pal.eye).cgColor)
-            ctx.setLineWidth(1.6)
-            ctx.setLineCap(.round)
-            ctx.move(to: CGPoint(x: eye.x - ew * 0.9, y: eye.y + 1))
-            ctx.addQuadCurve(to: CGPoint(x: eye.x + ew * 0.9, y: eye.y + 1), control: CGPoint(x: eye.x, y: eye.y + 3.5))
-            ctx.strokePath()
-        } else {
-            ctx.setFillColor(pal.eye.cgColor)
-            ctx.fillEllipse(in: CGRect(x: eye.x - ew, y: eye.y - eh, width: ew * 2, height: eh * 2))
+        let eyes: [(c: CGPoint, rx: CGFloat, ry: CGFloat, near: Bool)] = [
+            (CGPoint(x: faceX - r * 0.37, y: -r * 0.02), r * 0.215 * es, r * 0.245 * es, true),
+            (CGPoint(x: faceX + r * 0.31, y: -r * 0.03), r * 0.182 * es, r * 0.232 * es, false)
+        ]
+        let closedEye = pose.blink || pose.pose == .land || (pose.pose == .curl && (pose.asleep || pose.curl > 0.35))
+        let dilated = pose.hunting || pose.pose == .stalk || pose.pose == .wiggle
+        for e in eyes {
+            if squint {
+                ctx.setStrokeColor((pal.cute ? HexColor.mix(pal.body, .black, 0.65) : pal.eye).cgColor)
+                ctx.setLineWidth(1.8); ctx.setLineCap(.round)
+                ctx.move(to: CGPoint(x: e.c.x - e.rx * 0.85, y: e.c.y + e.ry * 0.2))
+                ctx.addQuadCurve(to: CGPoint(x: e.c.x + e.rx * 0.85, y: e.c.y + e.ry * 0.2),
+                                 control: CGPoint(x: e.c.x, y: e.c.y - e.ry * 0.85))
+                ctx.strokePath()
+                continue
+            }
+            if closedEye {
+                ctx.setStrokeColor((pal.cute ? HexColor.mix(pal.body, .black, 0.6) : pal.eye).cgColor)
+                ctx.setLineWidth(1.6); ctx.setLineCap(.round)
+                ctx.move(to: CGPoint(x: e.c.x - e.rx * 0.88, y: e.c.y + 1))
+                ctx.addQuadCurve(to: CGPoint(x: e.c.x + e.rx * 0.88, y: e.c.y + 1),
+                                 control: CGPoint(x: e.c.x, y: e.c.y + e.ry * 0.55))
+                ctx.strokePath()
+                continue
+            }
+            let eyeColor = (e.near ? pet?.secondEyeColor : nil) ?? pal.eye
+            ctx.setFillColor(eyeColor.cgColor)
+            ctx.fillEllipse(in: CGRect(x: e.c.x - e.rx, y: e.c.y - e.ry, width: e.rx * 2, height: e.ry * 2))
             ctx.setFillColor(catBlack.cgColor)
-            // 狩猎时瞳孔放大成圆圆的大黑眼（竖瞳的猫也是）
-            let pw = pose.hunting || pose.pose == .stalk || pose.pose == .wiggle ? ew * 1.35 : (pal.cute ? ew * 1.05 : ew * 0.5)
-            ctx.fillEllipse(in: CGRect(x: eye.x - pw * 0.6 + 1.2, y: eye.y - eh * 0.82, width: pw * 1.2, height: eh * 1.64))
+            let pw = dilated ? e.rx * 1.32 : (pal.cute ? e.rx * 1.18 : e.rx * 0.62)
+            let ph = dilated ? e.ry * 1.48 : (pal.cute ? e.ry * 1.36 : e.ry * 1.56)
+            let px = e.c.x + e.rx * 0.14
+            ctx.fillEllipse(in: CGRect(x: px - pw * 0.5, y: e.c.y - ph * 0.5, width: pw, height: ph))
             ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.95).cgColor)
-            ctx.fillEllipse(in: CGRect(x: eye.x + 0.2, y: eye.y - eh * 0.6, width: ew * 0.7, height: ew * 0.7))
+            ctx.fillEllipse(in: CGRect(x: px - e.rx * 0.42, y: e.c.y - e.ry * 0.55, width: e.rx * 0.55, height: e.rx * 0.55))
+            if pal.cute || dilated {
+                ctx.fillEllipse(in: CGRect(x: px + e.rx * 0.14, y: e.c.y + e.ry * 0.18, width: e.rx * 0.25, height: e.rx * 0.25))
+            }
         }
-        // 鼻子、嘴、腮红
-        let nose = CGPoint(x: r * 1.25, y: r * 0.12)
+        // 小粉鼻 + ω 微笑嘴（开心飞奔时微微张嘴）+ 双颊腮红 + 左右胡须
+        let nose = CGPoint(x: faceX, y: r * 0.23)
         ctx.setFillColor(rgb(pal.cute || pal.mask != nil ? 0xE9808F : 0x3A2A2C).cgColor)
-        ctx.fillEllipse(in: CGRect(x: nose.x - 2.4 * f, y: nose.y - 1.8 * f, width: 3.6 * f, height: 3 * f))
-        ctx.setStrokeColor(pal.outline.withAlphaComponent(0.8).cgColor)
-        ctx.setLineWidth(1)
-        ctx.move(to: CGPoint(x: nose.x - 0.8 * f, y: nose.y + 1.2 * f))
-        ctx.addQuadCurve(to: CGPoint(x: nose.x - 5 * f, y: nose.y + 4.5 * f), control: CGPoint(x: nose.x - 1.5 * f, y: nose.y + 4.5 * f))
+        ctx.move(to: CGPoint(x: nose.x - r * 0.085, y: nose.y - r * 0.045))
+        ctx.addLine(to: CGPoint(x: nose.x + r * 0.075, y: nose.y - r * 0.045))
+        ctx.addLine(to: CGPoint(x: nose.x, y: nose.y + r * 0.06))
+        ctx.closePath(); ctx.fillPath()
+        let muzzleBase = pal.belly ?? pal.body
+        let lineColor = HexColor.luminance(muzzleBase) < 0.3
+            ? HexColor.mix(pal.body, .white, 0.52)
+            : pal.outline.withAlphaComponent(0.85)
+        if happySprint && pose.trinket == nil {
+            ctx.setFillColor(rgb(0xD95F76, 0.95).cgColor)
+            ctx.fillEllipse(in: CGRect(x: nose.x - r * 0.07, y: r * 0.34, width: r * 0.13, height: r * 0.11))
+        }
+        ctx.setStrokeColor(lineColor.cgColor); ctx.setLineWidth(1.1); ctx.setLineCap(.round)
+        ctx.move(to: CGPoint(x: nose.x - r * 0.15, y: r * 0.36))
+        ctx.addQuadCurve(to: CGPoint(x: nose.x, y: r * 0.29), control: CGPoint(x: nose.x - r * 0.075, y: r * 0.42))
+        ctx.addQuadCurve(to: CGPoint(x: nose.x + r * 0.11, y: r * 0.36), control: CGPoint(x: nose.x + r * 0.055, y: r * 0.42))
         ctx.strokePath()
         if pal.cute {
             ctx.setFillColor(rgb(0xF58C9E, 0.32).cgColor)
-            ctx.fillEllipse(in: CGRect(x: r * 0.3, y: r * 0.22, width: 8 * f, height: 4.5 * f))
+            ctx.fillEllipse(in: CGRect(x: faceX - r * 0.58, y: r * 0.19, width: 7.2 * f, height: 4.0 * f))
+            ctx.fillEllipse(in: CGRect(x: faceX + r * 0.30, y: r * 0.19, width: 5.5 * f, height: 3.6 * f))
         }
-        // 胡须（卷胡须的猫弯一弯）
-        ctx.setStrokeColor(pal.outline.withAlphaComponent(0.7).cgColor)
-        ctx.setLineWidth(0.9)
+        ctx.setStrokeColor(pal.outline.withAlphaComponent(0.7).cgColor); ctx.setLineWidth(0.9)
         let curly = pet?.shape.curlyWhiskers == true
-        for dy: CGFloat in [-1, 2.5] {
-            let from = CGPoint(x: nose.x - 3, y: nose.y + dy + 1)
-            let to = CGPoint(x: nose.x + 14 * f, y: nose.y + dy * 2.2 + 1)
-            ctx.move(to: from)
-            ctx.addQuadCurve(to: to, control: CGPoint(x: (from.x + to.x) / 2, y: from.y + (curly ? -3.5 : -1)))
+        let sweep = earPin * 3.5
+        for dy: CGFloat in [0.24, 0.36] {
+            let l0 = CGPoint(x: faceX - r * 0.32, y: r * dy)
+            let l1 = CGPoint(x: faceX - r * 1.08 - sweep, y: r * (dy + (dy - 0.30) * 0.8))
+            ctx.move(to: l0); ctx.addQuadCurve(to: l1, control: CGPoint(x: (l0.x + l1.x) / 2, y: l0.y + (curly ? -3.5 : -1)))
+            let r0 = CGPoint(x: faceX + r * 0.28, y: r * dy)
+            let r1 = CGPoint(x: faceX + r * 0.92 - sweep, y: r * (dy + (dy - 0.30) * 0.8))
+            ctx.move(to: r0); ctx.addQuadCurve(to: r1, control: CGPoint(x: (r0.x + r1.x) / 2, y: r0.y + (curly ? -3.5 : -1)))
         }
         ctx.strokePath()
 
-        // 装扮：项圈/围巾在脖子，蝴蝶结在耳根，墨镜盖住眼睛
+        // 装扮：项圈/围巾（带飘动围巾尾）、蝴蝶结在近侧耳根、墨镜盖住 3/4 双眼
+        let rBlend = max(0, min(1, pose.runBlend ?? (pose.pose == .run ? 1 : 0)))
         switch CatSettings.shared.accessory {
         case .bell, .scarf:
             let scarf = CatSettings.shared.accessory == .scarf
+            if scarf {
+                let flutter = sin(pose.time * (5 + rBlend * 8)) * (2 + rBlend * 4)
+                let tailEnd = CGPoint(x: -r * 0.95 - rBlend * 14, y: r * 1.18 - rBlend * 7 + flutter)
+                ctx.setStrokeColor(rgb(0xD94848).cgColor)
+                ctx.setLineWidth(6.5); ctx.setLineCap(.round)
+                ctx.move(to: CGPoint(x: -r * 0.35, y: r * 0.80))
+                ctx.addQuadCurve(to: tailEnd, control: CGPoint(x: -r * 0.65, y: r * 1.02))
+                ctx.strokePath()
+                ctx.setStrokeColor(rgb(0xF6EBDD).cgColor)
+                ctx.setLineWidth(2.0)
+                ctx.move(to: CGPoint(x: tailEnd.x + 5, y: tailEnd.y - 2.5))
+                ctx.addLine(to: CGPoint(x: tailEnd.x + 7.5, y: tailEnd.y + 1.5))
+                ctx.strokePath()
+            }
             ctx.setStrokeColor(rgb(scarf ? 0xD94848 : 0xC0394B).cgColor)
-            ctx.setLineWidth(scarf ? 6 : 3.2)
-            ctx.setLineCap(.round)
-            ctx.move(to: CGPoint(x: -r * 0.55, y: r * 0.72))
-            ctx.addQuadCurve(to: CGPoint(x: r * 0.55, y: r * 0.82), control: CGPoint(x: 0, y: r * 1.05))
+            ctx.setLineWidth(scarf ? 6.2 : 3.2); ctx.setLineCap(.round)
+            ctx.move(to: CGPoint(x: -r * 0.56, y: r * 0.72))
+            ctx.addQuadCurve(to: CGPoint(x: r * 0.60, y: r * 0.78), control: CGPoint(x: faceX * 0.4, y: r * 1.04))
             ctx.strokePath()
             if !scarf {
+                let sway = sin(pose.time * 7) * 1.8 * rBlend
                 ctx.setFillColor(rgb(0xF2B630).cgColor)
-                ctx.fillEllipse(in: CGRect(x: r * 0.1, y: r * 0.88, width: 6, height: 6))
+                ctx.fillEllipse(in: CGRect(x: faceX * 0.55 - 3 - sway, y: r * 0.88, width: 6.2, height: 6.2))
             }
         case .bow:
             ctx.setFillColor(rgb(0xF27BA5).cgColor)
-            let b = CGPoint(x: r * 0.05, y: -r * 0.82)
+            let b = CGPoint(x: -r * 0.42, y: -r * 0.68)
             ctx.fillEllipse(in: CGRect(x: b.x - 7, y: b.y - 3.5, width: 7, height: 7))
             ctx.fillEllipse(in: CGRect(x: b.x, y: b.y - 3.5, width: 7, height: 7))
             ctx.setFillColor(rgb(0xC94C7C).cgColor)
             ctx.fillEllipse(in: CGRect(x: b.x - 2, y: b.y - 2, width: 4, height: 4))
         case .shades:
-            ctx.setFillColor(rgb(0x15161A).cgColor)
-            ctx.addPath(CGPath(roundedRect: CGRect(x: eye.x - ew * 1.25, y: eye.y - eh * 0.9, width: ew * 2.6, height: eh * 1.6),
-                               cornerWidth: 4, cornerHeight: 4, transform: nil))
-            ctx.fillPath()
-            ctx.setStrokeColor(rgb(0x15161A).cgColor)
-            ctx.setLineWidth(1.6)
-            ctx.move(to: CGPoint(x: eye.x - ew * 1.2, y: eye.y - eh * 0.4))
-            ctx.addLine(to: CGPoint(x: -r * 0.5, y: -r * 0.3))
+            ctx.setStrokeColor(rgb(0x15161A).cgColor); ctx.setLineWidth(1.6)
+            ctx.move(to: CGPoint(x: eyes[0].c.x - eyes[0].rx, y: eyes[0].c.y - eyes[0].ry * 0.3))
+            ctx.addLine(to: CGPoint(x: -r * 0.75, y: -r * 0.18))
+            ctx.strokePath()
+            for e in eyes {
+                let w = e.rx * 2.55, h = e.ry * 1.95
+                let rect = CGRect(x: e.c.x - w * 0.5, y: e.c.y - h * 0.45, width: w, height: h)
+                let lens = CGPath(roundedRect: rect, cornerWidth: 4.5, cornerHeight: 4.5, transform: nil)
+                ctx.setFillColor(rgb(0x15161A).cgColor)
+                ctx.addPath(lens); ctx.fillPath()
+                ctx.saveGState()
+                ctx.addPath(lens); ctx.clip()
+                ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.24).cgColor)
+                let g = CGMutablePath()
+                g.move(to: CGPoint(x: rect.minX + w * 0.15, y: rect.maxY))
+                g.addLine(to: CGPoint(x: rect.minX + w * 0.46, y: rect.minY))
+                g.addLine(to: CGPoint(x: rect.minX + w * 0.64, y: rect.minY))
+                g.addLine(to: CGPoint(x: rect.minX + w * 0.33, y: rect.maxY))
+                g.closeSubpath()
+                ctx.addPath(g); ctx.fillPath()
+                ctx.restoreGState()
+                ctx.setStrokeColor(pal.outline.withAlphaComponent(0.55).cgColor)
+                ctx.setLineWidth(1.0)
+                ctx.addPath(lens); ctx.strokePath()
+            }
+            ctx.setStrokeColor(rgb(0x15161A).cgColor); ctx.setLineWidth(1.8)
+            ctx.move(to: CGPoint(x: eyes[0].c.x + eyes[0].rx * 0.9, y: eyes[0].c.y - eyes[0].ry * 0.2))
+            ctx.addLine(to: CGPoint(x: eyes[1].c.x - eyes[1].rx * 0.9, y: eyes[1].c.y - eyes[1].ry * 0.2))
             ctx.strokePath()
         case .none:
             break
         }
-        // 圣诞季：斜扣一顶圣诞帽
-        if pose.santaHat { drawSideSantaHat(in: ctx, r: r, time: pose.time) }
-        // 叼着的东西：横在嘴边（跟着头一起低头、转动）
+        // 圣诞季：斜扣一顶圣诞帽（跑步时微向后仰）
+        if pose.santaHat {
+            ctx.saveGState()
+            ctx.rotate(by: -earPin * 0.35)
+            drawSideSantaHat(in: ctx, r: r, time: pose.time)
+            ctx.restoreGState()
+        }
+        // 叼着的东西：横咬在 3/4 嘴边
         if let trinket = pose.trinket {
             ctx.saveGState()
-            // 横咬在嘴角（口鼻下沿靠前），一半露在嘴前面
-            ctx.translateBy(x: r * 0.86, y: r * 0.6)
+            ctx.translateBy(x: faceX + r * 0.24, y: r * 0.46)
             ctx.rotate(by: 0.08)
             drawTrinket(trinket, in: ctx)
             ctx.restoreGState()
@@ -1091,7 +1359,7 @@ extension CatRenderer {
         let tilt = sin(pose.time * 0.7) * 0.06
         let bodyCTM = ctx.ctm
         ctx.saveGState()
-        ctx.translateBy(x: feet.x + 4, y: chest.minY - 13 + breathe)
+        ctx.translateBy(x: feet.x + 2, y: chest.minY - 12 + breathe)
         ctx.rotate(by: tilt)
         drawWalkerHead(in: ctx, center: .zero, pose: pose, pal: pal, lookDown: false,
                        fuse: [haunchPath, chestPath], fuseCTM: bodyCTM)
@@ -1103,7 +1371,7 @@ extension CatRenderer {
     /// 蜷着睡时头的位置：刚趴下时抬着头，蜷好后下巴埋到身前
     private static func curledHeadCenter(curl: CGFloat) -> CGPoint {
         let feet = walkerFeet
-        return CGPoint(x: feet.x + 36 - curl * 16, y: feet.y - 50 + curl * 15)
+        return CGPoint(x: feet.x + 32 - curl * 14, y: feet.y - 48 + curl * 13)
     }
 
     /// 蜷成一团睡觉：圆滚滚的身子，后腿收在肚子边，前爪塞在下巴底下，尾巴绕过来盖住爪子。
