@@ -651,8 +651,12 @@ struct RoamDirector {
                 snowTrip += dt
             }
             if abs(toX - pos.x) < 0.5 {
-                // 疯跑到地方：压低身子带惯性急刹（往家跑时不刹，直接接着跳）
-                activity = run && !returning ? .land(duration: 0.38, skidding: true) : nil
+                // 疯跑到地方：压低身子带惯性急刹（往家跑时不刹，直接接着跳）。
+                // 接下来要在这一点起跳、爬窗框、偷看、举牌或放东西时原地刹住，不滑过头：
+                // 滑过头会让起跳点对不上（跳的时候瞬移回去），举牌 / 推东西的目的地也永远到不了
+                let mustStopHere = pendingJump != nil || pendingPeek != nil || pendingClimb != nil
+                    || delivering || knockGoal != nil
+                activity = run && !returning ? .land(duration: mustStopHere ? 0.3 : 0.38, skidding: !mustStopHere) : nil
             }
         case .crouch(let t, let duration, let jump):
             let nt = t + dt
