@@ -57,6 +57,10 @@ final class InputEngine {
 
     private(set) var isHIDActive = false
     private(set) var isTapActive = false
+    private var lastInputAllowed = false
+    private var hidRetryCount = 0
+    private var nextHIDRetryAt: CFTimeInterval = 0
+    private static let hidRetryBackoffs: [CFTimeInterval] = [3, 10, 30]
 
     // Callbacks
     var onKeyDown: ((PhysicalKey) -> Void)?
@@ -98,6 +102,9 @@ final class InputEngine {
     }
 
     func start() {
+        hidRetryCount = 0
+        nextHIDRetryAt = 0
+        lastInputAllowed = hasInputMonitoringPermission
         startLocalFallbackMonitor()
         tryStartHID()
         tryStartEventTap()
@@ -110,6 +117,11 @@ final class InputEngine {
             let prevStatus = self.status
             let inputAllowed = self.hasInputMonitoringPermission
             let keyboardAllowed = inputAllowed || self.hasAccessibilityPermission
+            if inputAllowed && !self.lastInputAllowed {
+                self.hidRetryCount = 0
+                self.nextHIDRetryAt = 0
+            }
+            self.lastInputAllowed = inputAllowed
             if !inputAllowed && self.isHIDActive {
                 self.stopHID()
             }
@@ -119,7 +131,7 @@ final class InputEngine {
             if let tap = self.eventTap, !CFMachPortIsValid(tap) {
                 self.stopEventTap()
             }
-            if !self.isHIDActive && inputAllowed {
+            if !self.isHIDActive && inputAllowed && self.shouldRetryHID(now: CACurrentMediaTime()) {
                 self.tryStartHID()
             }
             if !self.isTapActive && keyboardAllowed {
@@ -143,6 +155,9 @@ final class InputEngine {
         permissionCheckTimer = nil
         stopHID()
         stopEventTap()
+        hidRetryCount = 0
+        nextHIDRetryAt = 0
+        lastInputAllowed = false
         if let m = localMonitor {
             NSEvent.removeMonitor(m)
             localMonitor = nil
@@ -189,6 +204,16 @@ final class InputEngine {
 
     // MARK: - Layer 1: IOHIDManager (Raw Kernel HID — Best for Games + IME)
 
+    private func shouldRetryHID(now: CFTimeInterval) -> Bool {
+        hidRetryCount <= Self.hidRetryBackoffs.count && now >= nextHIDRetryAt
+    }
+
+    private func closeHIDManager(_ manager: IOHIDManager) {
+        IOHIDManagerRegisterInputValueCallback(manager, nil, nil)
+        IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+        IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+    }
+
     private func tryStartHID() {
         guard !isHIDActive else { return }
         guard hasInputMonitoringPermission else { return }
@@ -221,22 +246,30 @@ final class InputEngine {
 
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
         let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
-        if openResult == kIOReturnSuccess {
+        // Treat exclusive-access returns (e.g. Karabiner seizing physical keyboards) as active so
+        // non-seized devices keep reporting and we don't leak managers on a retry loop.
+        if openResult == kIOReturnSuccess || openResult == kIOReturnExclusiveAccess {
             self.hidManager = manager
             self.isHIDActive = true
+            self.hidRetryCount = 0
+            self.nextHIDRetryAt = 0
         } else {
-            IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+            closeHIDManager(manager)
             self.isHIDActive = false
+            let delay = Self.hidRetryBackoffs[min(hidRetryCount, Self.hidRetryBackoffs.count - 1)]
+            hidRetryCount += 1
+            nextHIDRetryAt = CACurrentMediaTime() + delay
         }
     }
 
     private func stopHID() {
         if let manager = hidManager {
-            IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
-            IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+            closeHIDManager(manager)
             hidManager = nil
         }
         isHIDActive = false
+        hidRetryCount = 0
+        nextHIDRetryAt = 0
         hidPressedKeys.removeAll()
         recomputeUnifiedKeys()
     }
