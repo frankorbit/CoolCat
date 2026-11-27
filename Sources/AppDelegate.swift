@@ -599,12 +599,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let k = CatSettings.shared.scale * CatRenderer.walkerArtScale
         let floor = RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2)
         fileKick.update(dt: dt, surfaces: roamSurfaces, floor: floor, screen: screen, scale: k)
-        let file = fileKick.sprite(catX: roam.isHome ? nil : roam.pos.x, scale: k)
+        let files = fileKick.sprites(catX: roam.isHome ? nil : roam.pos.x, scale: k)
         let deskVisible = deskWindow?.isVisible == true
-        guard snowpack.hasVisibleSnow || !sprites.isEmpty || file != nil || deskVisible else { return }
+        guard snowpack.hasVisibleSnow || !sprites.isEmpty || !files.isEmpty || deskVisible else { return }
         if deskWindow == nil { deskWindow = DeskOverlayWindow() }
-        deskWindow?.render(snowpack, trinkets: sprites, file: file, fileIcon: fileKick.icon, pointsPerUnit: k,
-                           on: screen)
+        deskWindow?.render(snowpack, trinkets: sprites, files: files, pointsPerUnit: k, on: screen)
     }
 
     /// 窗口顶积雪：下雪的季节（或节日预览）里慢慢积；小猫走过踩脚印、跑起来踢雪、抖爪子甩身子
@@ -678,7 +677,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // 窗口上沿：在外面溜达时每秒扫一次，在家时 5 秒一次（出门那一刻用得上）；
         // 窗口顶有雪时 0.3 秒一次：窗口一拖，雪要马上滑下来，不能悬在半空
-        let deskBusy = snowpack.hasVisibleSnow || !trinkets.isEmpty || roam.placedTrinket != nil || fileKick.file != nil
+        let deskBusy = snowpack.hasVisibleSnow || !trinkets.isEmpty || roam.placedTrinket != nil || fileKick.hasFiles
         let scanEvery: CFTimeInterval = deskBusy ? 0.3 : (roam.isHome ? 5 : 1)
         if now - lastSurfaceScan > scanEvery {
             lastSurfaceScan = now
@@ -693,8 +692,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let focusSpot = focus.focusSpot(surfaces: roamSurfaces, screen: screen, now: now)
         let floor = RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2)
         // 文件在另一块屏幕上、小猫正在这块屏幕上溜达：先叫它回座位，再从座位跳过去
+        // 好几个文件时从近到远：离小猫（在座位上就是座位）最近的先踢
+        let catSpot = roam.isHome ? CGPoint(x: home.midX, y: home.minY) : roam.pos
         let kickTarget = holdKick ? nil : fileKick.kickTarget(surfaces: roamSurfaces, floor: floor,
-                                                              scale: k * CatRenderer.walkerArtScale)
+                                                              scale: k * CatRenderer.walkerArtScale, from: catSpot)
         let world = RoamWorld(
             floor: floor,
             windowTops: roamSurfaces,
@@ -830,18 +831,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Finder 右键 → 服务 →「CoolCat 小猫踢飞（移到废纸篓）」（Info.plist 的 NSServices）
         NSApp.servicesProvider = fileKick
         NSUpdateDynamicServices()
-        // `--kick-file <路径> [--kick-at x,y]`（调试用）：启动 2 秒后从光标（或 x,y，屏幕坐标）蹦出这个文件，
-        // 相当于在那儿右键了它
+        // `--kick-file <路径> [--kick-file <路径> …] [--kick-at x,y]`（调试用）：启动 2 秒后踢这些文件，
+        // 相当于在光标（或 x,y，屏幕坐标）那儿右键了它们
         let arguments = CommandLine.arguments
-        if let flag = arguments.firstIndex(of: "--kick-file"), flag + 1 < arguments.count {
-            let url = URL(fileURLWithPath: arguments[flag + 1])
+        let urls = arguments.indices.filter { arguments[$0] == "--kick-file" && $0 + 1 < arguments.count }
+            .map { URL(fileURLWithPath: arguments[$0 + 1]) }
+        if !urls.isEmpty {
             let spot = arguments.firstIndex(of: "--kick-at").flatMap { index -> CGPoint? in
                 guard index + 1 < arguments.count else { return nil }
                 let parts = arguments[index + 1].split(separator: ",").compactMap { Double($0) }
                 return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                self?.fileKick.request([url], at: spot ?? NSEvent.mouseLocation)
+                self?.fileKick.request(urls, at: spot ?? NSEvent.mouseLocation)
             }
         }
     }

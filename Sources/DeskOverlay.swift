@@ -22,6 +22,76 @@ struct FileKickSprite: Equatable {
     var size: CGFloat
     /// 飞行中的残影：最新的在最后
     var trail: [KickGhost]
+    /// 这个文件的图（和 Finder 里一样的缩略图）
+    var icon: NSImage?
+}
+
+/// 一个文件图标的几层：图标本身 + 飞行残影（共用同一张位图）
+private final class FileLayerGroup {
+    /// 残影取第几帧前的位置、多透明
+    static let ghostSteps: [(back: Int, opacity: Float)] = [(2, 0.32), (4, 0.18), (6, 0.08)]
+
+    let icon = CALayer()
+    let ghosts: [CALayer]
+    private var iconKey: ObjectIdentifier?
+
+    init(in host: CALayer?) {
+        ghosts = Self.ghostSteps.map { _ in
+            let ghost = CALayer()
+            ghost.contentsGravity = .resizeAspect
+            ghost.isHidden = true
+            return ghost
+        }
+        // 残影在图标下面
+        ghosts.forEach { host?.addSublayer($0) }
+        icon.contentsGravity = .resizeAspect
+        icon.isHidden = true
+        icon.shadowColor = NSColor.black.cgColor
+        icon.shadowOpacity = 0.25
+        icon.shadowRadius = 3
+        icon.shadowOffset = CGSize(width: 0, height: -2)
+        host?.addSublayer(icon)
+    }
+
+    func hide() {
+        icon.isHidden = true
+        ghosts.forEach { $0.isHidden = true }
+    }
+
+    /// 位置、角度、缩放跟着物理走；飞起来时后面拖几道残影
+    func show(_ sprite: FileKickSprite, origin: CGPoint, pixelScale: CGFloat) {
+        guard let image = sprite.icon else {
+            hide()
+            return
+        }
+        // 换了文件（或者换了屏幕的缩放）才重新取位图
+        let key = ObjectIdentifier(image)
+        if iconKey != key || icon.contentsScale != pixelScale {
+            iconKey = key
+            var rect = CGRect(x: 0, y: 0, width: sprite.size * pixelScale, height: sprite.size * pixelScale)
+            let bitmap = image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+            icon.contents = bitmap
+            ghosts.forEach { $0.contents = bitmap }
+        }
+        func place(_ layer: CALayer, center: CGPoint, angle: CGFloat, scale: CGFloat, opacity: Float) {
+            layer.isHidden = false
+            layer.contentsScale = pixelScale
+            layer.bounds = CGRect(x: 0, y: 0, width: sprite.size * scale, height: sprite.size * scale)
+            layer.position = CGPoint(x: center.x - origin.x, y: center.y - origin.y)
+            layer.setAffineTransform(CGAffineTransform(rotationAngle: angle))
+            layer.opacity = opacity
+        }
+        place(icon, center: sprite.center, angle: sprite.angle, scale: sprite.scale, opacity: Float(sprite.opacity))
+        for (layer, step) in zip(ghosts, Self.ghostSteps) {
+            let index = sprite.trail.count - step.back
+            guard index >= 0 else {
+                layer.isHidden = true
+                continue
+            }
+            let ghost = sprite.trail[index]
+            place(layer, center: ghost.center, angle: ghost.angle, scale: ghost.scale, opacity: step.opacity)
+        }
+    }
 }
 
 /// 小猫「桌面」上的东西：窗口顶的积雪、被推下桌的小东西、要踢飞的文件。一个全屏透明窗口，点击完全穿透，只在小猫那块屏幕上。
@@ -39,13 +109,9 @@ final class DeskOverlayWindow: NSPanel {
     private var trinketLayers: [CALayer] = []
     private var trinketImages: [String: CGImage] = [:]
     private var drawnSprites: [TrinketSprite] = []
-    /// 要踢的文件：图标一层 + 飞行残影几层（共用同一张位图）
-    private let fileLayer = CALayer()
-    private var ghostLayers: [CALayer] = []
-    private var drawnFile: FileKickSprite?
-    private var fileIconKey: ObjectIdentifier?
-    /// 残影取第几帧前的位置、多透明
-    private static let ghostSteps: [(back: Int, opacity: Float)] = [(2, 0.32), (4, 0.18), (6, 0.08)]
+    /// 要踢的文件：每个文件一组层（不够就加），画在最上面
+    private var fileGroups: [FileLayerGroup] = []
+    private var drawnFiles: [FileKickSprite] = []
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -63,21 +129,6 @@ final class DeskOverlayWindow: NSPanel {
         for layer in [capLayer, shadeLayer, printLayer, clumpLayer] {
             host.layer?.addSublayer(layer)
         }
-        // 文件在最上面（盖过积雪和小东西）；残影在图标下面
-        for _ in Self.ghostSteps {
-            let ghost = CALayer()
-            ghost.contentsGravity = .resizeAspect
-            ghost.isHidden = true
-            host.layer?.addSublayer(ghost)
-            ghostLayers.append(ghost)
-        }
-        fileLayer.contentsGravity = .resizeAspect
-        fileLayer.isHidden = true
-        fileLayer.shadowColor = NSColor.black.cgColor
-        fileLayer.shadowOpacity = 0.25
-        fileLayer.shadowRadius = 3
-        fileLayer.shadowOffset = CGSize(width: 0, height: -2)
-        host.layer?.addSublayer(fileLayer)
         capLayer.fillColor = NSColor(calibratedRed: 0.985, green: 0.99, blue: 1, alpha: 1).cgColor
         // 淡蓝描边 + 一点点投影：浅色窗口标题栏上也看得见
         capLayer.strokeColor = CatRenderer.rgb(0xAFC0D6, 0.9).cgColor
@@ -108,10 +159,10 @@ final class DeskOverlayWindow: NSPanel {
     /// 每帧调用：雪层和脚印只在厚度、脚印深浅、窗口位置变了时重建路径；飞着的雪块、小东西、文件变了才更新
     /// - Parameters:
     ///   - pointsPerUnit: 侧身小猫画布单位到屏幕点的缩放（小东西和猫一起缩放）
-    ///   - file: 要踢的文件图标；fileIcon 是它的图（Finder 里的那个图标）
-    func render(_ pack: Snowpack, trinkets: [TrinketSprite], file: FileKickSprite? = nil, fileIcon: NSImage? = nil,
+    ///   - files: 要踢的文件图标（每个带着自己的图）
+    func render(_ pack: Snowpack, trinkets: [TrinketSprite], files: [FileKickSprite] = [],
                 pointsPerUnit: CGFloat, on screen: NSScreen) {
-        let hasFile = file != nil || drawnFile != nil
+        let hasFile = !files.isEmpty || !drawnFiles.isEmpty
         guard pack.hasVisibleSnow || !trinkets.isEmpty || !drawnSprites.isEmpty || hasFile else {
             if isVisible { orderOut(nil) }
             return
@@ -126,7 +177,7 @@ final class DeskOverlayWindow: NSPanel {
         let animating = !pack.clumps.isEmpty || hadClumps
         // 什么都没变（积满了、没有脚印、没有飞着的雪块、东西都躺着）：这一帧不碰 Core Animation
         let changed = signature != drawnSignature || trinkets != drawnSprites || capLayer.contentsScale != scale
-            || file != drawnFile
+            || files != drawnFiles
         guard changed || animating else {
             if !isVisible { orderFrontRegardless() }
             return
@@ -151,11 +202,11 @@ final class DeskOverlayWindow: NSPanel {
         if trinkets != drawnSprites {
             placeTrinkets(trinkets, origin: origin, pointsPerUnit: pointsPerUnit, pixelScale: scale)
         }
-        if file != drawnFile {
-            placeFile(file, icon: fileIcon, origin: origin, pixelScale: scale)
+        if files != drawnFiles {
+            placeFiles(files, origin: origin, pixelScale: scale)
         }
         CATransaction.commit()
-        setShown(pack.hasVisibleSnow || !trinkets.isEmpty || file != nil)
+        setShown(pack.hasVisibleSnow || !trinkets.isEmpty || !files.isEmpty)
     }
 
     private func setShown(_ shown: Bool) {
@@ -201,42 +252,18 @@ final class DeskOverlayWindow: NSPanel {
         }
     }
 
-    /// 文件图标：位置、角度、缩放跟着物理走；飞起来时后面拖几道残影
-    private func placeFile(_ sprite: FileKickSprite?, icon: NSImage?, origin: CGPoint, pixelScale: CGFloat) {
-        drawnFile = sprite
-        guard let sprite, let icon else {
-            fileLayer.isHidden = true
-            ghostLayers.forEach { $0.isHidden = true }
-            fileIconKey = nil
-            return
+    /// 每个文件一组层：不够就加在最上面（盖过积雪和小东西），多出来的藏起来
+    private func placeFiles(_ sprites: [FileKickSprite], origin: CGPoint, pixelScale: CGFloat) {
+        drawnFiles = sprites
+        while fileGroups.count < sprites.count {
+            fileGroups.append(FileLayerGroup(in: contentView?.layer))
         }
-        // 换了文件（或者换了屏幕的缩放）才重新取位图
-        let key = ObjectIdentifier(icon)
-        if fileIconKey != key || fileLayer.contentsScale != pixelScale {
-            fileIconKey = key
-            var rect = CGRect(x: 0, y: 0, width: sprite.size * pixelScale, height: sprite.size * pixelScale)
-            let image = icon.cgImage(forProposedRect: &rect, context: nil, hints: nil)
-            fileLayer.contents = image
-            ghostLayers.forEach { $0.contents = image }
-        }
-        func place(_ layer: CALayer, center: CGPoint, angle: CGFloat, scale: CGFloat, opacity: Float) {
-            layer.isHidden = false
-            layer.contentsScale = pixelScale
-            layer.bounds = CGRect(x: 0, y: 0, width: sprite.size * scale, height: sprite.size * scale)
-            layer.position = CGPoint(x: center.x - origin.x, y: center.y - origin.y)
-            layer.setAffineTransform(CGAffineTransform(rotationAngle: angle))
-            layer.opacity = opacity
-        }
-        place(fileLayer, center: sprite.center, angle: sprite.angle, scale: sprite.scale,
-              opacity: Float(sprite.opacity))
-        for (layer, step) in zip(ghostLayers, Self.ghostSteps) {
-            let index = sprite.trail.count - step.back
-            guard index >= 0 else {
-                layer.isHidden = true
-                continue
+        for (index, group) in fileGroups.enumerated() {
+            if index < sprites.count {
+                group.show(sprites[index], origin: origin, pixelScale: pixelScale)
+            } else {
+                group.hide()
             }
-            let ghost = sprite.trail[index]
-            place(layer, center: ghost.center, angle: ghost.angle, scale: ghost.scale, opacity: step.opacity)
         }
     }
 

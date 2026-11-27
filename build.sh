@@ -100,6 +100,7 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/FocusCompanion.swift"
     "$ROOT/Sources/FileKick.swift"
     "$ROOT/Sources/FileKickCompanion.swift"
+    "$ROOT/Sources/FinderBridge.swift"
     "$ROOT/Sources/ClaudeBridge.swift"
     "$ROOT/Sources/MeetingMonitor.swift"
     "$ROOT/Sources/KeyHabits.swift"

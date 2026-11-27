@@ -1,12 +1,11 @@
 import AppKit
 import QuartzCore
-import QuickLookThumbnailing
 
 // MARK: - File Kick Companion
 
 /// 「小猫踢飞（移到废纸篓）」的 App 这一侧：接 Finder 右键服务（和菜单里的「小猫踢飞文件…」），
-/// 先把文件移进废纸篓，同时在你右键的地方蹦出它的图标；每帧推进图标的物理、告诉漫游小猫去哪儿踢；
-/// 踢中时让图标转着飞出屏幕。踢之前按 Esc 可以取消（文件从废纸篓放回原处）。
+/// 先把文件移进废纸篓，同时在每个文件原来的地方蹦出它的图标；每帧推进图标的物理、告诉漫游小猫下一个去踢哪个
+/// （从近到远一个个踢）；踢中时让图标转着飞出屏幕。踢之前按 Esc 可以取消（还没踢的文件从废纸篓放回原处）。
 ///
 /// 只移进废纸篓，绝不永久删除；系统目录、主目录、磁盘根目录、小猫自己都不让踢
 final class FileKickCompanion: NSObject {
@@ -15,16 +14,31 @@ final class FileKickCompanion: NSObject {
     /// 小猫藏起来了：问调用方能不能踢（藏着就不踢，免得文件凭空消失）
     var canKick: (() -> Bool)?
 
-    private(set) var file: KickedFile?
+    /// 一个要踢的文件：图标、物理、在废纸篓里的位置
+    private struct Kickable {
+        let id: Int
+        let original: URL
+        var inTrash: URL?
+        var icon: NSImage?
+        /// 图标从哪儿蹦出来（屏幕坐标）；nil = 从屏幕顶上掉下来（菜单里选的文件）
+        var origin: CGPoint?
+        /// 还要等多久才蹦出来：几个文件错开一点，不在同一帧
+        var delay: CGFloat
+        var file: KickedFile?
+        /// 已经被踢出去了
+        var launched = false
+    }
+
+    private var items: [Kickable] = []
+    /// 小猫正在去踢的那个（编号）：选定了就不换，免得半路改主意来回跑
+    private var target: Int?
+    /// 这一批里已经踢出去的
+    private var kickedNames: [String] = []
     /// 文件在哪块屏幕上（你右键的地方）：小猫这一趟去那块屏幕；nil = 小猫自己那块（菜单里选的文件）
     private(set) var targetScreen: NSScreen?
-    private(set) var icon: NSImage?
-    /// 这一脚要踢的文件：原来的位置 → 废纸篓里的位置（取消时放回去）
-    private var trashed: [(original: URL, inTrash: URL?)] = []
-    /// 移进废纸篓之后、图标出现之前：等下一帧有屏幕信息再放出来
-    private var pendingSpawn: (point: CGPoint?, size: CGFloat)?
-    /// 正在移进废纸篓（后台）
+    /// 正在取图标、移进废纸篓（后台）
     private var trashing = false
+    private var size: CGFloat = 0
     private var time: CGFloat = 0
 
     /// 最近一次右键（或 Control + 左键）的位置和时刻：Finder 服务里拿不到图标位置，就从这里蹦出来
@@ -35,8 +49,14 @@ final class FileKickCompanion: NSObject {
     static let iconUnits: CGFloat = 46
     /// 右键多久之内调起的服务，算是从右键的地方蹦出来
     static let contextClickMaxAge: CFTimeInterval = 15
+    /// 一次最多踢几个：再多屏幕上就乱成一锅粥了
+    static let maxFiles = 20
+    /// 相邻两个文件蹦出来错开多久
+    static let spawnStagger: CGFloat = 0.06
 
-    var isBusy: Bool { file != nil || trashing || pendingSpawn != nil }
+    var isBusy: Bool { !items.isEmpty || trashing }
+    /// 屏幕上有文件图标（扫窗口勤快点，文件要跟着窗口走）
+    var hasFiles: Bool { items.contains { $0.file != nil } }
 
     /// 开始记右键位置（全局鼠标监听不需要额外权限）
     func start() {
@@ -72,17 +92,18 @@ final class FileKickCompanion: NSObject {
         request(urls, at: recent ?? NSEvent.mouseLocation)
     }
 
-    /// 踢这些文件。point = 图标从哪儿蹦出来（屏幕坐标）；nil = 从屏幕顶上掉下来（菜单里选的文件）
+    /// 踢这些文件。point = 你右键的地方（屏幕坐标）：桌面上的文件从各自的位置蹦出来，其余的以这里为中心排开；
+    /// nil = 从屏幕顶上掉下来（菜单里选的文件）
     func request(_ urls: [URL], at point: CGPoint?) {
         guard !isBusy else {
-            onNotice?("小猫正忙着踢上一个呢")
+            onNotice?("小猫正忙着踢上一批呢")
             return
         }
         guard canKick?() ?? true else {
             onNotice?("小猫藏起来了，先显示小猫再让它踢吧")
             return
         }
-        let targets: [URL]
+        var targets: [URL]
         switch FileKickRules.validate(urls) {
         case .failure(let reason):
             onNotice?(reason.message)
@@ -90,134 +111,86 @@ final class FileKickCompanion: NSObject {
         case .success(let valid):
             targets = valid
         }
+        if targets.count > Self.maxFiles {
+            targets = Array(targets.prefix(Self.maxFiles))
+            onNotice?("一次最多踢 \(Self.maxFiles) 个，先踢前 \(Self.maxFiles) 个")
+        }
         targetScreen = point.flatMap { spot in NSScreen.screens.first { $0.frame.contains(spot) } }
         trashing = true
-        let size = Self.iconUnits * CatSettings.shared.scale * CatRenderer.walkerArtScale
+        kickedNames = []
+        size = Self.iconUnits * CatSettings.shared.scale * CatRenderer.walkerArtScale
         // 先照 Finder 的样子拿图标（文件还在原处才拿得到），再移进废纸篓
-        Self.finderIcon(for: targets, size: size) { [weak self] image in
-            self?.icon = image
-            self?.moveToTrash(targets, spawnAt: point, size: size)
+        FinderBridge.thumbnails(for: targets, size: size) { [weak self] icons in
+            self?.moveToTrash(targets, icons: icons, around: point)
         }
     }
 
-    /// 和 Finder 里看到的一样的图标：内容缩略图（文本前几行、图片 / PDF 预览，带页角和边框），没有就是类型图标。
-    /// 多选时用系统的「一叠文件」图标。最多等 0.8 秒，等不到就用类型图标
-    private static func finderIcon(for urls: [URL], size: CGFloat, completion: @escaping (NSImage?) -> Void) {
-        let fallback = NSWorkspace.shared.icon(forFiles: urls.map(\.path))
-        guard urls.count == 1, let url = urls.first else {
-            completion(fallback)
-            return
-        }
-        var finished = false
-        let finish = { (image: NSImage?) in
-            guard !finished else { return }
-            finished = true
-            completion(image)
-        }
-        let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: size, height: size),
-                                                   scale: NSScreen.main?.backingScaleFactor ?? 2,
-                                                   representationTypes: .all)
-        request.iconMode = true
-        QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, _ in
-            DispatchQueue.main.async { finish(thumbnail?.nsImage ?? fallback) }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { finish(fallback) }
+    /// 进了废纸篓的一个文件：它是第几个、在废纸篓里的位置、删之前在桌面上的位置
+    private struct Moved {
+        var index: Int
+        var inTrash: URL?
+        var spot: CGPoint?
     }
 
     /// 移进废纸篓放到后台（网络盘可能要一会儿）；移完了图标才蹦出来：原来的图标消失、这个蹦出来，像它自己跳出来的
-    private func moveToTrash(_ targets: [URL], spawnAt point: CGPoint?, size: CGFloat) {
+    private func moveToTrash(_ targets: [URL], icons: [NSImage?], around point: CGPoint?) {
         DispatchQueue.global(qos: .userInitiated).async {
-            var moved: [(original: URL, inTrash: URL?)] = []
-            var failure: String?
+            // 先请 Finder 一次删完（顺便问桌面上的图标在哪）：Finder 自己删的，原图标马上消失；
+            // 自己删的话 Finder 要两三秒才发现，这期间原图标还在，看起来像有两个图标
+            let viaFinder = FinderBridge.trash(targets)
+            var results: [FinderBridge.Trashed] = []
             var finderDenied = false
-            for url in targets {
-                // 先请 Finder 删：Finder 自己删的，原图标马上消失；自己删的话 Finder 要两三秒才发现，
-                // 这期间原图标还在，看起来像有两个图标
-                switch Self.trashViaFinder(url) {
-                case .success(let inTrash):
-                    moved.append((url, inTrash))
+            switch viaFinder {
+            case .success(let items): results = items
+            case .failure(let reason):
+                finderDenied = reason == .notAuthorized
+                results = targets.map { _ in FinderBridge.Trashed(desktopSpot: nil, inTrash: nil, trashed: false) }
+            }
+            var moved: [Moved] = []
+            var failure: String?
+            for (index, url) in targets.enumerated() {
+                let result = results[index]
+                if result.trashed {
+                    moved.append(Moved(index: index, inTrash: result.inTrash, spot: result.desktopSpot))
                     continue
-                case .failure(let reason):
-                    finderDenied = finderDenied || reason == .notAuthorized
                 }
+                // Finder 没删成：自己删
                 var resulting: NSURL?
                 do {
                     try FileManager.default.trashItem(at: url, resultingItemURL: &resulting)
-                    moved.append((url, resulting as URL?))
+                    moved.append(Moved(index: index, inTrash: resulting as URL?, spot: nil))
                 } catch {
-                    failure = "没踢动「\(url.lastPathComponent)」：\(error.localizedDescription)"
-                    break
+                    failure = failure ?? "没踢动「\(url.lastPathComponent)」：\(error.localizedDescription)"
                 }
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.trashing = false
-                self.trashed = moved
-                if finderDenied && failure == nil {
+                if finderDenied {
                     self.onNotice?("在「隐私与安全性 → 自动化」里允许 CoolCat 控制 Finder，原图标就会马上消失")
                 }
-                if let failure {
-                    // 一个都没进去：不演了；进去了几个：照样踢（进去了的就是踢走了的）
-                    self.onNotice?(failure)
-                    guard !moved.isEmpty else {
-                        self.icon = nil
-                        self.targetScreen = nil
-                        return
-                    }
+                // 没进废纸篓的不演；进去了的照样踢
+                if let failure { self.onNotice?(failure) }
+                guard !moved.isEmpty else {
+                    self.targetScreen = nil
+                    return
                 }
-                self.pendingSpawn = (point, size)
+                let cluster = point.map { FileKickOrder.clusterSpots(count: moved.count, around: $0, size: self.size) }
+                self.items = moved.enumerated().map { order, entry in
+                    Kickable(id: order, original: targets[entry.index], inTrash: entry.inTrash,
+                             icon: icons[entry.index], origin: entry.spot ?? cluster?[order],
+                             delay: CGFloat(order) * Self.spawnStagger)
+                }
             }
         }
     }
 
-    private enum FinderTrashFailure: Error, Equatable {
-        /// 你没允许 CoolCat 控制 Finder（-1743）
-        case notAuthorized
-        case failed
-    }
-
-    /// 请 Finder 把文件移到废纸篓（和 ⌘⌫ 一样，能「放回原处」），返回它在废纸篓里的位置。
-    /// 用 osascript 子进程发，不卡主线程；第一次会弹「CoolCat 想控制 Finder」的授权
-    private static func trashViaFinder(_ url: URL) -> Result<URL?, FinderTrashFailure> {
-        let script = """
-        on run argv
-            tell application "Finder"
-                set trashed to delete (POSIX file (item 1 of argv) as alias)
-                return POSIX path of (trashed as alias)
-            end tell
-        end run
-        """
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script, url.path]
-        let output = Pipe()
-        let errors = Pipe()
-        process.standardOutput = output
-        process.standardError = errors
-        do {
-            try process.run()
-        } catch {
-            return .failure(.failed)
-        }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let message = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            return .failure(message.contains("-1743") ? .notAuthorized : .failed)
-        }
-        let path = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return .success(path.isEmpty ? nil : URL(fileURLWithPath: path))
-    }
-
-    /// Esc：还没踢出去就不踢了，把文件从废纸篓放回原处
+    /// Esc：还没踢出去的不踢了，从废纸篓放回原处（已经飞出去的来不及了）
     func cancel() {
-        guard var current = file, current.canCancel else { return }
-        current.cancel()
-        file = current
-        let items = trashed
-        trashed = []
+        let pending = items.filter { !$0.launched && ($0.file?.canCancel ?? true) }
+        guard !pending.isEmpty else { return }
         var failed: [String] = []
-        for item in items {
+        for item in pending {
             guard let inTrash = item.inTrash else {
                 failed.append(item.original.lastPathComponent)
                 continue
@@ -228,62 +201,97 @@ final class FileKickCompanion: NSObject {
                 failed.append(item.original.lastPathComponent)
             }
         }
+        let pendingIDs = Set(pending.map(\.id))
+        // 已经蹦出来的缩小淡出；还没蹦出来的直接不要了
+        items = items.compactMap { item in
+            guard pendingIDs.contains(item.id) else { return item }
+            guard var file = item.file else { return nil }
+            file.cancel()
+            var cancelled = item
+            cancelled.file = file
+            return cancelled
+        }
+        target = nil
         onNotice?(failed.isEmpty ? "好吧，不踢了，放回去啦" : "「\(failed[0])」没放回去，去废纸篓里「放回原处」吧")
     }
 
     // MARK: Roam Hooks
 
-    /// 小猫一脚踢中：图标往那个角度飞出去
+    /// 小猫一脚踢中：正在踢的那个往那个角度飞出去；全踢完了冒个气泡
     func kicked(angle: CGFloat, dir: CGFloat) {
-        guard var current = file, current.canCancel else { return }
-        current.kick(angle: angle, dir: dir, speed: CGFloat.random(in: 1500...1900), spin: CGFloat.random(in: 9...14))
-        file = current
-        let count = trashed.count
-        let name = trashed.first?.original.lastPathComponent ?? ""
-        trashed = []
-        onNotice?(count == 1 ? "🗑️ 把「\(name)」踢进废纸篓啦" : "🗑️ 把 \(count) 个文件踢进废纸篓啦")
+        guard let id = target, let index = items.firstIndex(where: { $0.id == id }),
+              var file = items[index].file, file.canCancel else { return }
+        file.kick(angle: angle, dir: dir, speed: CGFloat.random(in: 1500...1900), spin: CGFloat.random(in: 9...14))
+        items[index].file = file
+        items[index].launched = true
+        kickedNames.append(items[index].original.lastPathComponent)
+        target = nil
+        guard !items.contains(where: { !$0.launched && ($0.file?.canCancel ?? true) }) else { return }
+        let count = kickedNames.count
+        onNotice?(count == 1 ? "🗑️ 把「\(kickedNames[0])」踢进废纸篓啦" : "🗑️ 把 \(count) 个文件踢进废纸篓啦")
     }
 
-    /// 文件落在小猫上不去的窗口顶上：让它掉到屏幕底
+    /// 正在踢的那个落在小猫上不去的窗口顶上：让它掉到屏幕底
     func targetUnreachable() {
-        file?.dropToFloor()
+        guard let id = target, let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].file?.dropToFloor()
     }
 
     // MARK: Per Frame
 
-    /// 每帧：放出等着的图标、推进物理；飞出屏幕就收工
+    /// 每帧：一个个放出等着的图标、推进物理；全飞出屏幕就收工
     /// - Parameter screen: 小猫这一帧在哪块屏幕上活动（surfaces、floor 都是这块屏幕的）
     func update(dt: CGFloat, surfaces: [RoamSurface], floor: RoamSurface, screen: NSScreen, scale: CGFloat) {
         time += dt
         // 文件在另一块屏幕上、小猫还没回座位换过去：图标先别蹦（这一帧的窗口、地面都是另一块屏幕的）
-        if let spawn = pendingSpawn, targetScreen.map({ $0 == screen }) ?? true {
-            pendingSpawn = nil
-            file = KickedFile(center: Self.spawnPoint(spawn.point, size: spawn.size, screen: screen), size: spawn.size)
+        let screenReady = targetScreen.map { $0 == screen } ?? true
+        let minWidth = Self.landingWidth(size: size, scale: scale)
+        for index in items.indices {
+            if items[index].file == nil {
+                guard screenReady else { continue }
+                items[index].delay -= dt
+                guard items[index].delay <= 0 else { continue }
+                items[index].file = KickedFile(center: Self.spawnPoint(items[index].origin, size: size, screen: screen),
+                                               size: size)
+            }
+            items[index].file?.update(dt: dt, surfaces: surfaces, floor: floor, minWidth: minWidth,
+                                      bounds: screen.frame)
         }
-        guard var current = file else { return }
-        current.update(dt: dt, surfaces: surfaces, floor: floor,
-                       minWidth: Self.landingWidth(size: current.size, scale: scale), bounds: screen.frame)
-        file = current.isGone ? nil : current
-        if file == nil {
-            icon = nil
+        items.removeAll { $0.file?.isGone ?? false }
+        if items.isEmpty && !trashing {
             targetScreen = nil
+            target = nil
         }
     }
 
-    /// 小猫该去哪儿踢（没有要踢的、已经踢出去了：nil）
-    func kickTarget(surfaces: [RoamSurface], floor: RoamSurface, scale: CGFloat) -> RoamKickTarget? {
-        guard let file else { return nil }
-        return file.kickTarget(surfaces: surfaces, floor: floor,
-                               minWidth: Self.landingWidth(size: file.size, scale: scale))
+    /// 小猫下一个去踢哪个：选定了就一直是它；踢完了挑剩下里离小猫最近的（还在掉的按它会落到的地方算）
+    /// - Parameter cat: 小猫现在在哪（在座位上就是座位）
+    func kickTarget(surfaces: [RoamSurface], floor: RoamSurface, scale: CGFloat, from cat: CGPoint) -> RoamKickTarget? {
+        // 还有没蹦出来的：等全都出来了再挑（不然先蹦出来的那个总被挑中，不一定是最近的）
+        guard !items.contains(where: { $0.file == nil }) else { return nil }
+        let minWidth = Self.landingWidth(size: size, scale: scale)
+        var targets: [Int: RoamKickTarget] = [:]
+        for item in items where !item.launched {
+            guard let file = item.file, let kickTarget = file.kickTarget(surfaces: surfaces, floor: floor,
+                                                                          minWidth: minWidth) else { continue }
+            targets[item.id] = kickTarget
+        }
+        if let id = target, let locked = targets[id] { return locked }
+        let surfaceY = { (id: Int) in ([floor] + surfaces).first { $0.id == id }?.y ?? floor.y }
+        let candidates = targets.map { (id: $0.key, spot: CGPoint(x: $0.value.x, y: surfaceY($0.value.surfaceID))) }
+        target = FileKickOrder.nearest(candidates, to: cat)
+        return target.flatMap { targets[$0] }
     }
 
     /// 覆盖层上画的图标；小猫靠近时瑟瑟发抖
-    func sprite(catX: CGFloat?, scale: CGFloat) -> FileKickSprite? {
-        guard let file else { return nil }
-        let nervous = catX.map { abs($0 - file.pos.x) < 150 * scale } ?? false
-        return FileKickSprite(center: file.center, angle: file.displayAngle(nervous: nervous, time: time),
-                              scale: file.scale, opacity: file.opacity, size: file.size,
-                              trail: file.isFlying ? file.trail : [])
+    func sprites(catX: CGFloat?, scale: CGFloat) -> [FileKickSprite] {
+        items.compactMap { item in
+            guard let file = item.file else { return nil }
+            let nervous = catX.map { abs($0 - file.pos.x) < 150 * scale } ?? false
+            return FileKickSprite(center: file.center, angle: file.displayAngle(nervous: nervous, time: time),
+                                  scale: file.scale, opacity: file.opacity, size: file.size,
+                                  trail: file.isFlying ? file.trail : [], icon: item.icon)
+        }
     }
 
     /// 窗口上沿至少这么宽，文件才落得住：小猫要能站在文件任意一边踢
@@ -291,7 +299,7 @@ final class FileKickCompanion: NSObject {
         2 * (RoamDirector.kickReach * scale + size / 2 + 30 * scale) + 4
     }
 
-    /// 图标从哪儿蹦出来：右键的地方（挪进可用区域里）；不在小猫这块屏幕上、或者没有位置，就从屏幕顶上掉下来
+    /// 图标从哪儿蹦出来：原来的地方（挪进可用区域里）；不在小猫这块屏幕上、或者没有位置，就从屏幕顶上掉下来
     private static func spawnPoint(_ point: CGPoint?, size: CGFloat, screen: NSScreen) -> CGPoint {
         let visible = screen.visibleFrame
         let half = size / 2

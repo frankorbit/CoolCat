@@ -317,3 +317,23 @@ enum FileKickRules {
         return .success(valid)
     }
 }
+
+// MARK: - Order
+
+/// 好几个文件一起踢：小猫先踢离它最近的那个，踢完再挑剩下里最近的
+enum FileKickOrder {
+    /// - Parameters:
+    ///   - candidates: 还能踢的文件：编号和它落脚的那一点
+    ///   - cat: 小猫现在在哪
+    /// - Returns: 最近那个的编号；没有就是 nil
+    static func nearest(_ candidates: [(id: Int, spot: CGPoint)], to cat: CGPoint) -> Int? {
+        candidates.min { hypot($0.spot.x - cat.x, $0.spot.y - cat.y) < hypot($1.spot.x - cat.x, $1.spot.y - cat.y) }?.id
+    }
+
+    /// 没有各自位置的文件（Finder 窗口里的、列表视图里的）：以你右键的地方为中心横着排开，间距是 1.3 个图标
+    static func clusterSpots(count: Int, around point: CGPoint, size: CGFloat) -> [CGPoint] {
+        (0..<count).map { index in
+            CGPoint(x: point.x + (CGFloat(index) - CGFloat(count - 1) / 2) * size * 1.3, y: point.y)
+        }
+    }
+}
