@@ -119,6 +119,7 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/RoamWindow.swift"
     "$ROOT/Sources/SettingsWindow.swift"
     "$ROOT/Sources/ShowcaseArt.swift"
+    "$ROOT/Sources/ShowcaseArtFocusKick.swift"
     "$ROOT/Sources/CatRenderer.swift"
     "$ROOT/Sources/CoatPatterns.swift"
     "$ROOT/Sources/OverlayWindow.swift"

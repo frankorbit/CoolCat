@@ -23,10 +23,12 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
 
 - 🎧 **Dances to your music** — headphones on when a music player is playing, a vertical LED spectrum wall behind the cat, real beat tracking via a system audio tap (macOS 14.2+) aligned to your output latency, with tap-along calibration. Moves hit the beat and accent the downbeat ([more](#-hitting-the-beat)). Strong beats get head-bobs, calm songs get slow sways. While music plays it stays at the keyboard instead of wandering off.
 - 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, sprints around as a bouncy chibi, treats window tops like tables to jump between (climbing the frame when they're too high), chases your cursor, knocks your pen off a window, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
+- 🍅 **Pomodoro timer** — start a 25 / 45 / 15-minute pomodoro from the menu: the cat curls up atop your front window with a tomato timer by its nose and a countdown in the menu bar, then wakes and holds up a sign telling you to take a break ([more](#-pomodoro)).
+- 👟 **Kick files away** — right-click a file in Finder and pick “CoolCat 小猫踢飞（移到废纸篓）”: the file drops from its spot, the cat runs over (leaping to another display if needed) and kicks it spinning off the screen; select several and it kicks them one by one, nearest first. It only goes to the Trash, so you can always put it back ([more](#-kick-files-away)).
 - 🤖 **Claude Code integration** — one-click hooks; a bubble shows *project · action · elapsed* per session, the cat waves when a session needs your approval — and if you're looking at another window, [holds up a sign](#-agent-sign) on it — and throws confetti when it is done.
 - ⌨️ **Codex integration** — one-click hooks in `~/.codex/hooks.json` (trust them once via `/hooks` in Codex); Codex sessions share the bubble with Claude Code, marked by a blue spinner.
 - 🎙 **Meeting mode** — headset when the mic is on, a "shh" when you type too loudly, a quick face wash before the camera turns on.
-- 🌙 **Life companion** — nightcap late at night, morning coffee, sleepy on low battery, a water reminder after 50 minutes of work.
+- 🌙 **Life companion** — nightcap late at night, morning coffee, sleepy on low battery, a water reminder after 50 minutes of work (left to the pomodoro while one is running).
 - ❄️ **Winter & Christmas** — a santa hat and Christmas gifts in December, light snow all winter, and [snow piling up on your windows](#-winter--christmas) for the cat to leave paw prints in.
 - 🪶 **Cursor play** — move the cursor slowly in front of the cat: it locks on, wiggles, and swats.
 - 🐟 **Fish treats** — it holds the treat with both paws, nibbles, drops crumbs and burps (6 per day).
@@ -83,6 +85,42 @@ When Claude Code or Codex stops to wait for your approval or reply while you're 
 
 Turn it off under *Settings → Interaction*; the *Sign preview* button pretends an agent is waiting for 20 seconds so you can see it right away.
 
+## 🍅 Pomodoro
+
+<p align="center">
+  <img src="assets/coolcat/focus.en.png" alt="Pomodoro: naps on your window while you focus, holds a sign when time is up" />
+</p>
+
+Click the menu bar icon or right-click the cat → “🍅 番茄钟” (Pomodoro), then pick 25, 45 or 15 minutes:
+
+- **Keeps you company** — the cat hops off its seat, runs to the top of your frontmost window and curls up to sleep, with a tomato timer by its nose whose red wedge shows the time left. The menu bar icon shows a countdown (with ☕ during the break).
+- **Doesn't get in the way** — typing is expected now, so it won't run home, chase the cursor or wander off. Only a meeting sends it back to its seat, and it returns afterwards. If Claude Code needs your approval it wakes up to [hold a sign](#-agent-sign), then goes back to sleep.
+- **Stays put** — it doesn't follow you from window to window; if its window closes or gets covered, it drops down and moves to your current front window. Too tall to reach? It sleeps on the screen edge right below.
+- **Time's up** — it wakes and holds up a sign on your front window: “🍅 第 N 个番茄完成 / 起来活动 5 分钟吧” (pomodoro N done, stretch for 5 minutes). After a few seconds, typing counts as “seen”; otherwise it holds the sign for up to 45 seconds. Every 4th pomodoro earns a 15-minute break, and a bubble pops up when the break is over.
+- **Menu** — end a pomodoro early, skip a break to start the next one, and see how many you finished today.
+- It runs on wall-clock time, so it keeps counting while the lid is closed. Each pomodoro adds 3 bond points (up to 12 a day), and the 50-minute water reminder steps aside while a pomodoro is running.
+
+## 👟 Kick files away
+
+<p align="center">
+  <img src="assets/coolcat/kick.en.png" alt="Kick files away: right-click in Finder, the cat runs over and kicks the file off the screen" />
+</p>
+
+Have the cat kick away files you don't want:
+
+1. In Finder (on the desktop or in a window), right-click the file → *Quick Actions* or *Services* → **“CoolCat 小猫踢飞（移到废纸篓）”** (“kick away, move to Trash”). You can also use the menu bar icon → “👟 小猫踢飞文件（移到废纸篓）…” and pick files.
+2. The file disappears from its spot and its icon (the same thumbnail Finder shows) pops out right there, drops onto the window top or screen edge below, and bounces to a stop.
+3. The cat runs over, hopping between windows and climbing frames as needed; if the file is on another display, it leaps across. The file trembles as the cat gets close.
+4. A quick aim, a wind-up, and a kick with a comic “pow” star. The angle is random: a low kick sends it skimming forward, a high kick sends it up. The icon spins, shrinks into the distance and trails a few ghost images as it flies off the screen.
+5. Selected several files? Each drops from its own spot and the cat kicks them one by one, nearest first. Then it watches the last one go and heads back to its seat (leaping back if it came from another display).
+
+- **Trash only** — just like ⌘⌫ in Finder, so *Put Back* works and nothing is deleted permanently. Press Esc before the kick lands to cancel and put the file back.
+- **Asks once to control Finder** — Finder moves the file itself, so the original icon vanishes immediately. It still works without that permission, but the original icon lingers for two or three seconds.
+- **Won't kick** — system folders, your home folder and its Desktop / Documents / Downloads folders themselves, whole disks, anything already in the Trash, or CoolCat itself.
+- You asked for it, so it goes even during meetings or while dancing.
+- Up to 20 files at a time. Desktop files drop from their own spots; for files in a Finder window (whose on-screen positions Finder doesn't expose) the icons line up around where you right-clicked.
+- Don't see the item in the right-click menu yet? Relaunch Finder or log out and back in once.
+
 ## 🎄 Winter & Christmas
 
 <p align="center">
@@ -130,6 +168,8 @@ macOS 11+ (real-time beat tracking needs macOS 14.2+).
 
 Requires *Input Monitoring*; *Screen & System Audio Recording* is optional and only used to analyze the music player's audio in memory. Package with `scripts/package-macos.sh`. The UI is in Simplified Chinese.
 
+Debug flags: `--focus-now --focus-seconds 40` runs a whole pomodoro cycle in a couple of minutes (without counting it or adding bond points); `--kick-file <path> [--kick-at x,y]` (repeat `--kick-file` for several) has the cat kick those files two seconds after launch (it really goes to the Trash), popping out at the given screen point.
+
 For beat diagnostics, launch with `open -a CoolCat --args --beat-log <file>` to log lock stats, tempo candidates and track titles every 5 seconds.
 
 ## 🔒 Privacy
@@ -138,6 +178,7 @@ For beat diagnostics, launch with `open -a CoolCat --args --beat-log <file>` to 
 - System audio is limited to the music player and analyzed in memory only.
 - Agent hooks send only event names, tool names and the project folder name to the local cat — never prompts or code.
 - Roaming reads window positions and sizes to find places to stand, never window contents, and needs no screen-recording permission.
+- Kicking files only happens after you pick files and a menu item, and only moves those files to the Trash (they can be put back). The Finder automation permission is used for nothing else.
 - No network access, no update checks.
 
 ## 📄 License

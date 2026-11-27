@@ -985,10 +985,12 @@ func renderWalkPreviewSheet(to path: String) {
                         runBlend: 0, moveBlend: 1))
     }
     // COOLCAT_WALK_SET=run：飞奔一个周期的 8 帧 + 急刹 + 转身
-    let runPoses: [(String, CatRenderer.WalkerPose)] = (0..<8).map { i in
-        ("飞奔 \(i)", .init(pose: .run, phase: CGFloat(i) / 8 * 2 * .pi, facing: 1, air: 0, time: 0.3, blink: false,
-                         runBlend: 1, moveBlend: 1))
-    } + [
+    // 拆成两步：map 后面直接接数组拼接，不带 -target 编译时类型推断会超时
+    let runCycle: [(String, CatRenderer.WalkerPose)] = (0..<8).map { frame in
+        ("飞奔 \(frame)", .init(pose: .run, phase: CGFloat(frame) / 8 * 2 * .pi, facing: 1, air: 0, time: 0.3,
+                             blink: false, runBlend: 1, moveBlend: 1))
+    }
+    let runPoses: [(String, CatRenderer.WalkerPose)] = runCycle + [
         ("急刹 1", .init(pose: .land, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, landProgress: 0.25, skidding: true)),
         ("急刹 2", .init(pose: .land, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, landProgress: 0.65, skidding: true)),
         ("转身", .init(pose: .walk, phase: .pi / 2, facing: 1, air: 0, time: 0.3, blink: false, moveBlend: 1, turnScale: 0.45))

@@ -148,6 +148,10 @@ enum ShowcaseArt {
         write(renderSnowpack(english: true), to: dir + "/snowpack.en.png")
         write(renderKnock(english: false), to: dir + "/knock.png")
         write(renderKnock(english: true), to: dir + "/knock.en.png")
+        write(renderFocus(english: false), to: dir + "/focus.png")
+        write(renderFocus(english: true), to: dir + "/focus.en.png")
+        write(renderKick(english: false), to: dir + "/kick.png")
+        write(renderKick(english: true), to: dir + "/kick.en.png")
     }
 
     // MARK: Knock Things Off
@@ -610,7 +614,7 @@ enum ShowcaseArt {
         return ctx.makeImage()
     }
 
-    private static func write(_ image: CGImage?, to path: String) {
+    static func write(_ image: CGImage?, to path: String) {
         guard let image, let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
         do {
             try png.write(to: URL(fileURLWithPath: path))
@@ -641,7 +645,7 @@ enum ShowcaseArt {
         return BondLog(store: store, today: "2026-11-24")
     }()
 
-    private static func makeContext(width: CGFloat, height: CGFloat) -> CGContext? {
+    static func makeContext(width: CGFloat, height: CGFloat) -> CGContext? {
         guard let ctx = CGContext(
             data: nil, width: Int(width * scale), height: Int(height * scale),
             bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
@@ -652,7 +656,7 @@ enum ShowcaseArt {
         return ctx
     }
 
-    private static func text(_ string: String, at point: CGPoint, size: CGFloat, weight: NSFont.Weight,
+    static func text(_ string: String, at point: CGPoint, size: CGFloat, weight: NSFont.Weight,
                              color: NSColor, in ctx: CGContext, maxWidth: CGFloat? = nil) {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
@@ -670,7 +674,7 @@ enum ShowcaseArt {
         NSGraphicsContext.restoreGraphicsState()
     }
 
-    private static func fillGradient(_ rect: CGRect, radius: CGFloat, colors: (NSColor, NSColor), in ctx: CGContext) {
+    static func fillGradient(_ rect: CGRect, radius: CGFloat, colors: (NSColor, NSColor), in ctx: CGContext) {
         ctx.saveGState()
         ctx.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
         ctx.clip()
@@ -927,7 +931,7 @@ enum ShowcaseArt {
     }
 
     /// 简化的 macOS 窗口：白底、红黄绿三个按钮、标题、几行内容条
-    private static func drawFakeWindow(_ rect: CGRect, title: String, in ctx: CGContext) {
+    static func drawFakeWindow(_ rect: CGRect, title: String, in ctx: CGContext) {
         let path = CGPath(roundedRect: rect, cornerWidth: 12, cornerHeight: 12, transform: nil)
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: 8), blur: 22, color: NSColor(calibratedWhite: 0, alpha: 0.18).cgColor)
@@ -961,7 +965,7 @@ enum ShowcaseArt {
 
     /// 把侧身小猫画在 feet（脚底中点）处；alpha < 1 用透明图层画，叠在一起的部件不会透出接缝
     /// - Parameter anchor: 画布上对准 feet 的那一点（爬窗框时是贴着窗框的那一点）
-    private static func drawWalker(_ pose: CatRenderer.WalkerPose, feet: CGPoint, k: CGFloat, alpha: CGFloat, in ctx: CGContext,
+    static func drawWalker(_ pose: CatRenderer.WalkerPose, feet: CGPoint, k: CGFloat, alpha: CGFloat, in ctx: CGContext,
                                    anchor: CGPoint = CatRenderer.walkerFeet) {
         ctx.saveGState()
         ctx.setAlpha(alpha)
@@ -973,5 +977,5 @@ enum ShowcaseArt {
         ctx.restoreGState()
     }
 
-    private static func rgb(_ hex: Int) -> NSColor { CatRenderer.rgb(hex) }
+    static func rgb(_ hex: Int) -> NSColor { CatRenderer.rgb(hex) }
 }
