@@ -2,16 +2,20 @@ import Foundation
 import AppKit
 import SwiftUI
 
-// Claude Code / Codex hook 中继：必须最先处理，读完 stdin 立即退出，不启动任何 UI
+// Claude Code / Codex / Antigravity hook 中继：必须最先处理，读完 stdin 立即退出，不启动任何 UI
 if CommandLine.arguments.contains(ClaudeHookRelay.argument) {
     ClaudeHookRelay.run(agent: .claude)
 }
 if CommandLine.arguments.contains(ClaudeHookRelay.codexArgument) {
     ClaudeHookRelay.run(agent: .codex)
 }
+if let idx = CommandLine.arguments.firstIndex(of: ClaudeHookRelay.agyArgument) {
+    let event = idx + 1 < CommandLine.arguments.count ? CommandLine.arguments[idx + 1] : nil
+    ClaudeHookRelay.run(agent: .agy, explicitEvent: event)
+}
 
 // 命令行安装/卸载 hook（和设置面板里的按钮走同一套逻辑，方便脚本化）：
-// --install-claude-hooks / --uninstall-claude-hooks / --install-codex-hooks / --uninstall-codex-hooks
+// --install-claude-hooks / --uninstall-claude-hooks / --install-codex-hooks / --uninstall-codex-hooks / --install-agy-hooks / --uninstall-agy-hooks
 for agent in CodingAgent.allCases {
     let install = "--install-\(agent.rawValue)-hooks", uninstall = "--uninstall-\(agent.rawValue)-hooks"
     guard CommandLine.arguments.contains(install) || CommandLine.arguments.contains(uninstall) else { continue }
@@ -19,7 +23,7 @@ for agent in CodingAgent.allCases {
     let installing = CommandLine.arguments.contains(install)
     do {
         if installing { try installer.install() } else { try installer.uninstall() }
-        print(installing ? "已连接 \(agent.displayName)：\(installer.hookCommand)" : "已移除 CoolCat 的 \(agent.displayName) hook")
+        print(installing ? "已连接 \(agent.displayName)（\(installer.displayPath)）：\(installer.events.joined(separator: ", "))" : "已移除 CoolCat 的 \(agent.displayName) hook")
         exit(0)
     } catch {
         FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))

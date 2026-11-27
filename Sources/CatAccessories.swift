@@ -5,30 +5,62 @@ import CoreGraphics
 extension CatRenderer {
     // MARK: - Neck: Bell Collar & Scarf
 
-    /// 脖子上的项圈或围巾：画成下巴下方一圈朝前的弧带，两端收窄，看起来是绕到脖子后面去了
-    static func drawNeckAccessory(in ctx: CGContext, center: CGPoint, physics: CatPhysics) {
+    /// 脖子上的项圈或围巾：按实际脖子左右轮廓贴合，自然环绕在脖子外侧
+    static func drawNeckAccessory(in ctx: CGContext, center: CGPoint, neck: NeckSilhouette, physics: CatPhysics) {
         let accessory = CatSettings.shared.accessory
         guard accessory == .bell || accessory == .scarf else { return }
         let isScarf = accessory == .scarf
-        let yawShift = physics.headYaw.value * 5
-        let thickness: CGFloat = isScarf ? 11 : 5
-        let ringY: CGFloat = isScarf ? 27 : 26
-        let halfW: CGFloat = isScarf ? 37 : 33
+        let neckTilt = physics.headTilt.value * 0.5
+        let cN = cos(neckTilt), sN = sin(neckTilt)
+        let yawShift = physics.headYaw.value * 4
+        let thickness: CGFloat = isScarf ? 11 : 5.2
+        let edgeY: CGFloat = neck.isWedge ? (isScarf ? 32.0 : 31.5) : (isScarf ? 25.5 : 23.5)
 
-        ctx.saveGState()
-        ctx.translateBy(x: center.x, y: center.y)
-        // 脖子介于头和身体之间：只跟一半的歪头
-        ctx.rotate(by: physics.headTilt.value * 0.5)
-        // 小脑袋的猫（德文）脖子也细，项圈、围巾跟着头一起缩
-        ctx.scaleBy(x: headSize, y: headSize)
+        func sampleNeckX(_ curve: (CGPoint, CGPoint, CGPoint, CGPoint)) -> CGFloat {
+            let (p0, p1, p2, p3) = curve
+            var prevX: CGFloat = 0, prevY: CGFloat = 0
+            var bestX: CGFloat = 0, bestDiff: CGFloat = .greatestFiniteMagnitude
+            let steps = 32
+            for i in 0...steps {
+                let t = 0.78 * CGFloat(i) / CGFloat(steps)
+                let u = 1 - t
+                let wx = u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x
+                let wy = u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y
+                let dx = (wx - center.x) / headSize
+                let dy = (wy - center.y) / headSize
+                let lx = dx * cN + dy * sN
+                let ly = -dx * sN + dy * cN
+                let diff = abs(ly - edgeY)
+                if diff < bestDiff {
+                    bestDiff = diff
+                    bestX = lx
+                }
+                if i > 0, (prevY - edgeY) * (ly - edgeY) <= 0 {
+                    let denom = ly - prevY
+                    let frac = abs(denom) > 0.0001 ? (edgeY - prevY) / denom : 0
+                    return prevX + (lx - prevX) * frac
+                }
+                prevX = lx
+                prevY = ly
+            }
+            return bestX
+        }
+
+        let leftX = sampleNeckX(neck.leftCurve)
+        let rightX = sampleNeckX(neck.rightCurve)
+        let midX = (leftX + rightX) * 0.5
+        let halfW = max(14, (rightX - leftX) * 0.5)
+        let dip = max(6.0, halfW * (isScarf ? 0.18 : 0.23))
+        let spanHalfW = halfW + (isScarf ? 1.5 : 0.9)
 
         var top: [CGPoint] = [], bottom: [CGPoint] = []
         let samples = 24
         for i in 0...samples {
             let theta = CGFloat.pi * CGFloat(i) / CGFloat(samples)
-            let x = halfW * cos(theta) + yawShift * sin(theta)
-            let mid = ringY + 6 * sin(theta)
-            let w = thickness * (0.5 + 0.5 * sin(theta))       // 两端收窄
+            let sinT = sin(theta)
+            let x = midX + spanHalfW * cos(theta) + yawShift * sinT
+            let mid = edgeY + dip * sinT
+            let w = thickness * ((isScarf ? 0.68 : 0.48) + (isScarf ? 0.32 : 0.52) * sinT)
             top.append(CGPoint(x: x, y: mid - w / 2))
             bottom.append(CGPoint(x: x, y: mid + w / 2))
         }
@@ -37,29 +69,56 @@ extension CatRenderer {
         for pt in bottom.reversed() { band.addLine(to: pt) }
         band.closeSubpath()
 
+        ctx.saveGState()
+        ctx.translateBy(x: center.x, y: center.y)
+        ctx.rotate(by: neckTilt)
+        ctx.scaleBy(x: headSize, y: headSize)
+
         if isScarf {
-            drawScarf(in: ctx, band: band, top: top, bottom: bottom, yawShift: yawShift, physics: physics)
+            drawScarf(in: ctx, band: band, top: top, bottom: bottom, midX: midX, halfW: spanHalfW,
+                      baseRingY: edgeY, dip: dip, yawShift: yawShift, physics: physics)
         } else {
-            drawBellCollar(in: ctx, band: band, bottom: bottom, yawShift: yawShift, ringY: ringY, physics: physics)
+            ctx.saveGState()
+            ctx.addPath(band)
+            ctx.clip()
+            let collarColors = [
+                rgb(0x8E2232).cgColor,
+                rgb(0xC43B4E).cgColor,
+                rgb(0xD84E60).cgColor,
+                rgb(0xC43B4E).cgColor,
+                rgb(0x8E2232).cgColor
+            ] as CFArray
+            let hiLoc = min(0.75, max(0.25, 0.5 + physics.headYaw.value * 0.14))
+            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: collarColors,
+                                     locations: [0.0, 0.22, hiLoc, 0.78, 1.0]) {
+                ctx.drawLinearGradient(grad,
+                                       start: CGPoint(x: midX - spanHalfW, y: edgeY),
+                                       end: CGPoint(x: midX + spanHalfW, y: edgeY),
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+            ctx.restoreGState()
+
+            ctx.setLineCap(.round)
+            ctx.setLineJoin(.round)
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.22).cgColor)
+            ctx.setLineWidth(0.8)
+            ctx.addLines(between: Array(top[3...(samples - 3)]))
+            ctx.strokePath()
+
+            ctx.setStrokeColor(rgb(0x7F1E2D).cgColor)
+            ctx.setLineWidth(0.85)
+            ctx.addPath(band)
+            ctx.strokePath()
+
+            drawBell(in: ctx, hang: CGPoint(x: midX + yawShift, y: edgeY + dip + thickness * 0.5), physics: physics)
         }
         ctx.restoreGState()
     }
 
-    private static func drawBellCollar(in ctx: CGContext, band: CGPath, bottom: [CGPoint], yawShift: CGFloat,
-                                       ringY: CGFloat, physics: CatPhysics) {
-        // 皮质项圈：酒红，上沿一道亮线
-        ctx.setFillColor(rgb(0xC0394B).cgColor)
-        ctx.addPath(band)
-        ctx.fillPath()
-        ctx.setStrokeColor(rgb(0x8E2333).cgColor)
-        ctx.setLineWidth(0.8)
-        ctx.addPath(band)
-        ctx.strokePath()
-
+    private static func drawBell(in ctx: CGContext, hang: CGPoint, physics: CatPhysics) {
         // 铃铛：挂在正前方，跟着身体晃（跳舞、打字时叮当晃）
         let swing = sin(physics.time * 5.5) * 0.12 * physics.musicVibe
             - physics.bodyShiftX.velocity * 0.004 + physics.headTilt.value * -0.4
-        let hang = CGPoint(x: yawShift, y: ringY + 6 + 2.5)
         ctx.saveGState()
         ctx.translateBy(x: hang.x, y: hang.y)
         ctx.rotate(by: max(-0.5, min(0.5, swing)))
@@ -90,18 +149,20 @@ extension CatRenderer {
     }
 
     private static func drawScarf(in ctx: CGContext, band: CGPath, top: [CGPoint], bottom: [CGPoint],
+                                  midX: CGFloat, halfW: CGFloat, baseRingY: CGFloat, dip: CGFloat,
                                   yawShift: CGFloat, physics: CatPhysics) {
         let red = rgb(0xD94848), dark = rgb(0xA83232), cream = rgb(0xF6EBDD)
 
         // 垂下来的围巾尾巴（先画，压在脖子那圈下面）：跟着身体晃
         let sway = -physics.bodyShiftX.velocity * 0.02 + sin(physics.time * 1.7) * 1.2
-        let root = CGPoint(x: 14 + yawShift * 0.6, y: 33)
-        let endPt = CGPoint(x: 19 + sway, y: 66)
+        let root = CGPoint(x: midX + halfW * 0.38 + yawShift * 0.5, y: baseRingY + dip + 1.5)
+        let endPt = CGPoint(x: root.x + 5 + sway, y: root.y + 33)
+        let ctrlY = (root.y + endPt.y) * 0.5
         let tail = CGMutablePath()
         tail.move(to: CGPoint(x: root.x - 6, y: root.y))
-        tail.addQuadCurve(to: CGPoint(x: endPt.x - 6, y: endPt.y), control: CGPoint(x: root.x - 4 + sway * 0.4, y: 50))
+        tail.addQuadCurve(to: CGPoint(x: endPt.x - 6, y: endPt.y), control: CGPoint(x: root.x - 4 + sway * 0.4, y: ctrlY))
         tail.addLine(to: CGPoint(x: endPt.x + 6, y: endPt.y + 1))
-        tail.addQuadCurve(to: CGPoint(x: root.x + 6, y: root.y), control: CGPoint(x: root.x + 8 + sway * 0.4, y: 50))
+        tail.addQuadCurve(to: CGPoint(x: root.x + 6, y: root.y), control: CGPoint(x: root.x + 8 + sway * 0.4, y: ctrlY))
         tail.closeSubpath()
         ctx.saveGState()
         ctx.addPath(tail)
@@ -110,7 +171,7 @@ extension CatRenderer {
         ctx.fill(CGRect(x: root.x - 30, y: root.y - 2, width: 60, height: 40))
         // 两道奶白条纹
         ctx.setFillColor(cream.cgColor)
-        for y: CGFloat in [44, 52] {
+        for y: CGFloat in [root.y + 11, root.y + 19] {
             ctx.fill(CGRect(x: root.x - 30, y: y, width: 60, height: 3.2))
         }
         ctx.restoreGState()
@@ -130,7 +191,7 @@ extension CatRenderer {
         ctx.addPath(band)
         ctx.clip()
         ctx.setFillColor(red.cgColor)
-        ctx.fill(CGRect(x: -60, y: 0, width: 120, height: 60))
+        ctx.fill(CGRect(x: midX - halfW - 10, y: 0, width: (halfW + 10) * 2, height: baseRingY + 35))
         ctx.setStrokeColor(dark.withAlphaComponent(0.55).cgColor)
         ctx.setLineWidth(1)
         for i in stride(from: 0, to: min(top.count, bottom.count), by: 2) {

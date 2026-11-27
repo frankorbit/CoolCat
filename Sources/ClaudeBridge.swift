@@ -7,11 +7,13 @@ import Foundation
 enum CodingAgent: String, CaseIterable {
     case claude
     case codex
+    case agy
 
     var displayName: String {
         switch self {
         case .claude: return "Claude Code"
         case .codex: return "Codex"
+        case .agy: return "Antigravity"
         }
     }
 }
@@ -35,34 +37,58 @@ enum ClaudeStatus: Equatable {
 
 // MARK: - Hook Relay (runs inside the short-lived `CoolCat --claude-hook` process)
 
-/// Claude Code hook → 运行中的小猫。
+/// Claude Code / Codex / Antigravity hook → 运行中的小猫。
 ///
-/// Claude Code 每次触发 hook 都会启动 `CoolCat --claude-hook`，把事件 JSON 写进 stdin。
+/// 每次触发 hook 都会短时启动 `CoolCat --<agent>-hook`，把事件 JSON 写进 stdin。
 /// 这里只挑出无隐私的字段（事件名、会话 ID、工具名、项目目录名），通过 DistributedNotification
-/// 广播给常驻的小猫进程后立刻退出。小猫没运行时广播无人接收，不影响 Claude Code。
+/// 广播给常驻的小猫进程后立刻退出。小猫没运行时广播无人接收，不影响宿主助手。
 ///
-/// 注意：UserPromptSubmit 的 stdout 会被注入到对话上下文，所以这里绝不能打印任何东西。
+/// 注意：
+/// - Claude UserPromptSubmit 的 stdout 会被注入到对话上下文，不能打印任何东西。
+/// - AGY 的 PreToolUse 必须保持 stdout 为空（切勿输出 allow）；其余 AGY 事件返回合法 JSON（如 `{}` 或 `{"decision":""}`）。
 enum ClaudeHookRelay {
     static let notificationName = Notification.Name("ai.today.coolcat.claude-event")
     static let argument = "--claude-hook"
     /// Codex 的 hooks.json 和 Claude Code 同格式，复用同一个中继，只多带一个 agent 字段
     static let codexArgument = "--codex-hook"
+    /// Antigravity (AGY) 的 hooks.json 会在 command 后拼上事件名（例如 `--agy-hook PreToolUse`）
+    static let agyArgument = "--agy-hook"
 
     static func argument(for agent: CodingAgent) -> String {
-        agent == .codex ? codexArgument : argument
+        switch agent {
+        case .claude: return argument
+        case .codex: return codexArgument
+        case .agy: return agyArgument
+        }
     }
 
-    static func run(agent: CodingAgent = .claude) -> Never {
+    static func run(agent: CodingAgent = .claude, explicitEvent: String? = nil) -> Never {
         let data = FileHandle.standardInput.readDataToEndOfFile()
-        if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-           let event = json["hook_event_name"] as? String {
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let event = (json?["hookEventName"] as? String)
+            ?? (json?["hook_event_name"] as? String)
+            ?? explicitEvent
+        if let event {
             var info: [String: String] = ["event": event, "agent": agent.rawValue]
-            if let session = json["session_id"] as? String { info["session"] = session }
-            if let tool = json["tool_name"] as? String { info["tool"] = tool }
-            if let cwd = json["cwd"] as? String { info["project"] = (cwd as NSString).lastPathComponent }
-            if let type = json["notification_type"] as? String {
+            if let session = (json?["conversationId"] as? String) ?? (json?["session_id"] as? String) {
+                info["session"] = session
+            }
+            if let tool = ((json?["toolCall"] as? [String: Any])?["name"] as? String)
+                ?? (json?["tool_name"] as? String) {
+                info["tool"] = tool
+            }
+            if let cwd = json?["cwd"] as? String, !cwd.isEmpty {
+                info["project"] = (cwd as NSString).lastPathComponent
+            } else if let workspaces = json?["workspacePaths"] as? [String],
+                      let first = workspaces.first(where: { !$0.isEmpty }) {
+                info["project"] = (first as NSString).lastPathComponent
+            }
+            if let reason = json?["terminationReason"] as? String, !reason.isEmpty {
+                info["terminationReason"] = reason
+            }
+            if let type = json?["notification_type"] as? String {
                 info["notificationType"] = type
-            } else if let message = json["message"] as? String {
+            } else if let message = json?["message"] as? String {
                 // 旧版本没有 notification_type，按文案兜底判断
                 if message.localizedCaseInsensitiveContains("permission") {
                     info["notificationType"] = "permission_prompt"
@@ -75,6 +101,16 @@ enum ClaudeHookRelay {
             DistributedNotificationCenter.default().postNotificationName(
                 notificationName, object: nil, userInfo: info, deliverImmediately: true
             )
+        }
+        if agent == .agy {
+            switch event ?? explicitEvent ?? "" {
+            case "PreToolUse":
+                break
+            case "Stop":
+                FileHandle.standardOutput.write(Data("{\"decision\":\"\"}\n".utf8))
+            default:
+                FileHandle.standardOutput.write(Data("{}\n".utf8))
+            }
         }
         exit(0)
     }
@@ -167,7 +203,8 @@ final class ClaudeActivityTracker {
         guard let info = note.userInfo as? [String: String], let event = info["event"] else { return }
         let agent = info["agent"].flatMap(CodingAgent.init(rawValue:)) ?? .claude
         apply(event: event, session: info["session"] ?? "default", tool: info["tool"],
-              notificationType: info["notificationType"], project: info["project"], agent: agent,
+              notificationType: info["notificationType"], project: info["project"],
+              terminationReason: info["terminationReason"], agent: agent,
               now: CACurrentMediaTime())
         noteEventReceived(from: agent)
     }
@@ -188,7 +225,8 @@ final class ClaudeActivityTracker {
     /// 单独暴露出来便于预览/测试直接喂事件。
     /// - Parameter agent: 不同助手的会话 ID 可能撞车，内部按「助手:会话」区分
     func apply(event: String, session rawSession: String, tool: String?, notificationType: String?,
-               project: String? = nil, agent: CodingAgent = .claude, now: CFTimeInterval) {
+               project: String? = nil, terminationReason: String? = nil, agent: CodingAgent = .claude,
+               now: CFTimeInterval) {
         lastEventTime = now
         let session = agent == .claude ? rawSession : agent.rawValue + ":" + rawSession
         if event == "SessionEnd" {
@@ -213,10 +251,24 @@ final class ClaudeActivityTracker {
             state.currentTool = nil
             state.lastTool = nil
             state.waitingTool = nil
+        case "PreInvocation":
+            if state.phase != .working {
+                state.phase = .working
+                state.promptStartedAt = now
+                state.inFlight.removeAll()
+                state.currentTool = nil
+                state.lastTool = nil
+                state.waitingTool = nil
+            }
         case "PreToolUse":
             let name = tool ?? "工具"
-            // 等批准期间其他（子代理的）工具照常计数，但不解除等待
-            if !isWaiting { state.phase = .working }
+            if name == "ask_question" || name == "AskUserQuestion" {
+                state.phase = .waiting(.input, since: now)
+                state.waitingTool = name
+            } else if !isWaiting {
+                // 等批准期间其他（子代理的）工具照常计数，但不解除等待
+                state.phase = .working
+            }
             if state.promptStartedAt == nil { state.promptStartedAt = now }
             state.inFlight[name, default: 0] += 1
             state.currentTool = name
@@ -260,11 +312,15 @@ final class ClaudeActivityTracker {
             // Codex：用户按 Esc 打断，这一轮不会再有 Stop
             resetToIdle(&state)
         case "Stop":
-            state.phase = .done(at: now)
-            state.inFlight.removeAll()
-            state.currentTool = nil
-            state.promptStartedAt = nil
-            state.waitingTool = nil
+            if terminationReason == "USER_CANCELED" {
+                resetToIdle(&state)
+            } else {
+                state.phase = .done(at: now)
+                state.inFlight.removeAll()
+                state.currentTool = nil
+                state.promptStartedAt = nil
+                state.waitingTool = nil
+            }
         default:
             return
         }
@@ -423,19 +479,39 @@ final class ClaudeActivityTracker {
     static func label(forTool tool: String?) -> String {
         guard let tool else { return "思考中" }
         switch tool {
-        case "Bash", "BashOutput", "KillShell", "KillBash", "shell", "exec_command", "unified_exec": return "跑命令"
-        case "Edit", "MultiEdit", "Write", "NotebookEdit", "apply_patch": return "写代码"
-        case "Read": return "读代码"
-        case "Grep", "Glob", "LS": return "翻文件"
-        case "WebFetch", "WebSearch": return "上网查"
-        case "Task", "Agent": return "派小弟"
-        case "TodoWrite": return "列计划"
-        case "AskUserQuestion": return "有问题问你"
+        case "Bash", "BashOutput", "KillShell", "KillBash", "shell", "exec_command", "unified_exec",
+             "run_command", "command_status", "send_command_input", "manage_task":
+            return "跑命令"
+        case "Edit", "MultiEdit", "Write", "NotebookEdit", "apply_patch",
+             "edit_file", "write_file", "write_to_file", "replace_file_content", "multi_replace_file_content":
+            return "写代码"
+        case "Read", "read_file", "view_file", "view_file_outline", "view_code_item", "read_resource":
+            return "读代码"
+        case "Grep", "Glob", "LS", "grep_search", "find_by_name", "list_dir", "list_resources":
+            return "翻文件"
+        case "WebFetch", "WebSearch", "search_web", "read_url_content", "browser_subagent":
+            return "上网查"
+        case "Task", "Agent", "invoke_subagent", "define_subagent", "manage_subagents",
+             "send_message", "run_workflow", "swarm":
+            return "派小弟"
+        case "TodoWrite", "update_steps", "enter_plan_mode", "exit_plan_mode":
+            return "列计划"
+        case "AskUserQuestion", "ask_question":
+            return "有问题问你"
+        case "call_mcp_tool":
+            return "用工具"
         default:
+            if tool.hasPrefix("browser_") {
+                return "上网查"
+            }
             if tool.hasPrefix("mcp__") {
                 // mcp__server__tool → 显示 server 名
                 let parts = tool.components(separatedBy: "__")
                 return parts.count >= 2 ? "用 \(parts[1])" : "用工具"
+            }
+            if tool.hasPrefix("mcp_") {
+                let parts = tool.components(separatedBy: "_")
+                return parts.count >= 2 && !parts[1].isEmpty ? "用 \(parts[1])" : "用工具"
             }
             return tool
         }
@@ -483,6 +559,11 @@ struct AgentHookInstaller {
         }
     }
 
+    enum ConfigFormat: Equatable {
+        case nestedHooks
+        case namedEntry(String)
+    }
+
     let agent: CodingAgent
     let settingsURL: URL
     /// 给用户看的路径（~ 开头）
@@ -493,7 +574,9 @@ struct AgentHookInstaller {
     /// 有些事件有更短的超时上限（Codex 的 SessionEnd / Interrupt 最多 3 秒）
     let timeouts: [String: Int]
     /// Codex 设置页用它当 hook 标题（不写就只显示「Hook 1」，用户认不出是谁的）
-    var statusMessage: String?
+    var statusMessage: String? = nil
+    var format: ConfigFormat = .nestedHooks
+    var presenceURLs: [URL] = []
 
     static let claude = AgentHookInstaller(
         agent: .claude,
@@ -518,8 +601,27 @@ struct AgentHookInstaller {
         statusMessage: "CoolCat 桌面小猫"
     )
 
+    static let agy = AgentHookInstaller(
+        agent: .agy,
+        settingsURL: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/config/hooks.json"),
+        displayPath: "~/.gemini/config/hooks.json",
+        events: ["SessionStart", "PreInvocation", "PreToolUse", "PostToolUse", "Stop"],
+        toolEvents: ["PreToolUse", "PostToolUse"],
+        timeouts: [:],
+        format: .namedEntry("coolcat"),
+        presenceURLs: [
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/config"),
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/antigravity-cli"),
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/antigravity")
+        ]
+    )
+
     static func installer(for agent: CodingAgent) -> AgentHookInstaller {
-        agent == .codex ? codex : claude
+        switch agent {
+        case .claude: return claude
+        case .codex: return codex
+        case .agy: return agy
+        }
     }
 
     static var executablePath: String {
@@ -535,56 +637,124 @@ struct AgentHookInstaller {
 
     /// App 被移走/删除后不能让助手每个事件都报 127：可执行文件不存在时吞掉 stdin 并静默退出 0
     var hookCommand: String {
+        hookCommand(for: events.first ?? "")
+    }
+
+    func hookCommand(for event: String) -> String {
         let quoted = Self.shellQuote(Self.executablePath)
-        return "[ -x \(quoted) ] && exec \(quoted) \(relayArgument); cat >/dev/null; exit 0"
+        switch format {
+        case .nestedHooks:
+            return "[ -x \(quoted) ] && exec \(quoted) \(relayArgument); cat >/dev/null; exit 0"
+        case .namedEntry:
+            let fallback: String
+            switch event {
+            case "PreToolUse": fallback = ""
+            case "Stop": fallback = "printf '{\"decision\":\"\"}\\n'; "
+            default: fallback = "printf '{}\\n'; "
+            }
+            return "[ -x \(quoted) ] && exec \(quoted) \(relayArgument) \(event); \(fallback)cat >/dev/null; exit 0"
+        }
     }
 
     /// 这个助手是否装在这台机器上（有配置目录）
     var isAgentPresent: Bool {
-        FileManager.default.fileExists(atPath: settingsURL.deletingLastPathComponent().path)
+        let urls = presenceURLs.isEmpty ? [settingsURL.deletingLastPathComponent()] : presenceURLs
+        return urls.contains { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     func state() -> HookInstallState {
-        guard let root = try? loadSettings(settingsURL),
-              let hooks = root["hooks"] as? [String: Any] else { return .notInstalled }
-        func ourHandlers(_ event: String) -> [[String: Any]] {
-            ((hooks[event] as? [[String: Any]]) ?? [])
-                .compactMap { $0["hooks"] as? [[String: Any]] }
-                .flatMap { $0 }
-                .filter { isOurCommand($0["command"] as? String ?? "") }
+        guard let root = try? loadSettings(settingsURL) else { return .notInstalled }
+        switch format {
+        case .nestedHooks:
+            guard let hooks = root["hooks"] as? [String: Any] else { return .notInstalled }
+            func ourHandlers(_ event: String) -> [[String: Any]] {
+                ((hooks[event] as? [[String: Any]]) ?? [])
+                    .compactMap { $0["hooks"] as? [[String: Any]] }
+                    .flatMap { $0 }
+                    .filter { isOurCommand($0["command"] as? String ?? "") }
+            }
+            let all = hooks.keys.flatMap(ourHandlers)
+            if all.isEmpty { return .notInstalled }
+            // 路径变了、新版本多了要监听的事件、或标题（statusMessage）变了，都需要重写
+            let complete = events.allSatisfy { !ourHandlers($0).isEmpty }
+            let current = all.allSatisfy {
+                ($0["command"] as? String) == hookCommand && ($0["statusMessage"] as? String) == statusMessage
+            }
+            return (complete && current) ? .installed : .outdated
+        case .namedEntry(let key):
+            guard let entry = root[key] as? [String: Any] else { return .notInstalled }
+            if let enabled = entry["enabled"] as? Bool, !enabled { return .outdated }
+            let entryEvents = Set(entry.keys).subtracting(["enabled"])
+            guard entryEvents == Set(events) else { return .outdated }
+            func handlers(for event: String) -> [[String: Any]] {
+                if toolEvents.contains(event) {
+                    return ((entry[event] as? [[String: Any]]) ?? [])
+                        .compactMap { $0["hooks"] as? [[String: Any]] }
+                        .flatMap { $0 }
+                }
+                return (entry[event] as? [[String: Any]]) ?? []
+            }
+            let complete = events.allSatisfy { event in
+                let list = handlers(for: event)
+                return !list.isEmpty && list.allSatisfy { ($0["command"] as? String) == hookCommand(for: event) }
+            }
+            return complete ? .installed : .outdated
         }
-        let all = hooks.keys.flatMap(ourHandlers)
-        if all.isEmpty { return .notInstalled }
-        // 路径变了、新版本多了要监听的事件、或标题（statusMessage）变了，都需要重写
-        let complete = events.allSatisfy { !ourHandlers($0).isEmpty }
-        let current = all.allSatisfy {
-            ($0["command"] as? String) == hookCommand && ($0["statusMessage"] as? String) == statusMessage
-        }
-        return (complete && current) ? .installed : .outdated
     }
 
     func install() throws {
         guard !Self.isTranslocated else { throw InstallError.translocated }
         try mutateSettings { root in
-            var hooks = removingOurHooks(from: try validatedHooks(root))
-            for event in events {
-                var handler: [String: Any] = ["type": "command", "command": hookCommand, "timeout": timeouts[event] ?? 5]
-                if let statusMessage { handler["statusMessage"] = statusMessage }
-                var group: [String: Any] = ["hooks": [handler]]
-                if toolEvents.contains(event) { group["matcher"] = "*" }
-                var groups = hooks[event] as? [[String: Any]] ?? []
-                groups.append(group)
-                hooks[event] = groups
+            switch format {
+            case .nestedHooks:
+                var hooks = removingOurHooks(from: try validatedHooks(root)).hooks
+                for event in events {
+                    var handler: [String: Any] = ["type": "command", "command": hookCommand, "timeout": timeouts[event] ?? 5]
+                    if let statusMessage { handler["statusMessage"] = statusMessage }
+                    var group: [String: Any] = ["hooks": [handler]]
+                    if toolEvents.contains(event) { group["matcher"] = "*" }
+                    var groups = hooks[event] as? [[String: Any]] ?? []
+                    groups.append(group)
+                    hooks[event] = groups
+                }
+                root["hooks"] = hooks
+                return true
+            case .namedEntry(let key):
+                var entry: [String: Any] = ["enabled": true]
+                for event in events {
+                    let handler: [String: Any] = [
+                        "type": "command",
+                        "command": hookCommand(for: event),
+                        "timeout": timeouts[event] ?? 5
+                    ]
+                    if toolEvents.contains(event) {
+                        entry[event] = [["matcher": "*", "hooks": [handler]]]
+                    } else {
+                        entry[event] = [handler]
+                    }
+                }
+                root[key] = entry
+                return true
             }
-            root["hooks"] = hooks
         }
     }
 
     func uninstall() throws {
+        let target = settingsURL.resolvingSymlinksInPath()
+        guard FileManager.default.fileExists(atPath: target.path) else { return }
         try mutateSettings { root in
-            guard root["hooks"] != nil else { return }
-            let cleaned = removingOurHooks(from: try validatedHooks(root))
-            root["hooks"] = cleaned.isEmpty ? nil : cleaned
+            switch format {
+            case .nestedHooks:
+                guard root["hooks"] != nil else { return false }
+                let (cleaned, removed) = removingOurHooks(from: try validatedHooks(root))
+                guard removed else { return false }
+                root["hooks"] = cleaned.isEmpty ? nil : cleaned
+                return true
+            case .namedEntry(let key):
+                guard root[key] != nil else { return false }
+                root[key] = nil
+                return true
+            }
         }
     }
 
@@ -611,13 +781,14 @@ struct AgentHookInstaller {
     }
 
     /// 读-改-写：解析软链接写到真实文件；写之前比对修改时间，期间被别人（例如助手自己）改过就重来
-    private func mutateSettings(_ body: (inout [String: Any]) throws -> Void) throws {
+    private func mutateSettings(_ body: (inout [String: Any]) throws -> Bool) throws {
         let target = settingsURL.resolvingSymlinksInPath()
         for _ in 0..<3 {
             let before = Self.modificationDate(target)
             var root = try loadSettings(target)
-            try body(&root)
+            let changed = try body(&root)
             guard Self.modificationDate(target) == before else { continue }
+            guard changed else { return }
             try save(root, to: target)
             return
         }
@@ -634,8 +805,9 @@ struct AgentHookInstaller {
             && (command.contains("CoolCat") || command.contains(LegacyMigration.legacyName))
     }
 
-    private func removingOurHooks(from hooks: [String: Any]) -> [String: Any] {
+    private func removingOurHooks(from hooks: [String: Any]) -> (hooks: [String: Any], removed: Bool) {
         var result: [String: Any] = [:]
+        var removed = false
         for (event, value) in hooks {
             guard let groups = value as? [[String: Any]] else {
                 result[event] = value
@@ -644,6 +816,7 @@ struct AgentHookInstaller {
             let kept: [[String: Any]] = groups.compactMap { group in
                 guard let handlers = group["hooks"] as? [[String: Any]] else { return group }
                 let remaining = handlers.filter { !isOurCommand($0["command"] as? String ?? "") }
+                if remaining.count != handlers.count { removed = true }
                 if remaining.isEmpty { return nil }
                 var copy = group
                 copy["hooks"] = remaining
@@ -651,7 +824,7 @@ struct AgentHookInstaller {
             }
             if !kept.isEmpty { result[event] = kept }
         }
-        return result
+        return (result, removed)
     }
 
     private func loadSettings(_ url: URL) throws -> [String: Any] {
