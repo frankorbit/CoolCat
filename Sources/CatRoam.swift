@@ -53,6 +53,18 @@ struct RoamSignTarget: Equatable {
     }
 }
 
+/// 要踢飞的文件：躺在哪个面上、在哪儿。小猫跑过去站在它旁边，一脚踢飞
+struct RoamKickTarget: Equatable {
+    /// 文件躺在（或者正往下掉、马上要落在）哪个面上：窗口上沿的 id，或者 0 = 屏幕底部
+    var surfaceID: Int
+    /// 文件底边中点的 x（屏幕坐标）
+    var x: CGFloat
+    /// 文件图标的半宽（屏幕点）：小猫站在离它这么远再加一条腿长的地方
+    var halfWidth: CGFloat
+    /// 已经落稳了：小猫到了就能踢；还在掉的时候先跑过去等着
+    var ready: Bool
+}
+
 /// 每帧喂给漫游逻辑的外部状态（全部由调用方采集，逻辑本身不碰 AppKit）
 struct RoamWorld {
     /// 屏幕底部（Dock 上方）
@@ -92,6 +104,8 @@ struct RoamWorld {
     var snowySurfaces: Set<Int> = []
     /// 设置里允许把东西推下桌
     var knockAllowed = false
+    /// 你让小猫踢飞的文件：有值时小猫放下手头的事跑过去踢，打字、开会都拦不住（是你刚叫它去的）
+    var kickTarget: RoamKickTarget?
 
     var surfaces: [RoamSurface] { [floor] + windowTops }
 
@@ -120,6 +134,8 @@ enum RoamPose: Equatable {
     case bodyShake
     /// 站着伸出前爪往前拨（把东西拨下桌）
     case knockTap
+    /// 瞄准 → 往后蓄力 → 一脚踢出去（把文件踢飞）
+    case kick
 }
 
 /// 屏幕的哪条边
@@ -140,6 +156,10 @@ enum RoamEvent: Equatable {
     case missedCursor
     /// 叼着 / 放着的小东西离开了小猫：推下去了，或者半路放弃丢下了（调用方接手让它往下掉）
     case releasedTrinket(kind: Int, at: CGPoint, vx: CGFloat)
+    /// 一脚踢中了文件：往 dir 那边（+1 = 右）、仰角 angle（弧度，0 = 水平）踢出去
+    case kickedFile(angle: CGFloat, dir: CGFloat)
+    /// 文件落在了上不去的窗口顶上：让它掉到屏幕底边再踢
+    case kickTargetUnreachable
 }
 
 /// 满屏漫游的纯逻辑：什么时候出门、走到哪、跳到哪、什么时候回家。坐标都是屏幕坐标（y 向上），位置是脚底中点。
@@ -278,6 +298,25 @@ struct RoamDirector {
         var duration: CGFloat
     }
 
+    /// 一脚踢飞文件：先瞄一眼 → 往后蓄力 → 踢出去（碰到文件的那一刻把它踢飞）→ 腿停在半空 → 收回来
+    struct Kick: Equatable {
+        static let aimEnd: CGFloat = 0.35
+        static let windupEnd: CGFloat = 0.7
+        static let strikeEnd: CGFloat = 0.8
+        /// 爪子碰到文件的时刻
+        static let contact: CGFloat = 0.76
+        static let holdEnd: CGFloat = 1.15
+        static let total: CGFloat = 1.5
+        /// 踢出去的仰角（弧度）：随机，腿踢多高文件就往多高飞
+        static let angles: ClosedRange<CGFloat> = 0.21...1.19
+        var t: CGFloat = 0
+        var angle: CGFloat
+        var launched = false
+    }
+
+    /// 踢的时候脚底离文件近边多远（画布单位，乘体型缩放）：前腿往前一甩正好踢到
+    static let kickReach: CGFloat = 40
+
     /// 在积雪的窗口顶上走了这么久就停下来抖抖爪子
     static let snowWalkBeforePawShake: CGFloat = 1.6
     /// 这一趟在雪里待了这么久，下到没雪的地方时甩一甩全身
@@ -301,6 +340,8 @@ struct RoamDirector {
         case shake(Shake)
         /// 把叼来的东西放在窗口边上，一下下拨下去
         case knock(Knock)
+        /// 把你让它踢的文件一脚踢飞
+        case kick(Kick)
         case land(t: CGFloat = 0, duration: CGFloat, skidding: Bool = false)
         case sit(remaining: CGFloat)
         case fall(vy: CGFloat)
@@ -381,6 +422,7 @@ struct RoamDirector {
             case .stare: return .sit
             case .tap: return .knockTap
             }
+        case .kick: return .kick
         case nil: return .stand
         }
     }
@@ -445,6 +487,12 @@ struct RoamDirector {
     var tapProgress: CGFloat {
         if case .knock(let knock) = activity, knock.phase == .tap { return min(1, knock.t / Self.tapDuration) }
         return 0
+    }
+
+    /// 踢腿：开始了多久（秒）、往多高踢（弧度）；不在踢时 nil
+    var kickPose: (t: CGFloat, angle: CGFloat)? {
+        if case .kick(let kick) = activity { return (kick.t, kick.angle) }
+        return nil
     }
 
     /// 嘴里叼着的东西
@@ -547,6 +595,8 @@ struct RoamDirector {
     var isFocusNapping: Bool { keepingCompany && isNapping && !delivering }
     /// 陪你专注时这一觉的长度：到点前一直续，不会自己醒
     static let focusNapHold: CGFloat = 600
+    /// 正在去踢文件的路上，或者正在踢
+    private(set) var kicking = false
     /// 走到窗框旁边后要开始的那次攀爬；跳上窗框侧边后接着爬的那次
     private var pendingClimb: Climb?
     private var wallJumpClimb: Climb?
@@ -566,8 +616,8 @@ struct RoamDirector {
 
     private mutating func step(dt: CGFloat, world input: RoamWorld) -> [RoamEvent] {
         var world = input
-        // 陪你专注时你本来就在打字：不当作「快回来」
-        if world.focusSpot != nil { world.userActive = false }
+        // 陪你专注时你本来就在打字：不当作「快回来」；踢文件是你刚叫它去的，也不因为打字回来
+        if world.focusSpot != nil || world.kickTarget != nil { world.userActive = false }
         var events: [RoamEvent] = []
         let k = world.scale
         lastFloor = world.floor
@@ -577,6 +627,14 @@ struct RoamDirector {
             cooldown = max(0, cooldown - dt)
             checkTimer -= dt
             lastNeedsAttention = world.needsAttention
+            // 你让它踢文件：比什么都优先，不管冷却、不管漫游开没开，直接跳下座位
+            if world.kickTarget != nil, !world.mustStayHome {
+                tripForced = true
+                startTrip(world: world, toFloor: true)
+                kicking = true
+                events.append(.leftSeat)
+                return events
+            }
             // 举牌提醒：不管冷却、不管漫游开没开（调用方已经判断过），直接跳下座位出发
             if world.signTarget != nil, !world.mustStayHome, !world.userActive {
                 tripForced = true
@@ -615,13 +673,16 @@ struct RoamDirector {
         // agent 刚开始等你：跑回去提醒（手动出门时本来就在等的不算）
         let attentionRaised = world.needsAttention && !lastNeedsAttention
         lastNeedsAttention = world.needsAttention
+        updateKick(world: world)
         updateFocus(world: world)
         updateDelivery(world: world)
         // 你一打字、或者有事要它待在座位上：跑回家（送牌的路上 agent 本来就在等你，不算叫它回来；
-        // 陪你专注时 agent 等你，就地去举牌，不先跑回家）
-        let urgent = world.userActive || world.mustStayHome || (attentionRaised && !delivering && !keepingCompany)
-        // 睡着时不因为到点就叫醒，睡完这一觉再回家；陪你专注时一直陪到番茄钟到点
+        // 陪你专注、去踢文件时 agent 等你，就地去举牌 / 踢完再说，不先跑回家）
+        let urgent = world.userActive || world.mustStayHome
+            || (attentionRaised && !delivering && !keepingCompany && !kicking)
+        // 睡着时不因为到点就叫醒，睡完这一觉再回家；陪你专注时一直陪到番茄钟到点；踢文件时踢完再说
         let tripOver = tripTime > Self.maxTrip && !isNapping && !playSession && !delivering && !keepingCompany
+            && !kicking
         if !returning && (urgent || tripOver || (!tripForced && !world.wanderAllowed && !delivering)) {
             beginReturn(world: world, run: urgent)
         } else if returning && urgent && !returningUrgently {
@@ -644,8 +705,10 @@ struct RoamDirector {
 
         playCooldown = max(0, playCooldown - dt)
         followPlacedTrinket(world: world)
-        // 送牌、推东西的路上、陪你专注时不被光标勾走
-        if !returning && !delivering && knockGoal == nil && !keepingCompany { considerCursorPlay(world: world) }
+        // 送牌、推东西、踢文件的路上、陪你专注时不被光标勾走
+        if !returning && !delivering && knockGoal == nil && !keepingCompany && !kicking {
+            considerCursorPlay(world: world)
+        }
 
         switch activity {
         case .walk(let toX, let run):
@@ -688,10 +751,10 @@ struct RoamDirector {
             }
             if abs(toX - pos.x) < 0.5 {
                 // 疯跑到地方：压低身子带惯性急刹（往家跑时不刹，直接接着跳）。
-                // 接下来要在这一点起跳、爬窗框、偷看、举牌、放东西或陪你专注时原地刹住，不滑过头：
+                // 接下来要在这一点起跳、爬窗框、偷看、举牌、放东西、陪你专注或踢文件时原地刹住，不滑过头：
                 // 滑过头会让起跳点对不上（跳的时候瞬移回去），举牌 / 推东西的目的地也永远到不了
                 let mustStopHere = pendingJump != nil || pendingPeek != nil || pendingClimb != nil
-                    || delivering || knockGoal != nil || keepingCompany
+                    || delivering || knockGoal != nil || keepingCompany || kicking
                 activity = run && !returning ? .land(duration: mustStopHere ? 0.3 : 0.38, skidding: !mustStopHere) : nil
             }
         case .crouch(let t, let duration, let jump):
@@ -788,6 +851,9 @@ struct RoamDirector {
         case .knock(var knock):
             currentSpeed *= exp(-18 * dt)
             stepKnock(&knock, dt: dt, world: world)
+        case .kick(var kick):
+            currentSpeed *= exp(-18 * dt)
+            stepKick(&kick, dt: dt, world: world, events: &events)
         case .land(let t, let duration, let skidding):
             if skidding {
                 currentSpeed *= exp(-9.5 * dt)
@@ -815,7 +881,7 @@ struct RoamDirector {
             currentSpeed *= exp(-18 * dt)
             n.t += dt * n.speed
             // 陪你专注：番茄钟没到点就一直睡，快醒时再续一觉
-            if keepingCompany && !delivering && n.asleep && n.t > Nap.settleTime + n.hold - 1 {
+            if keepingCompany && !delivering && !kicking && n.asleep && n.t > Nap.settleTime + n.hold - 1 {
                 n.hold += Self.focusNapHold
             }
             // 醒了：伸个懒腰（落地那种压低身子的姿势）再接着溜达
@@ -867,7 +933,9 @@ struct RoamDirector {
             activity = .crouch(duration: pendingAim, then: jump)
             pendingAim = 0.26
         } else if activity == nil {
-            if delivering && !returning {
+            if kicking && !returning {
+                planKickStep(world: world, events: &events)
+            } else if delivering && !returning {
                 planDeliveryStep(world: world)
             } else if keepingCompany && !returning {
                 planFocusStep(world: world)
@@ -918,7 +986,7 @@ struct RoamDirector {
 
     private func isGrounded(_ a: Activity) -> Bool {
         switch a {
-        case .walk, .sit, .land, .crouch, .nap, .stalk, .sign, .shake, .knock: return true
+        case .walk, .sit, .land, .crouch, .nap, .stalk, .sign, .shake, .knock, .kick: return true
         case .jump, .fall, .peek, .pounce, .climb: return false
         }
     }
@@ -1163,6 +1231,8 @@ struct RoamDirector {
             switch activity {
             case .jump, .fall, .pounce, .crouch, .climb:
                 break                                   // 让这一下做完，落地后再规划
+            case .kick:
+                break                                   // 正在踢文件：踢完再去
             case .nap(var nap):
                 nap.wakeNow(startled: true)             // 一激灵醒来再去
                 activity = .nap(nap)
@@ -1177,8 +1247,8 @@ struct RoamDirector {
             // 你批准了（或者 agent 不等了）：放下牌子回家
             delivering = false
             if activity == .sign { activity = .land(duration: 0.3) }
-            // 陪你专注时举完牌：回去接着趴着
-            if !returning && !keepingCompany { beginReturn(world: world, run: false) }
+            // 陪你专注时举完牌：回去接着趴着；去踢文件的路上：接着去踢
+            if !returning && !keepingCompany && !kicking { beginReturn(world: world, run: false) }
         }
     }
 
@@ -1212,14 +1282,14 @@ struct RoamDirector {
                 let hideAt = peek.start + Peek.revealTime
                 peek.hold = min(peek.hold, max(0, peek.t - hideAt))
                 activity = .peek(peek)
-            case .sign:
-                break                                   // 正举着牌：举完再去
+            case .sign, .kick:
+                break                                   // 正举着牌、正在踢文件：做完再去
             default:
                 if !returning { activity = nil }
             }
         } else if world.focusSpot == nil, keepingCompany {
             keepingCompany = false
-            if !delivering && !returning { beginReturn(world: world, run: false) }
+            if !delivering && !returning && !kicking { beginReturn(world: world, run: false) }
         }
     }
 
@@ -1231,6 +1301,112 @@ struct RoamDirector {
             nappedThisTrip = true
             activity = .nap(Nap(hold: Self.focusNapHold))
         }
+    }
+
+    // MARK: Kick File
+
+    /// 你让它踢文件 / 不踢了。开始时放下手头的事（叼着的东西掉下来、不玩了、睡着的醒过来、举着的牌放下），
+    /// 掉头去踢；文件没了（你按 Esc 取消了）就回家。正常踢完由 stepKick 收尾
+    private mutating func updateKick(world: RoamWorld) {
+        if world.kickTarget != nil, !kicking {
+            kicking = true
+            tripForced = true
+            releaseTrinket()
+            knockGoal = nil
+            endPlay()
+            pendingPeek = nil
+            pendingJump = nil
+            pendingClimb = nil
+            resumeStalk = false
+            if returning {
+                returning = false
+                returningUrgently = false
+            }
+            switch activity {
+            case .jump, .fall, .pounce, .crouch, .climb:
+                break                                   // 让这一下做完，落地后再去
+            case .nap(var nap):
+                nap.wakeNow(startled: true)             // 一激灵醒来就去
+                activity = .nap(nap)
+            case .peek(var peek):
+                let hideAt = peek.start + Peek.revealTime
+                peek.hold = min(peek.hold, max(0, peek.t - hideAt))
+                activity = .peek(peek)
+            default:
+                activity = nil                          // 举着的牌也先放下：踢完再回去举
+            }
+        } else if world.kickTarget == nil, kicking {
+            if case .kick = activity { return }         // 已经踢出去了：把这一脚做完
+            kicking = false
+            if !delivering && !keepingCompany && !returning { beginReturn(world: world, run: false) }
+        }
+    }
+
+    /// 站在文件哪一边踢：从哪边过来就往前踢（助跑一脚）；那一边站不下（文件贴着窗口边）就绕到另一边
+    private func kickSide(_ target: RoamKickTarget, on surface: RoamSurface?,
+                          scale: CGFloat) -> (dir: CGFloat, standX: CGFloat) {
+        let reach = Self.kickReach * scale + target.halfWidth
+        var dir: CGFloat = pos.x <= target.x ? 1 : -1
+        if let surface {
+            let fits = { (side: CGFloat) -> Bool in
+                let standX = target.x - side * reach
+                return standX >= surface.minX + 30 * scale && standX <= surface.maxX - 30 * scale
+            }
+            if !fits(dir) && fits(-dir) { dir = -dir }
+        }
+        return (dir, target.x - dir * reach)
+    }
+
+    /// 踢文件的下一步：赶到文件旁边；文件还在往下掉就等它落稳；到了就转过身起脚
+    private mutating func planKickStep(world: RoamWorld, events: inout [RoamEvent]) {
+        guard let target = world.kickTarget else {
+            kicking = false
+            return
+        }
+        let side = kickSide(target, on: world.surface(id: target.surfaceID), scale: world.scale)
+        switch travelStep(to: RoamSignTarget(surfaceID: target.surfaceID, x: side.standX), world: world,
+                          belowIsFine: false) {
+        case .moving:
+            break
+        case .unreachable:
+            // 上不去那扇窗口：让文件掉下来，在地上踢
+            events.append(.kickTargetUnreachable)
+            activity = .sit(remaining: 0.3)
+        case .arrived:
+            guard target.ready else {
+                activity = .sit(remaining: 0.2)
+                return
+            }
+            facing = side.dir
+            let range = Kick.angles
+            activity = .kick(Kick(angle: range.lowerBound + CGFloat(random()) * (range.upperBound - range.lowerBound)))
+        }
+    }
+
+    /// 一脚踢出去：爪子碰到文件的那一刻交出 .kickedFile。碰到之前文件掉走了（窗口挪了）就重新去追
+    private mutating func stepKick(_ kick: inout Kick, dt: CGFloat, world: RoamWorld, events: inout [RoamEvent]) {
+        kick.t += dt
+        if !kick.launched {
+            let scale = world.scale
+            guard let target = world.kickTarget, target.ready, target.surfaceID == surfaceID,
+                  abs(abs(target.x - pos.x) - (Self.kickReach * scale + target.halfWidth)) < 24 * scale,
+                  (target.x - pos.x) * facing > 0 else {
+                activity = nil
+                return
+            }
+            if kick.t >= Kick.contact {
+                kick.launched = true
+                events.append(.kickedFile(angle: kick.angle, dir: facing))
+            }
+        }
+        guard kick.t < Kick.total else {
+            // 踢完了：站着看它飞走一会儿，再回家（或者接着去举牌、回去陪你专注）
+            kicking = false
+            budget = 0
+            activity = .sit(remaining: 0.9)
+            return
+        }
+        activity = .kick(kick)
     }
 
     /// 送牌的下一步：到了就坐下举牌；在别处就按跳台 / 爬窗 / 下地的顺序赶过去
@@ -1498,8 +1674,17 @@ struct RoamDirector {
             activity = .crouch(duration: 0.35, then: jump)
             return
         }
-        // 从座位跳到主窗口旁边的地上（左边地方够就往左，否则往右）
         let floor = world.floor
+        // 座位在别的屏幕上（去另一块屏幕踢文件）：一个大跳跳过去，落在这块屏幕靠座位那边的边上
+        if !floor.contains(x: world.seat.x) {
+            let edgeX = world.seat.x > floor.maxX ? floor.maxX - 70 * k : floor.minX + 70 * k
+            let leap = makeLeap(from: world.seat, to: CGPoint(x: edgeX, y: floor.y), surface: floor.id, k: k)
+            facing = leap.to.x >= leap.from.x ? 1 : -1
+            turnScale = facing
+            activity = .crouch(duration: 0.30, then: leap)
+            return
+        }
+        // 从座位跳到主窗口旁边的地上（左边地方够就往左，否则往右）
         let leftX = world.homeRect.minX - 40 * k
         let rightX = world.homeRect.maxX + 40 * k
         let x = floor.contains(x: leftX, margin: 20 * k)
@@ -1819,6 +2004,20 @@ struct RoamDirector {
             activity = .crouch(duration: 0.12, then: makeJump(from: pos, to: to, surface: world.floor.id, k: k))
             return
         }
+        // 座位在别的屏幕上：跑到这块屏幕靠座位那边的边上，一个大跳跳回去
+        if !world.floor.contains(x: seat.x) {
+            let floor = world.floor
+            let edgeX = seat.x > floor.maxX ? floor.maxX - 40 * k : floor.minX + 40 * k
+            let leap = makeLeap(from: CGPoint(x: edgeX, y: floor.y), to: seat, surface: nil, k: k)
+            if abs(edgeX - pos.x) > 3 * k {
+                activity = .walk(toX: edgeX, run: true)
+                pendingJump = leap
+                pendingAim = 0.2
+            } else {
+                activity = .crouch(duration: 0.2, then: leap)
+            }
+            return
+        }
         // 在地上：走到座位水平距离够得着的地方
         let approach = seat.x + (pos.x < seat.x ? -1 : 1) * min(dx, Self.maxJumpDX * k * 0.4)
         activity = .walk(toX: approach, run: run)
@@ -1828,6 +2027,14 @@ struct RoamDirector {
         let dist = hypot(to.x - from.x, to.y - from.y)
         let duration = min(0.85, max(0.38, 0.3 + dist / (900 * k)))
         return Jump(from: from, to: to, duration: duration, apex: (28 + min(60, dist * 0.12)) * k, surface: surface)
+    }
+
+    /// 跨屏的大跳：比平常的跳慢一点、弧线高一点，看得清是飞过去的
+    private func makeLeap(from: CGPoint, to destination: CGPoint, surface: Int?, k scale: CGFloat) -> Jump {
+        let dist = hypot(destination.x - from.x, destination.y - from.y)
+        let duration = min(1.4, max(0.6, 0.35 + dist / (1600 * scale)))
+        return Jump(from: from, to: destination, duration: duration, apex: (90 + min(160, dist * 0.08)) * scale,
+                    surface: surface)
     }
 
     private mutating func arriveHome() {
@@ -1853,6 +2060,7 @@ struct RoamDirector {
         delivering = false
         // 开会被叫回来的：会开完了，在家里重新看一眼番茄钟还在不在
         keepingCompany = false
+        kicking = false
         cooldown = 60 + CGFloat(random() * 60)
         checkTimer = 5
     }

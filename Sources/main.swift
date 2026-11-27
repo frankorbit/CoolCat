@@ -1048,9 +1048,24 @@ func renderWalkPreviewSheet(to path: String) {
         ("拨 3", .init(pose: .knockTap, phase: 0, facing: 1, air: 0, time: 0.3, blink: false, tap: 0.75)),
         ("朝左拨", .init(pose: .knockTap, phase: 0, facing: -1, air: 0, time: 0.3, blink: false, tap: 0.45))
     ]
+    // COOLCAT_WALK_SET=kick：踢文件一脚的几个时刻（低踢 / 高踢 / 朝左）
+    func kickPose(_ kickTime: CGFloat, angle: CGFloat = 0.7, facing: CGFloat = 1) -> CatRenderer.WalkerPose {
+        .init(pose: .kick, phase: 0, facing: facing, air: 0, time: 0.3, blink: false, kickTime: kickTime,
+              kickAngle: angle)
+    }
+    let kickPoses: [(String, CatRenderer.WalkerPose)] = [
+        ("瞄准", kickPose(0.2)),
+        ("蓄力", kickPose(0.6)),
+        ("出脚", kickPose(0.74)),
+        ("踢中", kickPose(0.8)),
+        ("低踢", kickPose(0.95, angle: 0.21)),
+        ("高踢", kickPose(0.95, angle: 1.19)),
+        ("收腿", kickPose(1.35)),
+        ("朝左踢", kickPose(0.8, angle: 0.9, facing: -1))
+    ]
     let set = ProcessInfo.processInfo.environment["COOLCAT_WALK_SET"]
     let named = ["nap": napPoses, "walk": walkCyclePoses, "run": runPoses, "play": playPoses, "holiday": holidayPoses,
-                 "sign": signPoses, "snow": snowPoses, "knock": knockPoses]
+                 "sign": signPoses, "snow": snowPoses, "knock": knockPoses, "kick": kickPoses]
     let poses = set.flatMap { named[$0] } ?? walkPoses
     let cw = Int(CatRenderer.walkerCanvas.width), ch = Int(CatRenderer.walkerCanvas.height), scale = 2
     let labelW = 70

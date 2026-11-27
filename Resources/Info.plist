@@ -30,6 +30,37 @@
     <true/>
     <key>NSAudioCaptureUsageDescription</key>
     <string>CoolCat 在你听歌时分析正在播放的声音频谱和鼓点，让小猫跟着节奏跳舞、身后的光谱跟着跳动。音频只在内存里实时计算，绝不录制、保存或上传。</string>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>CoolCat 小猫踢飞（移到废纸篓）</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>kickFile</string>
+            <key>NSPortName</key>
+            <string>CoolCat</string>
+            <key>NSRequiredContext</key>
+            <dict>
+                <key>NSApplicationIdentifier</key>
+                <string>com.apple.finder</string>
+            </dict>
+            <key>NSSendFileTypes</key>
+            <array>
+                <string>public.item</string>
+            </array>
+            <key>NSSendTypes</key>
+            <array>
+                <string>public.file-url</string>
+            </array>
+            <key>NSServiceDescription</key>
+            <string>让 CoolCat 小猫跑过去，一脚把 Finder 里选中的文件踢进废纸篓（可以从废纸篓放回）</string>
+        </dict>
+    </array>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>小猫踢飞文件时，CoolCat 请 Finder 把这个文件移到废纸篓（和你按 ⌘⌫ 一样，可以「放回原处」），桌面上原来的图标才会马上消失。CoolCat 不会让 Finder 做别的事。</string>
     <key>NSInputMonitoringUsageDescription</key>
     <string>CoolCat 需要「输入监控」权限以在打字和玩游戏时实时接收全状态键盘与鼠标按键，所有输入仅用于本地驱动桌宠动画，绝不记录或上传任何内容。</string>
 </dict>

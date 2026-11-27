@@ -24,6 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var trinkets = TrinketPhysics()
     /// 番茄钟：专注时小猫趴在你的窗口上陪你，到点举牌叫你休息
     private let focus = FocusCompanion()
+    /// 踢飞文件：Finder 右键「CoolCat 小猫踢飞（移到废纸篓）」，小猫跑过去一脚把它踢出屏幕
+    private let fileKick = FileKickCompanion()
+    /// 小猫跑去别的屏幕踢文件时在哪块屏幕上（回到座位就清掉）；上一帧在哪块屏幕上活动
+    private var awayScreen: NSScreen?
+    private var lastRoamScreen: NSScreen?
     /// 这次抖雪已经把雪块甩出去了
     private var snowShakeSpawned = false
     private let ignoreKeysForRoaming = CommandLine.arguments.contains("--roam-ignore-keys")
@@ -114,6 +119,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.onKeyDown = { [weak self] key in
             DispatchQueue.main.async {
                 self?.overlayWindow.catView.physics.triggerKeyDown(key)
+                // 踢之前按 Esc：不踢了，文件放回原处
+                if key == .escape { self?.fileKick.cancel() }
                 // 只认在终端/IDE 里、且没按修饰键的按键：在 Slack 里按回车、⌘1 切标签、⌘⇧3 截图都不算回应 Claude
                 guard Self.frontmostIsClaudeHost(), !Self.commandModifierHeld() else { return }
                 let now = CACurrentMediaTime()
@@ -191,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startRenderLoop()
         startLifeCompanion()
         setupFocus()
+        setupFileKick()
 
         if Self.updateChecksEnabled {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
@@ -208,6 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MusicMonitor.shared.stop()
         lifeTimer?.invalidate()
         focus.stopTicking()
+        fileKick.stop()
         AudioSpectrumAnalyzer.shared.setWanted(false)
         ClaudeActivityTracker.shared.stop()
         MeetingMonitor.shared.stop()
@@ -408,6 +417,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(feedItem)
 
         menu.addItem(focusMenuItem())
+        let kickItem = NSMenuItem(title: "👟 小猫踢飞文件（移到废纸篓）…", action: #selector(kickFileFromMenu),
+                                  keyEquivalent: "")
+        kickItem.target = self
+        kickItem.toolTip = "选文件，小猫跑过去一脚踢飞，文件移到废纸篓（可以放回原处）。"
+            + "也可以在 Finder 里右键文件 → 快速操作 / 服务 →「CoolCat 小猫踢飞（移到废纸篓）」"
+        kickItem.isEnabled = !fileKick.isBusy
+        menu.addItem(kickItem)
 
         let bond = physics.bond
         let bondText = bond.nextLevel.map { "💞 Lv\(bond.level.level) \(bond.level.title) · \(bond.points)/\($0.threshold)" }
@@ -580,10 +596,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let placed = roam.placedTrinket, let kind = Trinket(rawValue: placed.kind) {
             sprites.append(TrinketSprite(kind: kind, pos: placed.at, angle: 0, opacity: 1))
         }
-        guard snowpack.hasVisibleSnow || !sprites.isEmpty || deskWindow?.isVisible == true else { return }
-        if deskWindow == nil { deskWindow = DeskOverlayWindow() }
         let k = CatSettings.shared.scale * CatRenderer.walkerArtScale
-        deskWindow?.render(snowpack, trinkets: sprites, pointsPerUnit: k, on: screen)
+        let floor = RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2)
+        fileKick.update(dt: dt, surfaces: roamSurfaces, floor: floor, screen: screen, scale: k)
+        let file = fileKick.sprite(catX: roam.isHome ? nil : roam.pos.x, scale: k)
+        let deskVisible = deskWindow?.isVisible == true
+        guard snowpack.hasVisibleSnow || !sprites.isEmpty || file != nil || deskVisible else { return }
+        if deskWindow == nil { deskWindow = DeskOverlayWindow() }
+        deskWindow?.render(snowpack, trinkets: sprites, file: file, fileIcon: fileKick.icon, pointsPerUnit: k,
+                           on: screen)
     }
 
     /// 窗口顶积雪：下雪的季节（或节日预览）里慢慢积；小猫走过踩脚印、跑起来踢雪、抖爪子甩身子
@@ -645,13 +666,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateRoaming(dt: CGFloat, now: CFTimeInterval) {
         let settings = CatSettings.shared
         let physics = overlayWindow.catView.physics
-        guard let screen = overlayWindow.screen ?? NSScreen.main else { return }
+        guard let homeScreen = overlayWindow.screen ?? NSScreen.main else { return }
+        let (screen, holdKick) = roamScreen(home: homeScreen)
         let k = settings.scale
         let home = overlayWindow.frame
         let visible = screen.visibleFrame
+        // 换了一块屏幕活动：马上重扫那块屏幕上的窗口
+        if screen != lastRoamScreen {
+            lastRoamScreen = screen
+            lastSurfaceScan = 0
+        }
         // 窗口上沿：在外面溜达时每秒扫一次，在家时 5 秒一次（出门那一刻用得上）；
         // 窗口顶有雪时 0.3 秒一次：窗口一拖，雪要马上滑下来，不能悬在半空
-        let deskBusy = snowpack.hasVisibleSnow || !trinkets.isEmpty || roam.placedTrinket != nil
+        let deskBusy = snowpack.hasVisibleSnow || !trinkets.isEmpty || roam.placedTrinket != nil || fileKick.file != nil
         let scanEvery: CFTimeInterval = deskBusy ? 0.3 : (roam.isHome ? 5 : 1)
         if now - lastSurfaceScan > scanEvery {
             lastSurfaceScan = now
@@ -664,8 +691,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let keyIdle = ignoreKeysForRoaming ? 1000 : now - max(engine.lastKeyActivityTime, roamClockStart)
         let signTarget = updateSignTarget(screen: screen, keyIdle: keyIdle, now: now)
         let focusSpot = focus.focusSpot(surfaces: roamSurfaces, screen: screen, now: now)
+        let floor = RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2)
+        // 文件在另一块屏幕上、小猫正在这块屏幕上溜达：先叫它回座位，再从座位跳过去
+        let kickTarget = holdKick ? nil : fileKick.kickTarget(surfaces: roamSurfaces, floor: floor,
+                                                              scale: k * CatRenderer.walkerArtScale)
         let world = RoamWorld(
-            floor: RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2),
+            floor: floor,
             windowTops: roamSurfaces,
             seat: CGPoint(x: home.minX + CatPhysics.seatAnchor.x * k, y: home.maxY - CatPhysics.seatAnchor.y * k),
             homeRect: home,
@@ -675,7 +706,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             userActive: keyIdle < 0.4 && now >= signDemoUntil && !focus.signIgnoresTyping(now: now),
             // 送牌时只有开会才拦得住（听歌时也去：agent 等你比跟着歌摇更要紧）
             // 陪你专注时也一样：只有开会叫得回去（听歌时照样陪你，不回座位摇摆）
-            mustStayHome: signTarget != nil || focusSpot != nil ? physics.isInMeeting : physics.prefersStayingHome,
+            // 踢文件是你刚叫它去的：开会、跳舞都拦不住
+            mustStayHome: holdKick || (kickTarget != nil ? false
+                : (signTarget != nil || focusSpot != nil ? physics.isInMeeting : physics.prefersStayingHome)),
             wanderAllowed: settings.roaming && !physics.agentNeedsYou && focus.timer.phase != .focusing,
             needsAttention: physics.agentNeedsYou,
             // 走路速度、跳跃距离跟着侧身小猫的体型放大
@@ -688,7 +721,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             signTarget: signTarget,
             focusSpot: focusSpot,
             snowySurfaces: snowpack.snowySurfaces,
-            knockAllowed: settings.knockThings
+            knockAllowed: settings.knockThings,
+            kickTarget: kickTarget
         )
         if let path = roamLogPath, now - lastRoamLog > 0.5 {
             lastRoamLog = now
@@ -724,8 +758,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                      roam.surfaceID.map(String.init) ?? "-",
                                      roamSurfaces.map { "\($0.id):\(Int($0.minX))-\(Int($0.maxX))@\(Int($0.y))" }
                                         .joined(separator: ",")))
+            case .kickedFile(let angle, let dir): fileKick.kicked(angle: angle, dir: dir)
+            case .kickTargetUnreachable: fileKick.targetUnreachable()
             }
         }
+        awayScreen = roam.isHome || screen == homeScreen ? nil : screen
         updateDesk(dt: dt, screen: screen)
         guard !roam.isHome else {
             if roamWindow?.isVisible == true { roamWindow?.orderOut(nil) }
@@ -751,15 +788,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             runBlend: roam.runBlend, moveBlend: roam.moveBlend,
             crouchProgress: roam.crouchProgress, landProgress: roam.landProgress,
             skidding: roam.isSkidding, turnScale: roam.turnScale,
-            focusLeft: roam.isFocusNapping ? focus.fractionLeft : nil
+            focusLeft: roam.isFocusNapping ? focus.fractionLeft : nil,
+            kickTime: roam.kickPose?.t ?? 0, kickAngle: roam.kickPose?.angle ?? 0
         )
         // 屏幕边换算到画布坐标：走出屏幕、偷看时屏幕外的部分不画
-        if let c = roam.clipEdge {
+        // 跨屏大跳的半空中（还在别的屏幕上）：不裁，整只猫飞过去
+        let leapingAcross = roam.pose == .air && !screen.frame.contains(roam.pos)
+        if let clip = roam.clipEdge, !leapingAcross {
             let K = k * CatRenderer.walkerArtScale
             let f = window.frame
-            switch c.edge {
-            case .left, .right: window.walkerView.clip = (c.edge, (c.at - f.minX) / K)
-            case .bottom: window.walkerView.clip = (.bottom, CatRenderer.walkerCanvas.height - (c.at - f.minY) / K)
+            switch clip.edge {
+            case .left, .right: window.walkerView.clip = (clip.edge, (clip.at - f.minX) / K)
+            case .bottom: window.walkerView.clip = (.bottom, CatRenderer.walkerCanvas.height - (clip.at - f.minY) / K)
             }
         } else {
             window.walkerView.clip = nil
@@ -769,6 +809,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - 番茄钟
+
+    // MARK: - 踢飞文件
+
+    /// 这一帧小猫在哪块屏幕上活动：平时在座位那块；要踢的文件在别的屏幕上时去那块。
+    /// 正在另一块屏幕上溜达时先不去（holdKick：叫它回座位，回来了再从座位跳过去）
+    private func roamScreen(home: NSScreen) -> (screen: NSScreen, holdKick: Bool) {
+        let here = roam.isHome ? nil : awayScreen
+        guard fileKick.isBusy else { return (here ?? home, false) }
+        let target = fileKick.targetScreen ?? home
+        if roam.isHome { return (target, false) }
+        let current = here ?? home
+        return (current, current != target)
+    }
+
+    private func setupFileKick() {
+        fileKick.onNotice = { [weak self] text in self?.overlayWindow.catView.physics.showNotice(text) }
+        fileKick.canKick = { [weak self] in self?.isPetVisible ?? false }
+        fileKick.start()
+        // Finder 右键 → 服务 →「CoolCat 小猫踢飞（移到废纸篓）」（Info.plist 的 NSServices）
+        NSApp.servicesProvider = fileKick
+        NSUpdateDynamicServices()
+        // `--kick-file <路径> [--kick-at x,y]`（调试用）：启动 2 秒后从光标（或 x,y，屏幕坐标）蹦出这个文件，
+        // 相当于在那儿右键了它
+        let arguments = CommandLine.arguments
+        if let flag = arguments.firstIndex(of: "--kick-file"), flag + 1 < arguments.count {
+            let url = URL(fileURLWithPath: arguments[flag + 1])
+            let spot = arguments.firstIndex(of: "--kick-at").flatMap { index -> CGPoint? in
+                guard index + 1 < arguments.count else { return nil }
+                let parts = arguments[index + 1].split(separator: ",").compactMap { Double($0) }
+                return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.fileKick.request([url], at: spot ?? NSEvent.mouseLocation)
+            }
+        }
+    }
+
+    /// 菜单「踢飞文件…」：选文件，从屏幕顶上掉下来让小猫踢
+    @objc private func kickFileFromMenu() {
+        let panel = NSOpenPanel()
+        panel.title = "选要让小猫踢飞的文件（会移到废纸篓）"
+        panel.prompt = "让小猫踢"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { [weak self] response in
+            guard response == .OK, !panel.urls.isEmpty else { return }
+            self?.fileKick.request(panel.urls, at: nil)
+        }
+    }
 
     private func setupFocus() {
         focus.onEvent = { [weak self] event in

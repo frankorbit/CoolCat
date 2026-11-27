@@ -98,6 +98,8 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/TrinketArt.swift"
     "$ROOT/Sources/FocusTimer.swift"
     "$ROOT/Sources/FocusCompanion.swift"
+    "$ROOT/Sources/FileKick.swift"
+    "$ROOT/Sources/FileKickCompanion.swift"
     "$ROOT/Sources/ClaudeBridge.swift"
     "$ROOT/Sources/MeetingMonitor.swift"
     "$ROOT/Sources/KeyHabits.swift"
@@ -112,6 +114,7 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/PetSpec.swift"
     "$ROOT/Sources/CatRoam.swift"
     "$ROOT/Sources/CatWalker.swift"
+    "$ROOT/Sources/CatWalkerKick.swift"
     "$ROOT/Sources/RoamWindow.swift"
     "$ROOT/Sources/SettingsWindow.swift"
     "$ROOT/Sources/ShowcaseArt.swift"
@@ -134,6 +137,7 @@ COMMON_FLAGS=(
     -framework Accelerate
     -framework ApplicationServices
     -framework SwiftUI
+    -framework QuickLookThumbnailing
 )
 
 TMP_BIN_DIR="$(mktemp -d)"

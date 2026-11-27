@@ -5,5 +5,8 @@
     <!-- 加固运行时下读取音频（系统音频 tap）需要；只是允许，不会主动弹麦克风授权 -->
     <key>com.apple.security.device.audio-input</key>
     <true/>
+    <!-- 踢飞文件：请 Finder 把文件移到废纸篓（Finder 自己删，桌面上的原图标才会马上消失） -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
 </dict>
 </plist>

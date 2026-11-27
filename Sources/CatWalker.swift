@@ -51,6 +51,9 @@ extension CatRenderer {
         var turnScale: CGFloat? = nil
         /// 番茄钟陪你专注：身边摆着番茄计时器，表盘上是还剩的比例（1 = 刚开始）
         var focusLeft: CGFloat?
+        /// 踢文件：开始了多久（秒）、往多高踢（弧度）
+        var kickTime: CGFloat = 0
+        var kickAngle: CGFloat = 0
     }
 
     /// 侧身小猫的配色：从主画面的取色工具里推出来，保证和坐着时是同一只猫
@@ -321,6 +324,12 @@ extension CatRenderer {
             lift += abs(sin(t * 34)) * 1.6 * env
         case .knockTap:
             tilt = 0.05 * sin(.pi * pose.tap)
+        case .kick:
+            let body = kickBody(pose.kickTime)
+            tilt = body.tilt
+            lift = baseLift - body.drop
+            scaleX = 1 - 0.03 * body.drop
+            earPin = 0.15 * body.drop / 3
         }
         if pose.pose != .air && pose.pose != .climb {
             drawGroundShadow(in: ctx, centerX: feet.x - 4, feetY: ground, width: 64 * widthK * scaleX,
@@ -469,6 +478,8 @@ extension CatRenderer {
                 let ex = w.end.x + (r.end.x - w.end.x) * rBlend
                 let ey = w.end.y + (r.end.y - w.end.y) * rBlend
                 return (CGPoint(x: ex, y: ey), w.fold + (r.fold - w.fold) * rBlend)
+            case .kick where front && near:
+                return kickLegEnd(joint, groundY: groundY, time: pose.kickTime, angle: pose.kickAngle)
             case .knockTap where front && near:
                 let reach = sin(.pi * pose.tap)
                 let raise = max(0, sin(.pi * min(1, pose.tap * 2)))
@@ -547,6 +558,10 @@ extension CatRenderer {
         ctx.addPath(tailShape); ctx.fillPath()
 
         // 近侧两条腿：先画，身体盖住腿的上端，接缝融进身体
+        if pose.pose == .kick {
+            drawKickSwoosh(in: ctx, shoulder: shoulder, groundY: groundY, time: pose.kickTime,
+                           angle: pose.kickAngle)
+        }
         let nearHind = makeLeg(hip, top: hip, offset: .pi, front: false, near: true)
         let nearFront = makeLeg(shoulder, top: shoulder, offset: 0, front: true, near: true)
         fillLeg(nearHind, far: false)
@@ -642,12 +657,17 @@ extension CatRenderer {
         let headCounter = (rBlend > 0.05 || hunting || pose.skidding) ? -tilt * 0.72 : 0
         ctx.rotate(by: headCounter + sin(t * 34 + 0.7) * 0.28 * shakeEnv)
         drawWalkerHead(in: ctx, center: .zero, pose: pose, pal: pal, lookDown: pose.pose == .crouch,
-                       earPin: earPin, squint: pose.skidding,
+                       earPin: earPin,
+                       squint: pose.skidding || (pose.pose == .kick && kickFocused(pose.kickTime)),
                        fuse: bodyParts, fuseCTM: bodyCTM)
         ctx.restoreGState()
         if shakeEnv > 0.05 {
             drawShakeLines(in: ctx, head: headCenter, body: CGSize(width: halfLen, height: bodyH), env: shakeEnv,
                            color: pal.outline)
+        }
+        if pose.pose == .kick {
+            drawKickImpact(in: ctx, shoulder: shoulder, groundY: groundY, time: pose.kickTime,
+                           angle: pose.kickAngle)
         }
         ctx.restoreGState()
     }
