@@ -1174,6 +1174,12 @@ final class CatPhysics {
         )
     }
 
+    /// 番茄钟到点：陪你专注完成一个番茄，记亲密度
+    func completedFocus() {
+        sleepiness = 0
+        addBond(.focus)
+    }
+
     /// 头顶的提示气泡（权限说明等）
     func showNotice(_ text: String) {
         toast = Toast(text: text, style: .habit)

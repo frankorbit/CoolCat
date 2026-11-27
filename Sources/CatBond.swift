@@ -39,6 +39,8 @@ enum BondSource: String, CaseIterable {
     case claude
     /// 收下小猫送的礼物
     case gift
+    /// 陪你专注完成一个番茄
+    case focus
 
     /// 每次得分
     var award: Int {
@@ -50,6 +52,7 @@ enum BondSource: String, CaseIterable {
         case .music: return 1
         case .claude: return 1
         case .gift: return 3
+        case .focus: return 3
         }
     }
 
@@ -63,6 +66,7 @@ enum BondSource: String, CaseIterable {
         case .music: return 12
         case .claude: return 10
         case .gift: return 3
+        case .focus: return 12
         }
     }
 }
@@ -181,7 +185,7 @@ struct BondLog {
         case .catchToy: catches += 1
         case .feed: fish += 1
         case .gift: giftDay = today
-        case .visit, .music, .claude: break
+        case .visit, .music, .claude, .focus: break
         }
         let used = todayBySource[source.rawValue] ?? 0
         let gained = max(0, min(source.award + bonus, source.dailyCap - used))

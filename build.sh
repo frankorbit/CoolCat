@@ -96,6 +96,8 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/DeskOverlay.swift"
     "$ROOT/Sources/Trinkets.swift"
     "$ROOT/Sources/TrinketArt.swift"
+    "$ROOT/Sources/FocusTimer.swift"
+    "$ROOT/Sources/FocusCompanion.swift"
     "$ROOT/Sources/ClaudeBridge.swift"
     "$ROOT/Sources/MeetingMonitor.swift"
     "$ROOT/Sources/KeyHabits.swift"

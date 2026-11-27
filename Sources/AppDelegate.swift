@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var deskWindow: DeskOverlayWindow?
     /// 被推下桌（或从嘴里掉下来）的小东西
     private var trinkets = TrinketPhysics()
+    /// 番茄钟：专注时小猫趴在你的窗口上陪你，到点举牌叫你休息
+    private let focus = FocusCompanion()
     /// 这次抖雪已经把雪块甩出去了
     private var snowShakeSpawned = false
     private let ignoreKeysForRoaming = CommandLine.arguments.contains("--roam-ignore-keys")
@@ -83,6 +85,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if CommandLine.arguments.contains("--roam-nap") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.napNow() }
+        }
+        // `--focus-now`：启动后马上开始一个番茄（配合 `--focus-seconds 40` 几分钟看完一整轮）
+        if CommandLine.arguments.contains("--focus-now") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.focus.startFocus(minutes: FocusTimer.choices[0])
+            }
         }
         if CommandLine.arguments.contains("--roam-now") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.roam.goOutNow() }
@@ -182,6 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         startRenderLoop()
         startLifeCompanion()
+        setupFocus()
 
         if Self.updateChecksEnabled {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
@@ -198,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         InputEngine.shared.stop()
         MusicMonitor.shared.stop()
         lifeTimer?.invalidate()
+        focus.stopTicking()
         AudioSpectrumAnalyzer.shared.setWanted(false)
         ClaudeActivityTracker.shared.stop()
         MeetingMonitor.shared.stop()
@@ -397,6 +407,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         feedItem.target = self
         menu.addItem(feedItem)
 
+        menu.addItem(focusMenuItem())
+
         let bond = physics.bond
         let bondText = bond.nextLevel.map { "💞 Lv\(bond.level.level) \(bond.level.title) · \(bond.points)/\($0.threshold)" }
             ?? "💞 Lv\(bond.level.level) \(bond.level.title) · 满级"
@@ -498,6 +510,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// agent 等你批准、你 3 秒没打字（多半在看别的窗口）：小猫去你最前面的窗口顶上举牌；
     /// 窗口顶站不上去就在它正下方的屏幕底边举。每次等待只送一次，开会时不去
     private func updateSignTarget(screen: NSScreen, keyIdle: Double, now: CFTimeInterval) -> RoamSignTarget? {
+        if let agent = agentSignTarget(screen: screen, keyIdle: keyIdle, now: now) { return agent }
+        // 番茄钟到点：在你的窗口顶上举「第 N 个番茄完成」（agent 等你更要紧，排在前面）；开会时不去
+        guard !overlayWindow.catView.physics.isInMeeting else {
+            focus.cancelSign()
+            return nil
+        }
+        guard let target = focus.reminderSign(surfaces: roamScan.surfaces, screen: screen, keyIdle: keyIdle, now: now,
+                                              holding: roam.isHoldingSign) else { return nil }
+        signLines = focus.signLines
+        return target
+    }
+
+    private func agentSignTarget(screen: NSScreen, keyIdle: Double, now: CFTimeInterval) -> RoamSignTarget? {
         let physics = overlayWindow.catView.physics
         let demo = now < signDemoUntil
         let waiting = physics.agentNeedsYou || demo
@@ -524,15 +549,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             signLines = ["\(line.agent.displayName) \(line.detail)", line.project]
         }
         let k = CatSettings.shared.scale * CatRenderer.walkerArtScale
-        // 窗口上沿的 id = 窗口号 × 8 + 段号 + 1：挑这扇窗口离中间最近的那段
-        let segments = roamScan.surfaces.filter { ($0.id - 1) / 8 == front.id }
-        let offCenter = { (seg: RoamSurface) in abs((seg.minX + seg.maxX) / 2 - front.rect.midX) }
-        if let seg = segments.min(by: { offCenter($0) < offCenter($1) }) {
-            let x = min(max(front.rect.midX, seg.minX + 40 * k), seg.maxX - 40 * k)
-            return RoamSignTarget(surfaceID: seg.id, x: x)
-        }
         let visible = screen.visibleFrame
-        return RoamSignTarget(surfaceID: 0, x: min(max(front.rect.midX, visible.minX + 40 * k), visible.maxX - 40 * k))
+        return RoamSignTarget.over(windowID: front.id, rect: front.rect, surfaces: roamScan.surfaces,
+                                   floorX: visible.minX...visible.maxX, scale: k)
     }
 
     /// `--roam-log` 打开时往日志里追加一行（调试用）
@@ -644,6 +663,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // `--roam-ignore-keys`（调试用）：漫游逻辑当作一直没人打字，方便在打字时实机观察整段行为
         let keyIdle = ignoreKeysForRoaming ? 1000 : now - max(engine.lastKeyActivityTime, roamClockStart)
         let signTarget = updateSignTarget(screen: screen, keyIdle: keyIdle, now: now)
+        let focusSpot = focus.focusSpot(surfaces: roamSurfaces, screen: screen, now: now)
         let world = RoamWorld(
             floor: RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2),
             windowTops: roamSurfaces,
@@ -651,10 +671,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             homeRect: home,
             keyIdle: keyIdle,
             // 举牌预览期间不管打字：你可能正在别处打字，预览也要看得到
-            userActive: keyIdle < 0.4 && now >= signDemoUntil,
+            // 到点举牌的路上也不管打字：番茄钟是你自己定的，到点就该叫你
+            userActive: keyIdle < 0.4 && now >= signDemoUntil && !focus.signIgnoresTyping(now: now),
             // 送牌时只有开会才拦得住（听歌时也去：agent 等你比跟着歌摇更要紧）
-            mustStayHome: signTarget != nil ? physics.isInMeeting : physics.prefersStayingHome,
-            wanderAllowed: settings.roaming && !physics.agentNeedsYou,
+            // 陪你专注时也一样：只有开会叫得回去（听歌时照样陪你，不回座位摇摆）
+            mustStayHome: signTarget != nil || focusSpot != nil ? physics.isInMeeting : physics.prefersStayingHome,
+            wanderAllowed: settings.roaming && !physics.agentNeedsYou && focus.timer.phase != .focusing,
             needsAttention: physics.agentNeedsYou,
             // 走路速度、跳跃距离跟着侧身小猫的体型放大
             scale: k * CatRenderer.walkerArtScale,
@@ -664,6 +686,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             cursorSpeed: hypot(engine.mouseVelocity.dx, engine.mouseVelocity.dy),
             walls: roamScan.walls,
             signTarget: signTarget,
+            focusSpot: focusSpot,
             snowySurfaces: snowpack.snowySurfaces,
             knockAllowed: settings.knockThings
         )
@@ -727,7 +750,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             trinket: roam.carriedTrinket.flatMap(Trinket.init(rawValue:)),
             runBlend: roam.runBlend, moveBlend: roam.moveBlend,
             crouchProgress: roam.crouchProgress, landProgress: roam.landProgress,
-            skidding: roam.isSkidding, turnScale: roam.turnScale
+            skidding: roam.isSkidding, turnScale: roam.turnScale,
+            focusLeft: roam.isFocusNapping ? focus.fractionLeft : nil
         )
         // 屏幕边换算到画布坐标：走出屏幕、偷看时屏幕外的部分不画
         if let c = roam.clipEdge {
@@ -743,6 +767,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         window.walkerView.needsDisplay = true
         if !window.isVisible { window.orderFrontRegardless() }
     }
+
+    // MARK: - 番茄钟
+
+    private func setupFocus() {
+        focus.onEvent = { [weak self] event in
+            guard let self else { return }
+            let physics = self.overlayWindow.catView.physics
+            switch event {
+            case .focusDone:
+                // 调试时几十秒一个番茄：不算亲密度
+                if !self.focus.isDebug { physics.completedFocus() }
+            case .restDone: physics.showNotice("☕ 休息好啦，再来一个番茄？")
+            }
+        }
+        focus.onTick = { [weak self] in self?.refreshFocusStatus() }
+        focus.startTicking()
+    }
+
+    /// 菜单栏：番茄钟开着时在小猫图标右边显示倒计时（休息时带个 ☕）
+    private func refreshFocusStatus() {
+        guard let item = statusItem, let button = item.button else { return }
+        let timer = focus.timer
+        guard timer.isRunning else {
+            if item.length != NSStatusItem.squareLength {
+                item.length = NSStatusItem.squareLength
+                button.title = ""
+                button.imagePosition = .imageOnly
+                button.toolTip = "CoolCat 黑猫键盘桌宠"
+            }
+            return
+        }
+        item.length = NSStatusItem.variableLength
+        button.imagePosition = .imageLeft
+        let resting = timer.phase == .resting
+        let text = (resting ? " ☕ " : " ") + FocusTimer.clock(focus.remaining)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize - 1, weight: .medium)
+        button.attributedTitle = NSAttributedString(string: text, attributes: [.font: font])
+        button.toolTip = resting ? "休息中，到点小猫会叫你" : "专注中，小猫在你的窗口上陪你"
+    }
+
+    /// 菜单里的番茄钟：没开时选时长，专注 / 休息时显示还剩多久和能做的事
+    private func focusMenuItem() -> NSMenuItem {
+        let timer = focus.timer
+        let left = Int((focus.remaining / 60).rounded(.up))
+        let title: String
+        switch timer.phase {
+        case .idle: title = "🍅 番茄钟"
+        case .focusing: title = "🍅 专注中 · 还剩 \(left) 分钟"
+        case .resting: title = "☕ 休息中 · 还剩 \(left) 分钟"
+        }
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let menu = NSMenu()
+        func add(_ title: String, _ action: Selector, tag: Int = 0) {
+            let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            entry.target = self
+            entry.tag = tag
+            menu.addItem(entry)
+        }
+        switch timer.phase {
+        case .idle:
+            for minutes in FocusTimer.choices {
+                add("专注 \(minutes) 分钟", #selector(startFocusFromMenu(_:)), tag: minutes)
+            }
+        case .focusing:
+            add("提前结束这个番茄", #selector(stopFocusFromMenu))
+        case .resting:
+            add("跳过休息，再专注 \(max(1, Int(timer.focusDuration / 60))) 分钟", #selector(skipFocusRestFromMenu))
+            add("结束番茄钟", #selector(stopFocusFromMenu))
+        }
+        menu.addItem(.separator())
+        let hint = timer.completedToday > 0
+            ? "今天完成了 \(timer.completedToday) 个番茄"
+            : "专注时小猫趴在你的窗口上陪你，到点举牌叫你休息"
+        let hintItem = NSMenuItem(title: hint, action: nil, keyEquivalent: "")
+        hintItem.isEnabled = false
+        menu.addItem(hintItem)
+        item.submenu = menu
+        return item
+    }
+
+    @objc private func startFocusFromMenu(_ sender: NSMenuItem) {
+        focus.startFocus(minutes: sender.tag > 0 ? sender.tag : FocusTimer.choices[0])
+    }
+
+    @objc private func skipFocusRestFromMenu() { focus.skipRest() }
+
+    @objc private func stopFocusFromMenu() { focus.stop() }
 
     // MARK: - Launch at Login (macOS LaunchAgent — works reliably for signed & ad-hoc builds)
 
@@ -799,7 +910,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             options.night = settings.lifeNight
             options.morning = settings.lifeMorning
             options.battery = settings.lifeBattery
-            options.workBreak = settings.lifeWorkBreak
+            // 开着番茄钟时休息由番茄钟管，不再另外提醒久坐
+            options.workBreak = settings.lifeWorkBreak && !self.focus.timer.isRunning
             let engine = InputEngine.shared
             let lastInput = max(engine.lastKeyActivityTime, max(engine.lastMouseMoveTime, engine.lastMouseClickTime))
             let battery = PowerSourceProbe.read()

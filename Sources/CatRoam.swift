@@ -37,6 +37,20 @@ struct RoamSignTarget: Equatable {
     var surfaceID: Int
     /// 坐在哪儿（屏幕 x）
     var x: CGFloat
+
+    /// 你正在看的那扇窗口上方：挑它离中间最近的那段上沿（上沿的 id = 窗口号 × 8 + 段号 + 1），离两端留点地方；
+    /// 窗口顶站不上去（贴着屏幕顶、被挡住）就在它正下方的屏幕底边
+    static func over(windowID: Int, rect: CGRect, surfaces: [RoamSurface], floorX: ClosedRange<CGFloat>,
+                     scale: CGFloat) -> RoamSignTarget {
+        let margin = 40 * scale
+        let segments = surfaces.filter { $0.id > 0 && ($0.id - 1) / 8 == windowID }
+        let offCenter = { (seg: RoamSurface) in abs((seg.minX + seg.maxX) / 2 - rect.midX) }
+        if let seg = segments.min(by: { offCenter($0) < offCenter($1) }) {
+            return RoamSignTarget(surfaceID: seg.id, x: min(max(rect.midX, seg.minX + margin), seg.maxX - margin))
+        }
+        let floorSpot = min(max(rect.midX, floorX.lowerBound + margin), floorX.upperBound - margin)
+        return RoamSignTarget(surfaceID: 0, x: floorSpot)
+    }
 }
 
 /// 每帧喂给漫游逻辑的外部状态（全部由调用方采集，逻辑本身不碰 AppKit）
@@ -71,6 +85,9 @@ struct RoamWorld {
     var walls: [RoamWall] = []
     /// 举牌提醒：有值时小猫放下手头的事，跑过去坐下举牌，直到它变回 nil
     var signTarget: RoamSignTarget?
+    /// 番茄钟陪你专注：有值时小猫去那儿蜷成一团睡，到点（变回 nil）才醒。
+    /// 陪着的时候你打字很正常，不因此回家；只有开会（mustStayHome）叫得回去
+    var focusSpot: RoamSignTarget?
     /// 积雪够厚的窗口上沿（在上面走久了会抖爪子，下来时甩身子）
     var snowySurfaces: Set<Int> = []
     /// 设置里允许把东西推下桌
@@ -524,6 +541,12 @@ struct RoamDirector {
     /// 正在送牌（跑去举牌提醒的路上，或者正举着）
     private(set) var delivering = false
     var isHoldingSign: Bool { activity == .sign }
+    /// 番茄钟：正在陪你专注（去趴着的路上，或者已经睡着了）
+    private(set) var keepingCompany = false
+    /// 陪你专注、已经蜷在那儿了（画番茄计时器用）
+    var isFocusNapping: Bool { keepingCompany && isNapping && !delivering }
+    /// 陪你专注时这一觉的长度：到点前一直续，不会自己醒
+    static let focusNapHold: CGFloat = 600
     /// 走到窗框旁边后要开始的那次攀爬；跳上窗框侧边后接着爬的那次
     private var pendingClimb: Climb?
     private var wallJumpClimb: Climb?
@@ -541,7 +564,10 @@ struct RoamDirector {
         return events
     }
 
-    private mutating func step(dt: CGFloat, world: RoamWorld) -> [RoamEvent] {
+    private mutating func step(dt: CGFloat, world input: RoamWorld) -> [RoamEvent] {
+        var world = input
+        // 陪你专注时你本来就在打字：不当作「快回来」
+        if world.focusSpot != nil { world.userActive = false }
         var events: [RoamEvent] = []
         let k = world.scale
         lastFloor = world.floor
@@ -556,6 +582,14 @@ struct RoamDirector {
                 tripForced = true
                 startTrip(world: world, toFloor: true)
                 delivering = true
+                events.append(.leftSeat)
+                return events
+            }
+            // 番茄钟开始了：不管冷却，跳下座位去你的窗口上趴着
+            if world.focusSpot != nil, !world.mustStayHome {
+                tripForced = true
+                startTrip(world: world, toFloor: true)
+                keepingCompany = true
                 events.append(.leftSeat)
                 return events
             }
@@ -581,11 +615,13 @@ struct RoamDirector {
         // agent 刚开始等你：跑回去提醒（手动出门时本来就在等的不算）
         let attentionRaised = world.needsAttention && !lastNeedsAttention
         lastNeedsAttention = world.needsAttention
+        updateFocus(world: world)
         updateDelivery(world: world)
-        // 你一打字、或者有事要它待在座位上：跑回家（送牌的路上 agent 本来就在等你，不算叫它回来）
-        let urgent = world.userActive || world.mustStayHome || (attentionRaised && !delivering)
-        // 睡着时不因为到点就叫醒，睡完这一觉再回家
-        let tripOver = tripTime > Self.maxTrip && !isNapping && !playSession && !delivering
+        // 你一打字、或者有事要它待在座位上：跑回家（送牌的路上 agent 本来就在等你，不算叫它回来；
+        // 陪你专注时 agent 等你，就地去举牌，不先跑回家）
+        let urgent = world.userActive || world.mustStayHome || (attentionRaised && !delivering && !keepingCompany)
+        // 睡着时不因为到点就叫醒，睡完这一觉再回家；陪你专注时一直陪到番茄钟到点
+        let tripOver = tripTime > Self.maxTrip && !isNapping && !playSession && !delivering && !keepingCompany
         if !returning && (urgent || tripOver || (!tripForced && !world.wanderAllowed && !delivering)) {
             beginReturn(world: world, run: urgent)
         } else if returning && urgent && !returningUrgently {
@@ -608,8 +644,8 @@ struct RoamDirector {
 
         playCooldown = max(0, playCooldown - dt)
         followPlacedTrinket(world: world)
-        // 送牌、推东西的路上不被光标勾走
-        if !returning && !delivering && knockGoal == nil { considerCursorPlay(world: world) }
+        // 送牌、推东西的路上、陪你专注时不被光标勾走
+        if !returning && !delivering && knockGoal == nil && !keepingCompany { considerCursorPlay(world: world) }
 
         switch activity {
         case .walk(let toX, let run):
@@ -652,10 +688,10 @@ struct RoamDirector {
             }
             if abs(toX - pos.x) < 0.5 {
                 // 疯跑到地方：压低身子带惯性急刹（往家跑时不刹，直接接着跳）。
-                // 接下来要在这一点起跳、爬窗框、偷看、举牌或放东西时原地刹住，不滑过头：
+                // 接下来要在这一点起跳、爬窗框、偷看、举牌、放东西或陪你专注时原地刹住，不滑过头：
                 // 滑过头会让起跳点对不上（跳的时候瞬移回去），举牌 / 推东西的目的地也永远到不了
                 let mustStopHere = pendingJump != nil || pendingPeek != nil || pendingClimb != nil
-                    || delivering || knockGoal != nil
+                    || delivering || knockGoal != nil || keepingCompany
                 activity = run && !returning ? .land(duration: mustStopHere ? 0.3 : 0.38, skidding: !mustStopHere) : nil
             }
         case .crouch(let t, let duration, let jump):
@@ -778,6 +814,10 @@ struct RoamDirector {
         case .nap(var n):
             currentSpeed *= exp(-18 * dt)
             n.t += dt * n.speed
+            // 陪你专注：番茄钟没到点就一直睡，快醒时再续一觉
+            if keepingCompany && !delivering && n.asleep && n.t > Nap.settleTime + n.hold - 1 {
+                n.hold += Self.focusNapHold
+            }
             // 醒了：伸个懒腰（落地那种压低身子的姿势）再接着溜达
             activity = n.t >= n.total ? .land(duration: 0.45) : .nap(n)
         case .fall(let vy):
@@ -829,6 +869,8 @@ struct RoamDirector {
         } else if activity == nil {
             if delivering && !returning {
                 planDeliveryStep(world: world)
+            } else if keepingCompany && !returning {
+                planFocusStep(world: world)
             } else if knockGoal != nil && !returning {
                 planKnockStep(world: world)
             } else if returning {
@@ -1135,7 +1177,59 @@ struct RoamDirector {
             // 你批准了（或者 agent 不等了）：放下牌子回家
             delivering = false
             if activity == .sign { activity = .land(duration: 0.3) }
-            if !returning { beginReturn(world: world, run: false) }
+            // 陪你专注时举完牌：回去接着趴着
+            if !returning && !keepingCompany { beginReturn(world: world, run: false) }
+        }
+    }
+
+    // MARK: Focus Company
+
+    /// 番茄钟开始 / 到点。开始时放下手头的事（叼着的东西掉下来、不玩了），去你的窗口上趴着；
+    /// 到点时醒过来慢慢回家（到点举牌由送牌接手：同一帧里 signTarget 会把它叫过去）
+    private mutating func updateFocus(world: RoamWorld) {
+        if world.focusSpot != nil, !keepingCompany {
+            keepingCompany = true
+            tripForced = true
+            releaseTrinket()
+            knockGoal = nil
+            endPlay()
+            pendingPeek = nil
+            pendingJump = nil
+            pendingClimb = nil
+            resumeStalk = false
+            // 正往家走（不是开会叫回去的）：掉头去陪你
+            if returning && !world.mustStayHome {
+                returning = false
+                returningUrgently = false
+            }
+            switch activity {
+            case .jump, .fall, .pounce, .crouch, .climb:
+                break                                   // 让这一下做完，落地后再去
+            case .nap(var nap):
+                nap.wakeNow(startled: false)            // 在别处睡着呢：醒过来换个地方接着睡
+                activity = .nap(nap)
+            case .peek(var peek):
+                let hideAt = peek.start + Peek.revealTime
+                peek.hold = min(peek.hold, max(0, peek.t - hideAt))
+                activity = .peek(peek)
+            case .sign:
+                break                                   // 正举着牌：举完再去
+            default:
+                if !returning { activity = nil }
+            }
+        } else if world.focusSpot == nil, keepingCompany {
+            keepingCompany = false
+            if !delivering && !returning { beginReturn(world: world, run: false) }
+        }
+    }
+
+    /// 陪你专注的下一步：到了就蜷成一团睡；在别处就按跳台 / 爬窗 / 下地的顺序赶过去。
+    /// 窗口顶上不去：在它正下方的屏幕底边睡
+    private mutating func planFocusStep(world: RoamWorld) {
+        guard let spot = world.focusSpot else { return }
+        if travelStep(to: spot, world: world, belowIsFine: true) == .arrived {
+            nappedThisTrip = true
+            activity = .nap(Nap(hold: Self.focusNapHold))
         }
     }
 
@@ -1757,6 +1851,8 @@ struct RoamDirector {
         pendingClimb = nil
         wallJumpClimb = nil
         delivering = false
+        // 开会被叫回来的：会开完了，在家里重新看一眼番茄钟还在不在
+        keepingCompany = false
         cooldown = 60 + CGFloat(random() * 60)
         checkTimer = 5
     }

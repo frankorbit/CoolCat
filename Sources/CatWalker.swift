@@ -49,6 +49,8 @@ extension CatRenderer {
         var landProgress: CGFloat? = nil
         var skidding: Bool = false
         var turnScale: CGFloat? = nil
+        /// 番茄钟陪你专注：身边摆着番茄计时器，表盘上是还剩的比例（1 = 刚开始）
+        var focusLeft: CGFloat?
     }
 
     /// 侧身小猫的配色：从主画面的取色工具里推出来，保证和坐着时是同一只猫
@@ -189,6 +191,11 @@ extension CatRenderer {
         // 牌子上的字不跟着朝向翻转
         if pose.pose == .sign {
             drawSignBoard(in: ctx, pose: pose)
+        }
+        // 番茄计时器摆在鼻尖前面；不跟着朝向翻转（表盘总是顺时针走）
+        if pose.pose == .curl, let left = pose.focusLeft {
+            let tomatoX = pose.facing < 0 ? walkerCanvas.width - focusTomatoX : focusTomatoX
+            drawFocusTomato(in: ctx, centerX: tomatoX, groundY: walkerFeet.y, left: left, appear: pose.curl)
         }
         // Zzz 不跟着朝向翻转（字母不能镜像）
         if pose.pose == .curl && pose.asleep {
@@ -1642,6 +1649,91 @@ extension CatRenderer {
             ctx.addPath(z); ctx.strokePath()
         }
         ctx.restoreGState()
+    }
+
+    // MARK: Focus Tomato
+
+    /// 番茄计时器的中心 x（画布坐标，朝右时在鼻尖前面）
+    static let focusTomatoX: CGFloat = 157
+
+    /// 番茄形状的厨房计时器：红番茄 + 绿叶蒂，正面一个小表盘，红色扇形是还剩的时间（从 12 点顺时针）。
+    /// appear 0...1：小猫趴下时番茄从地上「冒」出来（缩放），醒来时收回去
+    private static func drawFocusTomato(in ctx: CGContext, centerX: CGFloat, groundY: CGFloat, left: CGFloat,
+                                        appear: CGFloat) {
+        let grow = max(0, min(1, appear))
+        guard grow > 0.02 else { return }
+        ctx.saveGState()
+        // 以番茄底边中点为原点
+        ctx.translateBy(x: centerX, y: groundY)
+        ctx.scaleBy(x: grow, y: grow)
+        ctx.setFillColor(NSColor(calibratedWhite: 0, alpha: 0.14).cgColor)
+        ctx.fillEllipse(in: CGRect(x: -14, y: -3, width: 28, height: 6))
+        drawTomatoBody(in: ctx)
+        drawTomatoLeaves(in: ctx)
+        drawTomatoDial(in: ctx, center: CGPoint(x: 0, y: -11), radius: 6.4, left: left)
+        ctx.restoreGState()
+    }
+
+    /// 番茄身子：扁圆，底下暗一点，左上一抹高光
+    private static func drawTomatoBody(in ctx: CGContext) {
+        let bodyPath = CGPath(ellipseIn: CGRect(x: -13, y: -22, width: 26, height: 21), transform: nil)
+        ctx.setFillColor(rgb(0xE5483B).cgColor)
+        ctx.addPath(bodyPath)
+        ctx.fillPath()
+        ctx.saveGState()
+        ctx.addPath(bodyPath)
+        ctx.clip()
+        ctx.setFillColor(rgb(0xB92F25, 0.55).cgColor)
+        ctx.fillEllipse(in: CGRect(x: -16, y: -9, width: 32, height: 14))
+        ctx.restoreGState()
+        ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.45).cgColor)
+        ctx.fillEllipse(in: CGRect(x: -10, y: -19, width: 7, height: 4))
+        ctx.setStrokeColor(rgb(0x8E2A22).cgColor)
+        ctx.setLineWidth(1.1)
+        ctx.addPath(bodyPath)
+        ctx.strokePath()
+    }
+
+    /// 叶蒂：五片小叶子 + 一根短梗
+    private static func drawTomatoLeaves(in ctx: CGContext) {
+        ctx.setFillColor(rgb(0x4E9A3A).cgColor)
+        for index in 0..<5 {
+            let angle = -CGFloat.pi / 2 + CGFloat(index - 2) * 0.62
+            let tip = CGPoint(x: cos(angle) * 7, y: -22 + sin(angle) * 3.2 + 2.4)
+            let leaf = CGMutablePath()
+            leaf.move(to: CGPoint(x: -1.6, y: -21.5))
+            leaf.addQuadCurve(to: tip, control: CGPoint(x: tip.x * 0.4 - 1.5, y: tip.y - 2))
+            leaf.addQuadCurve(to: CGPoint(x: 1.6, y: -21.5), control: CGPoint(x: tip.x * 0.4 + 1.5, y: tip.y + 1))
+            ctx.addPath(leaf)
+        }
+        ctx.fillPath()
+        ctx.setStrokeColor(rgb(0x3D7A2C).cgColor)
+        ctx.setLineWidth(1.6)
+        ctx.setLineCap(.round)
+        ctx.move(to: CGPoint(x: 0, y: -22))
+        ctx.addLine(to: CGPoint(x: 0.8, y: -26))
+        ctx.strokePath()
+    }
+
+    /// 表盘：米白底 + 红色扇形（还剩多少）
+    private static func drawTomatoDial(in ctx: CGContext, center: CGPoint, radius: CGFloat, left: CGFloat) {
+        let face = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+        ctx.setFillColor(rgb(0xFFF6E8).cgColor)
+        ctx.fillEllipse(in: face)
+        let fraction = max(0, min(1, left))
+        if fraction > 0.005 {
+            // 画布 y 向下：从 12 点（-π/2）往顺时针走就是角度增大
+            let start = -CGFloat.pi / 2
+            ctx.move(to: center)
+            ctx.addArc(center: center, radius: radius - 1.2, startAngle: start, endAngle: start + fraction * 2 * .pi,
+                       clockwise: false)
+            ctx.closePath()
+            ctx.setFillColor(rgb(0xF07A6E).cgColor)
+            ctx.fillPath()
+        }
+        ctx.setStrokeColor(rgb(0x8E2A22).cgColor)
+        ctx.setLineWidth(0.9)
+        ctx.strokeEllipse(in: face)
     }
 
     // MARK: Sign
