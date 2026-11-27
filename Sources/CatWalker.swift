@@ -613,6 +613,22 @@ extension CatRenderer {
             let runHead = CGPoint(x: halfLen * 0.74 + 10, y: -bodyH - 13 - arch * 0.25 + nod)
             headCenter = lerpPt(baseHead, runHead, rBlend)
         }
+        let r = walkerHeadRadius()
+        let chinY = headCenter.y + r * 0.94 + (pose.pose == .crouch ? 2.0 : 0)
+        let frontY = min(chestRect.maxY - 9.0, chinY + 3.5)
+        let ny = max(-0.92, min(0.92, (frontY - chestRect.midY) / (chestRect.height * 0.5)))
+        let frontX = chestRect.midX + (chestRect.width * 0.5) * sqrt(1 - ny * ny) - 0.5
+        let backY = max(chestRect.minY + 2.5, frontY - 12.5)
+        let neckBack = CGPoint(x: chestRect.minX - 0.5, y: backY)
+        let neckFront = CGPoint(x: frontX, y: frontY)
+        let neckControl = CGPoint(x: neckBack.x * 0.42 + neckFront.x * 0.58, y: neckFront.y + 4.5)
+        let flutter = sin(t * (5 + rBlend * 8)) * (2 + rBlend * 4)
+        let scarfTailEnd = CGPoint(x: neckBack.x - 12 - rBlend * 14, y: neckBack.y + 14 - rBlend * 7 + flutter)
+        let scarfTailControl = CGPoint(x: neckBack.x - 6 - rBlend * 5, y: neckBack.y + 9)
+        drawWalkerNeckAccessory(in: ctx, back: neckBack, front: neckFront, control: neckControl,
+                                bellT: 0.84, tailEnd: scarfTailEnd, tailControl: scarfTailControl,
+                                pose: pose, rBlend: rBlend, mBlend: mBlend,
+                                bellAngleBias: pose.pose == .climb ? 0.55 : 0)
         let bodyCTM = ctx.ctm
         ctx.saveGState()
         ctx.translateBy(x: headCenter.x, y: headCenter.y)
@@ -700,14 +716,137 @@ extension CatRenderer {
         ctx.restoreGState()
     }
 
+    private static func walkerHeadRadius() -> CGFloat {
+        let hs = CGFloat(pet?.shape.headSize ?? 1)
+        return 30.5 * hs * CGFloat(pet?.shape.headWidth ?? 1).squareRoot()
+    }
+
+    /// 漫游小猫脖子上的项圈 / 围巾：在身体坐标系下绕过脖子与上胸，画在头之前让圆脸自然压住上沿，铃铛垂在胸前
+    private static func drawWalkerNeckAccessory(in ctx: CGContext, back: CGPoint, front: CGPoint, control: CGPoint,
+                                                bellT: CGFloat, tailEnd: CGPoint, tailControl: CGPoint,
+                                                pose: WalkerPose, rBlend: CGFloat, mBlend: CGFloat,
+                                                bellAngleBias: CGFloat = 0) {
+        let accessory = CatSettings.shared.accessory
+        guard accessory == .bell || accessory == .scarf else { return }
+        let scale = max(0.84, min(1.06, CGFloat(pet?.shape.headSize ?? 1)))
+
+        func quadPt(_ t: CGFloat) -> CGPoint {
+            let u = 1 - t
+            return CGPoint(x: u * u * back.x + 2 * u * t * control.x + t * t * front.x,
+                           y: u * u * back.y + 2 * u * t * control.y + t * t * front.y)
+        }
+
+        ctx.saveGState()
+        ctx.setLineCap(.round)
+
+        if accessory == .scarf {
+            let tailStart = quadPt(0.22)
+            ctx.setStrokeColor(rgb(0xA83232).cgColor)
+            ctx.setLineWidth(7.4 * scale)
+            ctx.move(to: tailStart)
+            ctx.addQuadCurve(to: tailEnd, control: tailControl)
+            ctx.strokePath()
+
+            ctx.setStrokeColor(rgb(0xD94848).cgColor)
+            ctx.setLineWidth(6.2 * scale)
+            ctx.move(to: tailStart)
+            ctx.addQuadCurve(to: tailEnd, control: tailControl)
+            ctx.strokePath()
+
+            let dx = tailEnd.x - tailControl.x
+            let dy = tailEnd.y - tailControl.y
+            let len = max(0.001, hypot(dx, dy))
+            let tx = dx / len, ty = dy / len
+            let nx = -ty * 2.4 * scale, ny = tx * 2.4 * scale
+            ctx.setStrokeColor(rgb(0xF6EBDD).cgColor)
+            ctx.setLineWidth(1.9 * scale)
+            ctx.setLineCap(.butt)
+            for backOff: CGFloat in [2.5 * scale, 6.0 * scale] {
+                let c = CGPoint(x: tailEnd.x - tx * backOff, y: tailEnd.y - ty * backOff)
+                ctx.move(to: CGPoint(x: c.x - nx, y: c.y - ny))
+                ctx.addLine(to: CGPoint(x: c.x + nx, y: c.y + ny))
+            }
+            ctx.strokePath()
+            ctx.setLineCap(.round)
+
+            ctx.setStrokeColor(rgb(0xA83232).cgColor)
+            ctx.setLineWidth(7.2 * scale)
+            ctx.move(to: back)
+            ctx.addQuadCurve(to: front, control: control)
+            ctx.strokePath()
+
+            ctx.setStrokeColor(rgb(0xD94848).cgColor)
+            ctx.setLineWidth(5.8 * scale)
+            ctx.move(to: back)
+            ctx.addQuadCurve(to: front, control: control)
+            ctx.strokePath()
+        } else {
+            ctx.setStrokeColor(rgb(0x8E2333).cgColor)
+            ctx.setLineWidth(4.4 * scale)
+            ctx.move(to: back)
+            ctx.addQuadCurve(to: front, control: control)
+            ctx.strokePath()
+
+            ctx.setStrokeColor(rgb(0xC0394B).cgColor)
+            ctx.setLineWidth(3.2 * scale)
+            ctx.move(to: back)
+            ctx.addQuadCurve(to: front, control: control)
+            ctx.strokePath()
+
+            let anchor = quadPt(bellT)
+            let pivot = CGPoint(x: anchor.x, y: anchor.y + 1.2 * scale)
+            let walkSwing = sin(pose.phase * 2 - 0.5) * 0.12 * mBlend * (1 - rBlend)
+            let runSwing = (-0.26 + sin(pose.phase - 0.4) * 0.16) * rBlend
+            let skidSwing: CGFloat = pose.skidding ? 0.24 : 0
+            let shakeSwing: CGFloat = pose.pose == .bodyShake ? sin(pose.time * 34) * 0.32 * sin(.pi * pose.shake) : 0
+            let swing = max(-0.75, min(0.75, walkSwing + runSwing + skidSwing + shakeSwing + bellAngleBias))
+
+            ctx.translateBy(x: pivot.x, y: pivot.y)
+            ctx.rotate(by: swing)
+
+            ctx.setStrokeColor(rgb(0xB7811A).cgColor)
+            ctx.setLineWidth(0.9 * scale)
+            ctx.strokeEllipse(in: CGRect(x: -1.1 * scale, y: -0.7 * scale, width: 2.2 * scale, height: 2.2 * scale))
+
+            let br = 3.3 * scale
+            let bell = CGRect(x: -br, y: 1.0 * scale, width: br * 2, height: br * 2)
+            let colors = [rgb(0xFFE89A).cgColor, rgb(0xF2B630).cgColor, rgb(0xB7811A).cgColor] as CFArray
+            ctx.saveGState()
+            ctx.addEllipse(in: bell)
+            ctx.clip()
+            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.55, 1]) {
+                ctx.drawRadialGradient(grad,
+                                       startCenter: CGPoint(x: -0.35 * br, y: 1.0 * scale + 0.65 * br),
+                                       startRadius: 0.3 * scale,
+                                       endCenter: CGPoint(x: 0, y: 1.0 * scale + br),
+                                       endRadius: br + 0.8 * scale,
+                                       options: [])
+            }
+            ctx.restoreGState()
+
+            ctx.setStrokeColor(rgb(0x8E6312).cgColor)
+            ctx.setLineWidth(0.75 * scale)
+            ctx.strokeEllipse(in: bell)
+
+            let slitY = 1.0 * scale + br * 1.28
+            ctx.setStrokeColor(rgb(0x6E4A0C).cgColor)
+            ctx.setLineWidth(0.95 * scale)
+            ctx.move(to: CGPoint(x: -1.65 * scale, y: slitY))
+            ctx.addLine(to: CGPoint(x: 1.65 * scale, y: slitY))
+            ctx.strokePath()
+            ctx.setFillColor(rgb(0x6E4A0C).cgColor)
+            ctx.fillEllipse(in: CGRect(x: -0.75 * scale, y: slitY - 0.1 * scale, width: 1.5 * scale, height: 1.5 * scale))
+        }
+        ctx.restoreGState()
+    }
+
     /// 3/4 视角 Q 版大头：圆润饱满无凸出嘴筒，看得见两只大眼睛、粉鼻子、ω 嘴与两只耳朵
     /// - Parameters:
     ///   - fuse: 头要和哪些身体部件融为一体（在 fuseCTM 那个坐标系下）：头的轮廓线不画在它们上面
     private static func drawWalkerHead(in ctx: CGContext, center: CGPoint, pose: WalkerPose, pal: WalkerPalette, lookDown: Bool,
                                        earPin: CGFloat = 0, squint: Bool = false,
                                        fuse: [CGPath] = [], fuseCTM: CGAffineTransform = .identity) {
-        let hs = CGFloat(pet?.shape.headSize ?? 1)
-        let r: CGFloat = 30.5 * hs * CGFloat(pet?.shape.headWidth ?? 1).squareRoot()
+        let r = walkerHeadRadius()
         let faceX = r * 0.28
         let earSize = CGFloat(pet?.shape.earSize ?? 1)
         let flare = CGFloat(pet?.shape.earFlare ?? 0)
@@ -898,35 +1037,8 @@ extension CatRenderer {
         }
         ctx.strokePath()
 
-        // 装扮：项圈/围巾（带飘动围巾尾）、蝴蝶结在近侧耳根、墨镜盖住 3/4 双眼
-        let rBlend = max(0, min(1, pose.runBlend ?? (pose.pose == .run ? 1 : 0)))
+        // 装扮：蝴蝶结在近侧耳根、墨镜盖住 3/4 双眼（项圈/围巾画在脖子上）
         switch CatSettings.shared.accessory {
-        case .bell, .scarf:
-            let scarf = CatSettings.shared.accessory == .scarf
-            if scarf {
-                let flutter = sin(pose.time * (5 + rBlend * 8)) * (2 + rBlend * 4)
-                let tailEnd = CGPoint(x: -r * 0.95 - rBlend * 14, y: r * 1.18 - rBlend * 7 + flutter)
-                ctx.setStrokeColor(rgb(0xD94848).cgColor)
-                ctx.setLineWidth(6.5); ctx.setLineCap(.round)
-                ctx.move(to: CGPoint(x: -r * 0.35, y: r * 0.80))
-                ctx.addQuadCurve(to: tailEnd, control: CGPoint(x: -r * 0.65, y: r * 1.02))
-                ctx.strokePath()
-                ctx.setStrokeColor(rgb(0xF6EBDD).cgColor)
-                ctx.setLineWidth(2.0)
-                ctx.move(to: CGPoint(x: tailEnd.x + 5, y: tailEnd.y - 2.5))
-                ctx.addLine(to: CGPoint(x: tailEnd.x + 7.5, y: tailEnd.y + 1.5))
-                ctx.strokePath()
-            }
-            ctx.setStrokeColor(rgb(scarf ? 0xD94848 : 0xC0394B).cgColor)
-            ctx.setLineWidth(scarf ? 6.2 : 3.2); ctx.setLineCap(.round)
-            ctx.move(to: CGPoint(x: -r * 0.56, y: r * 0.72))
-            ctx.addQuadCurve(to: CGPoint(x: r * 0.60, y: r * 0.78), control: CGPoint(x: faceX * 0.4, y: r * 1.04))
-            ctx.strokePath()
-            if !scarf {
-                let sway = sin(pose.time * 7) * 1.8 * rBlend
-                ctx.setFillColor(rgb(0xF2B630).cgColor)
-                ctx.fillEllipse(in: CGRect(x: faceX * 0.55 - 3 - sway, y: r * 0.88, width: 6.2, height: 6.2))
-            }
         case .bow:
             ctx.setFillColor(rgb(0xF27BA5).cgColor)
             let b = CGPoint(x: -r * 0.42, y: -r * 0.68)
@@ -964,7 +1076,7 @@ extension CatRenderer {
             ctx.move(to: CGPoint(x: eyes[0].c.x + eyes[0].rx * 0.9, y: eyes[0].c.y - eyes[0].ry * 0.2))
             ctx.addLine(to: CGPoint(x: eyes[1].c.x - eyes[1].rx * 0.9, y: eyes[1].c.y - eyes[1].ry * 0.2))
             ctx.strokePath()
-        case .none:
+        case .none, .bell, .scarf:
             break
         }
         // 圣诞季：斜扣一顶圣诞帽（跑步时微向后仰）
@@ -1353,9 +1465,20 @@ extension CatRenderer {
 
         // 头：在胸口上方，偶尔歪一下
         let tilt = sin(pose.time * 0.7) * 0.06
+        let headY = chest.minY - 12 + breathe
+        let headR = walkerHeadRadius()
+        let chinY = headY + headR * 0.94
+        let neckBack = CGPoint(x: chest.minX + 1.0, y: chinY - 2.5)
+        let neckFront = CGPoint(x: chest.maxX - 0.5, y: chinY - 1.0)
+        let neckControl = CGPoint(x: chest.minX + chest.width * 0.62, y: chinY + 7.5)
+        let scarfTailEnd = CGPoint(x: chest.minX - 6 + sin(pose.time * 2.5) * 1.2, y: chinY + 14)
+        let scarfTailControl = CGPoint(x: chest.minX - 2, y: chinY + 6)
+        drawWalkerNeckAccessory(in: ctx, back: neckBack, front: neckFront, control: neckControl,
+                                bellT: 0.68, tailEnd: scarfTailEnd, tailControl: scarfTailControl,
+                                pose: pose, rBlend: 0, mBlend: 0)
         let bodyCTM = ctx.ctm
         ctx.saveGState()
-        ctx.translateBy(x: feet.x + 2, y: chest.minY - 12 + breathe)
+        ctx.translateBy(x: feet.x + 2, y: headY)
         ctx.rotate(by: tilt)
         drawWalkerHead(in: ctx, center: .zero, pose: pose, pal: pal, lookDown: false,
                        fuse: [haunchPath, chestPath], fuseCTM: bodyCTM)
@@ -1457,8 +1580,23 @@ extension CatRenderer {
         strokeOuterOutline(in: ctx, [body, hindPaw, nearPaw], color: pal.outline, width: 1.5, alsoOutside: [tailShape])
 
         // 头：趴着时抬头，蜷好后下巴往下埋
-        let bodyCTM = ctx.ctm
         let head = curledHeadCenter(curl: c)
+        let r = walkerHeadRadius()
+        let chinY = head.y + breathe * 0.8 + r * 0.94
+        let frontY = min(feet.y - 9.0, chinY + 2.5)
+        let ny = max(-0.92, min(0.92, (frontY - bodyRect.midY) / (bodyRect.height * 0.5)))
+        let frontX = bodyRect.midX + (bodyRect.width * 0.5) * sqrt(1 - ny * ny) - 0.5
+        let neckBack = CGPoint(x: mix(bodyRect.maxX - 30 * widthK, head.x - r * 0.72),
+                               y: mix(bodyRect.minY + 3, head.y + r * 0.10))
+        let neckFront = CGPoint(x: frontX, y: frontY)
+        let neckControl = CGPoint(x: neckBack.x * 0.40 + neckFront.x * 0.60,
+                                  y: min(feet.y - 6.0, neckFront.y + 4.5))
+        let scarfTailEnd = CGPoint(x: neckBack.x - 10, y: min(feet.y - 8, neckBack.y + 13))
+        let scarfTailControl = CGPoint(x: neckBack.x - 5, y: neckBack.y + 7)
+        drawWalkerNeckAccessory(in: ctx, back: neckBack, front: neckFront, control: neckControl,
+                                bellT: 0.82, tailEnd: scarfTailEnd, tailControl: scarfTailControl,
+                                pose: pose, rBlend: 0, mBlend: 0)
+        let bodyCTM = ctx.ctm
         ctx.saveGState()
         ctx.translateBy(x: head.x, y: head.y + breathe * 0.8)
         ctx.rotate(by: mix(0.05, 0.38))
