@@ -160,7 +160,7 @@ extension CatRenderer {
                 ctx.translateBy(x: walkerCanvas.width, y: 0)
                 ctx.scaleBy(x: -1, y: 1)
             }
-            drawGroundShadow(in: ctx, centerX: walkerFeet.x - 4, feetY: walkerFeet.y, width: 64, airLift: 0,
+            drawGroundShadow(in: ctx, centerX: walkerFeet.x - 6, feetY: walkerFeet.y, width: 68, airLift: 0,
                              alpha: 0.14 * max(0, 1 - pose.sink))
             drawSittingWalker(in: ctx, pose: pose, pal: pal)
         case .sign:
@@ -168,10 +168,9 @@ extension CatRenderer {
                 ctx.translateBy(x: walkerCanvas.width, y: 0)
                 ctx.scaleBy(x: -1, y: 1)
             }
-            drawGroundShadow(in: ctx, centerX: walkerFeet.x - 4, feetY: walkerFeet.y, width: 64, airLift: 0,
+            drawGroundShadow(in: ctx, centerX: walkerFeet.x - 6, feetY: walkerFeet.y, width: 68, airLift: 0,
                              alpha: 0.14 * max(0, 1 - pose.sink))
             drawSittingWalker(in: ctx, pose: pose, pal: pal)
-            drawSignStick(in: ctx, pose: pose, pal: pal)
         case .curl:
             if pose.facing < 0 {
                 ctx.translateBy(x: walkerCanvas.width, y: 0)
@@ -1407,99 +1406,213 @@ extension CatRenderer {
         return path
     }
 
-    /// 侧身坐着：后腿团成一个圆屁股，前腿笔直撑地，尾巴绕到身前
+    /// 侧身优雅坐姿：流畅水滴形猫背与圆屁股、优雅上扬 S 形尾巴、双前爪并排撑地（举牌时仅留远侧支撑腿）
     private static func drawSittingWalker(in ctx: CGContext, pose: WalkerPose, pal: WalkerPalette) {
         let feet = walkerFeet
-        let breathe = sin(pose.time * 2.1) * 0.8
-        let haunch = CGRect(x: feet.x - 38, y: feet.y - 44, width: 46, height: 44)
-        // 胸口只到大腿一半高，前腿从胸口下面长出来
-        let chest = CGRect(x: feet.x - 16, y: feet.y - 68 + breathe, width: 31, height: 50)
+        let breathe = sin(pose.time * 2.1) * 0.7
+        let wk = CGFloat(pet?.shape.bodyWidth ?? 1).squareRoot()
         let limb = CGFloat(pet?.shape.limbWidth ?? 1).squareRoot()
-        func frontLeg(x: CGFloat) -> (limb: CGPath, paw: CGPath) {
-            let top = CGPoint(x: x - 1, y: chest.maxY - 16)
-            let end = CGPoint(x: x + 1, y: feet.y - 2)
-            let path = taperedLimb(from: top, control: CGPoint(x: x + 1.5, y: (top.y + end.y) / 2), to: CGPoint(x: end.x, y: end.y - 2),
-                                   startWidth: 14 * limb, endWidth: 8 * limb)
-            let pw = 12 * limb
-            let paw = CGPath(ellipseIn: CGRect(x: end.x - pw * 0.42, y: feet.y - 7, width: pw, height: 7.5), transform: nil)
+
+        let nape = CGPoint(x: feet.x - 16 * wk, y: feet.y - 68 + breathe)
+        let throat = CGPoint(x: feet.x + 15 * wk, y: feet.y - 66 + breathe)
+        let chestMid = CGPoint(x: feet.x + 14 * wk, y: feet.y - 24)
+        let frontBase = CGPoint(x: feet.x + 6 * wk, y: feet.y - 1)
+        let backBase = CGPoint(x: feet.x - 16 * wk, y: feet.y)
+        let haunchMid = CGPoint(x: feet.x - 36 * wk, y: feet.y - 22)
+
+        let bodyPath = CGMutablePath()
+        bodyPath.move(to: nape)
+        bodyPath.addLine(to: throat)
+        bodyPath.addCurve(to: chestMid,
+                          control1: CGPoint(x: feet.x + 18 * wk, y: feet.y - 50 + breathe),
+                          control2: CGPoint(x: feet.x + 17 * wk, y: feet.y - 36))
+        bodyPath.addCurve(to: frontBase,
+                          control1: CGPoint(x: feet.x + 13 * wk, y: feet.y - 12),
+                          control2: CGPoint(x: feet.x + 10 * wk, y: feet.y - 2))
+        bodyPath.addLine(to: backBase)
+        bodyPath.addCurve(to: haunchMid,
+                          control1: CGPoint(x: feet.x - 29 * wk, y: feet.y),
+                          control2: CGPoint(x: feet.x - 37 * wk, y: feet.y - 8))
+        bodyPath.addCurve(to: nape,
+                          control1: CGPoint(x: feet.x - 35 * wk, y: feet.y - 38),
+                          control2: CGPoint(x: feet.x - 22 * wk, y: feet.y - 52 + breathe))
+        bodyPath.closeSubpath()
+
+        func sitFrontLeg(top: CGPoint, control: CGPoint, end: CGPoint,
+                         w0: CGFloat, w1: CGFloat, pw: CGFloat, ph: CGFloat) -> (limb: CGPath, paw: CGPath) {
+            let path = taperedLimb(from: top, control: control, to: CGPoint(x: end.x, y: end.y - 2.5),
+                                   startWidth: w0 * limb, endWidth: w1 * limb)
+            let paw = CGPath(ellipseIn: CGRect(x: end.x - pw * limb * 0.36, y: feet.y - ph,
+                                               width: pw * limb, height: ph), transform: nil)
             return (path, paw)
         }
-        let farLeg = frontLeg(x: feet.x + 3)
-        let nearLeg = frontLeg(x: feet.x + 11)
 
-        // 尾巴贴着地面绕到前面，尖端轻轻翘
-        let flick = sin(pose.time * 2.4) * 4
+        let farLeg = sitFrontLeg(
+            top: CGPoint(x: feet.x + 11 * wk, y: feet.y - 44 + breathe),
+            control: CGPoint(x: feet.x + 14.5 * wk, y: feet.y - 23),
+            end: CGPoint(x: feet.x + 15.5 * wk, y: feet.y - 1.5),
+            w0: 11.5, w1: 7.4, pw: 11.5, ph: 7.0
+        )
+        let hasNearLeg = pose.pose != .sign
+        let nearTop = CGPoint(x: feet.x + 0.5 * wk, y: feet.y - 44 + breathe)
+        let nearLeg = sitFrontLeg(
+            top: nearTop,
+            control: CGPoint(x: feet.x + 3.5 * wk, y: feet.y - 23),
+            end: CGPoint(x: feet.x + 4.0 * wk, y: feet.y - 0.5),
+            w0: 12.0, w1: 7.8, pw: 12.2, ph: 7.4
+        )
+        let nearLegPaths = hasNearLeg ? [nearLeg.limb, nearLeg.paw] : []
+
+        // 1. 优雅 S 形翘尾：从圆屁股后方优雅向左上扬起
+        let sway = sin(pose.time * 2.0) * 5.0
+        let tailRoot = CGPoint(x: feet.x - 28 * wk, y: feet.y - 12)
+        let tailTip = CGPoint(x: feet.x - 51 * wk + sway * 0.45, y: feet.y - 45 + sway * 0.3)
         let tail = CGMutablePath()
-        tail.move(to: CGPoint(x: haunch.minX + 6, y: feet.y - 6))
-        tail.addCurve(to: CGPoint(x: feet.x + 28, y: feet.y - 8 + flick),
-                      control1: CGPoint(x: haunch.minX - 2, y: feet.y - 1),
-                      control2: CGPoint(x: feet.x + 14, y: feet.y + 1))
-        let tailW = 8.5 * CGFloat(pet?.shape.tailWidth ?? 1)
+        tail.move(to: tailRoot)
+        tail.addCurve(to: tailTip,
+                      control1: CGPoint(x: tailRoot.x - 16, y: tailRoot.y + 8),
+                      control2: CGPoint(x: tailTip.x - 8 + sway * 0.5, y: tailTip.y + 18))
+        let tailW = 8.0 * CGFloat(pet?.shape.tailWidth ?? 1)
         let tailShape = tail.copy(strokingWithWidth: tailW, lineCap: .round, lineJoin: .round, miterLimit: 10)
         ctx.setFillColor(pal.tail.cgColor)
         ctx.addPath(tailShape); ctx.fillPath()
+        strokeOuterOutline(in: ctx, [tailShape], color: pal.outline, width: 1.45, alsoOutside: [bodyPath])
 
-        let haunchPath = CGPath(ellipseIn: haunch, transform: nil)
-        let chestPath = CGPath(roundedRect: chest, cornerWidth: 15, cornerHeight: 15, transform: nil)
-        // 前腿先画：远的那条暗一点，两条的上端都被胸口盖住
-        for (leg, shade) in [(farLeg, CGFloat(0.16)), (nearLeg, CGFloat(0))] {
-            ctx.setFillColor(HexColor.mix(pal.legs, .black, shade).cgColor)
-            ctx.addPath(leg.limb); ctx.fillPath()
-            ctx.setFillColor(HexColor.mix(pal.paws, .black, shade).cgColor)
-            ctx.addPath(leg.paw); ctx.fillPath()
+        // 2. 远侧前腿：在身体后面探出前胸与地上
+        let farTop = CGPoint(x: feet.x + 11 * wk, y: feet.y - 44 + breathe)
+        let farEnd = CGPoint(x: feet.x + 15.5 * wk, y: feet.y - 1.5)
+        let nearEnd = CGPoint(x: feet.x + 4.0 * wk, y: feet.y - 0.5)
+        func fillSitLimb(_ limbPath: CGPath, from start: CGPoint, to end: CGPoint, shade: CGFloat, blendShoulder: Bool) {
+            let tip = HexColor.mix(pal.legs, .black, shade)
+            guard pal.mask != nil || blendShoulder else {
+                ctx.setFillColor(tip.cgColor)
+                ctx.addPath(limbPath); ctx.fillPath()
+                return
+            }
+            ctx.saveGState()
+            ctx.addPath(limbPath); ctx.clip()
+            let cs = CGColorSpaceCreateDeviceRGB()
+            let colors: CFArray
+            let locs: [CGFloat]
+            if pal.mask != nil {
+                let base = HexColor.mix(pal.body, .black, shade)
+                let mid = HexColor.mix(HexColor.mix(pal.body, pal.legs, 0.52), .black, shade)
+                if blendShoulder {
+                    colors = [base.cgColor, base.cgColor, mid.cgColor, tip.cgColor] as CFArray
+                    locs = [0.0, 0.20, 0.54, 0.86]
+                } else {
+                    colors = [base.cgColor, mid.cgColor, tip.cgColor] as CFArray
+                    locs = [0.0, 0.45, 0.82]
+                }
+            } else {
+                colors = [tip.withAlphaComponent(0).cgColor, tip.cgColor] as CFArray
+                locs = [0.0, 0.24]
+            }
+            if let grad = CGGradient(colorsSpace: cs, colors: colors, locations: locs) {
+                ctx.drawLinearGradient(grad, start: start, end: end, options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+            ctx.restoreGState()
         }
+        func fillSitPaw(_ pawPath: CGPath, shade: CGFloat) {
+            let snowed = pose.pawSnow > 0.01 ? HexColor.mix(pal.paws, .white, pose.pawSnow * 0.75) : pal.paws
+            ctx.setFillColor(HexColor.mix(snowed, .black, shade).cgColor)
+            ctx.addPath(pawPath); ctx.fillPath()
+        }
+        func drawToeLines(for paw: CGPath) {
+            ctx.setStrokeColor(pal.outline.withAlphaComponent(0.55).cgColor)
+            ctx.setLineWidth(0.9)
+            let box = paw.boundingBox
+            for dx: CGFloat in [0.42, 0.66] {
+                ctx.move(to: CGPoint(x: box.minX + box.width * dx, y: box.maxY - 0.5))
+                ctx.addLine(to: CGPoint(x: box.minX + box.width * dx, y: box.maxY - 3.4))
+            }
+            ctx.strokePath()
+        }
+
+        fillSitLimb(farLeg.limb, from: farTop, to: farEnd, shade: 0.12, blendShoulder: false)
+        fillSitPaw(farLeg.paw, shade: 0.12)
         strokeOuterOutline(in: ctx, [farLeg.limb, farLeg.paw], color: pal.outline, width: 1.4,
-                           alsoOutside: [haunchPath, chestPath, nearLeg.limb, nearLeg.paw])
-        let body = CGMutablePath()
-        body.addPath(haunchPath)
-        body.addPath(chestPath)
+                           alsoOutside: nearLegPaths + [bodyPath])
+        drawToeLines(for: farLeg.paw)
+
+        // 3. 身体主轮廓 + 花纹 + 收拢的大腿柔弧
         ctx.setFillColor(pal.body.cgColor)
-        ctx.addPath(body); ctx.fillPath()
+        ctx.addPath(bodyPath); ctx.fillPath()
         ctx.saveGState()
-        ctx.addPath(body); ctx.clip()
+        ctx.addPath(bodyPath); ctx.clip()
         if let back = pal.back {
             ctx.setFillColor(back.cgColor)
-            ctx.fillEllipse(in: haunch.insetBy(dx: -4, dy: -6).offsetBy(dx: -8, dy: -10))
+            let backW = (pet?.whiteLegs == true ? 39 : 49) * wk
+            ctx.fillEllipse(in: CGRect(x: feet.x - 42 * wk, y: feet.y - 72, width: backW, height: 68))
         }
         if let calico = pal.calico {
             ctx.setFillColor(calico.cgColor)
-            ctx.fillEllipse(in: CGRect(x: haunch.midX - 4, y: haunch.minY - 2, width: 18, height: 16))
+            ctx.fillEllipse(in: CGRect(x: feet.x - 30 * wk, y: feet.y - 44, width: 20 * wk, height: 18))
         }
         if let belly = pal.belly {
             ctx.setFillColor(belly.cgColor)
-            ctx.fillEllipse(in: chest.insetBy(dx: 2, dy: 8).offsetBy(dx: 9, dy: 6))
+            ctx.fillEllipse(in: CGRect(x: feet.x + 4 * wk, y: feet.y - 58, width: 17 * wk, height: 56))
         }
         if let stripe = pal.stripe {
             ctx.setStrokeColor(stripe.cgColor); ctx.setLineWidth(3); ctx.setLineCap(.round)
             for i in 0..<3 {
-                let y = haunch.minY + 10 + CGFloat(i) * 9
-                ctx.move(to: CGPoint(x: haunch.minX + 4, y: y))
-                ctx.addQuadCurve(to: CGPoint(x: haunch.minX + 18, y: y - 3), control: CGPoint(x: haunch.minX + 10, y: y + 3))
+                let y = feet.y - 36 + CGFloat(i) * 9
+                ctx.move(to: CGPoint(x: feet.x - 35 * wk, y: y))
+                ctx.addQuadCurve(to: CGPoint(x: feet.x - 19 * wk, y: y - 3),
+                                 control: CGPoint(x: feet.x - 27 * wk, y: y + 3))
             }
             ctx.strokePath()
         }
-        ctx.restoreGState()
-        // 身体 + 近侧前腿只描合起来的外轮廓
-        strokeOuterOutline(in: ctx, [haunchPath, chestPath, tailShape, nearLeg.limb, nearLeg.paw], color: pal.outline, width: 1.5)
-        ctx.setStrokeColor(pal.outline.withAlphaComponent(0.55).cgColor)
-        ctx.setLineWidth(0.9)
-        let r = nearLeg.paw.boundingBox
-        for dx: CGFloat in [0.38, 0.62] {
-            ctx.move(to: CGPoint(x: r.minX + r.width * dx + 1, y: r.maxY - 0.5))
-            ctx.addLine(to: CGPoint(x: r.minX + r.width * dx + 1, y: r.maxY - 3.5))
+        if pet?.shape.wavyCoat == true {
+            ctx.setStrokeColor(pal.outline.withAlphaComponent(0.3).cgColor)
+            ctx.setLineWidth(1.1)
+            for (x, y) in [(-24.0, -24.0), (-14.0, -34.0), (-20.0, -14.0)] as [(CGFloat, CGFloat)] {
+                let c = CGPoint(x: feet.x + x * wk, y: feet.y + y)
+                ctx.move(to: CGPoint(x: c.x - 5, y: c.y))
+                ctx.addQuadCurve(to: c, control: CGPoint(x: c.x - 2.5, y: c.y - 2.6))
+                ctx.addQuadCurve(to: CGPoint(x: c.x + 5, y: c.y), control: CGPoint(x: c.x + 2.5, y: c.y + 2.6))
+            }
+            ctx.strokePath()
         }
+        // 收拢的后大腿柔弧
+        ctx.setStrokeColor(pal.outline.withAlphaComponent(0.32).cgColor)
+        ctx.setLineWidth(1.1)
+        ctx.setLineCap(.round)
+        ctx.move(to: CGPoint(x: feet.x - 24 * wk, y: feet.y - 30))
+        ctx.addQuadCurve(to: CGPoint(x: feet.x - 6 * wk, y: feet.y - 4),
+                         control: CGPoint(x: feet.x - 8 * wk, y: feet.y - 24))
         ctx.strokePath()
+        ctx.restoreGState()
 
-        // 头：在胸口上方，偶尔歪一下
-        let tilt = sin(pose.time * 0.7) * 0.06
-        let headY = chest.minY - 12 + breathe
+        let signGeo = pose.pose == .sign ? makeSignGeometry(pose: pose, feet: feet, wk: wk, limb: limb, breathe: breathe) : nil
+        let signArmPaths = signGeo.map { [$0.arm, $0.paw] } ?? []
+        strokeOuterOutline(in: ctx, [bodyPath], color: pal.outline, width: 1.5, alsoOutside: signArmPaths)
+
+        // 4. 举牌时抬起前臂 / 普通坐姿画近侧前腿（都在项圈与脑袋下方，肩部自然融入胸口）
+        if let signGeo {
+            drawSignStick(in: ctx, geo: signGeo, pal: pal, limb: limb,
+                          fillLimb: { fillSitLimb($0, from: $1, to: $2, shade: 0, blendShoulder: true) },
+                          fillPaw: { fillSitPaw($0, shade: 0) })
+        } else if hasNearLeg {
+            fillSitLimb(nearLeg.limb, from: nearTop, to: nearEnd, shade: 0, blendShoulder: true)
+            fillSitPaw(nearLeg.paw, shade: 0)
+            let shoulderBlend = CGPath(ellipseIn: CGRect(x: nearTop.x - 10 * limb, y: nearTop.y - 12 * limb,
+                                                         width: 20 * limb, height: 18 * limb), transform: nil)
+            strokeOuterOutline(in: ctx, [nearLeg.limb, nearLeg.paw], color: pal.outline, width: 1.45,
+                               alsoOutside: [shoulderBlend])
+            drawToeLines(for: nearLeg.paw)
+        }
+
+        // 5. 项圈 / 围巾 + 头：在胸口上方，偶尔歪一下
+        let tilt = sin(pose.time * 0.7) * 0.055
+        let headY = feet.y - 80 + breathe
         let headR = walkerHeadRadius()
         let chinY = headY + headR * 0.94
-        let neckBack = CGPoint(x: chest.minX + 1.0, y: chinY - 2.5)
-        let neckFront = CGPoint(x: chest.maxX - 0.5, y: chinY - 1.0)
-        let neckControl = CGPoint(x: chest.minX + chest.width * 0.62, y: chinY + 7.5)
-        let scarfTailEnd = CGPoint(x: chest.minX - 6 + sin(pose.time * 2.5) * 1.2, y: chinY + 14)
-        let scarfTailControl = CGPoint(x: chest.minX - 2, y: chinY + 6)
+        let neckBack = CGPoint(x: feet.x - 15 * wk, y: chinY - 2.5)
+        let neckFront = CGPoint(x: feet.x + 15 * wk, y: chinY - 1.0)
+        let neckControl = CGPoint(x: feet.x + 4 * wk, y: chinY + 7.5)
+        let scarfTailEnd = CGPoint(x: neckBack.x - 7 + sin(pose.time * 2.5) * 1.2, y: chinY + 14)
+        let scarfTailControl = CGPoint(x: neckBack.x - 3, y: chinY + 6)
         drawWalkerNeckAccessory(in: ctx, back: neckBack, front: neckFront, control: neckControl,
                                 bellT: 0.68, tailEnd: scarfTailEnd, tailControl: scarfTailControl,
                                 pose: pose, rBlend: 0, mBlend: 0)
@@ -1508,7 +1621,7 @@ extension CatRenderer {
         ctx.translateBy(x: feet.x + 2, y: headY)
         ctx.rotate(by: tilt)
         drawWalkerHead(in: ctx, center: .zero, pose: pose, pal: pal, lookDown: false,
-                       fuse: [haunchPath, chestPath], fuseCTM: bodyCTM)
+                       fuse: [bodyPath], fuseCTM: bodyCTM)
         ctx.restoreGState()
     }
 
@@ -1758,31 +1871,67 @@ extension CatRenderer {
 
     // MARK: Sign
 
-    /// 举牌：木棍立在鼻尖前面，一只前爪从胸口伸出来攥着（画布坐标，朝右）
-    static let signStickX: CGFloat = 148
+    /// 举牌：木棍立在鼻尖前面，前臂从肩膀自然弯曲向前抬起攥着（在项圈与脑袋下方，朝右）
+    static let signStickX: CGFloat = 135
     static let signBoardBottom: CGFloat = 40
 
-    private static func drawSignStick(in ctx: CGContext, pose: WalkerPose, pal: WalkerPalette) {
+    private struct SignArmGeometry {
+        let stickBottomY: CGFloat
+        let sway: CGFloat
+        let armStart: CGPoint
+        let armEnd: CGPoint
+        let arm: CGPath
+        let paw: CGPath
+        let pawRect: CGRect
+    }
+
+    private static func makeSignGeometry(
+        pose: WalkerPose, feet: CGPoint, wk: CGFloat, limb: CGFloat, breathe: CGFloat
+    ) -> SignArmGeometry {
         let sway = sin(pose.time * 3) * 2
+        let stickBottomY = feet.y - 26
+        let gripY = feet.y - 49
+        let gripFrac = (stickBottomY - gripY) / (stickBottomY - signBoardBottom)
+        let gripX = signStickX + sway * gripFrac
+        let armStart = CGPoint(x: feet.x + 1 * wk, y: feet.y - 43 + breathe)
+        let armControl = CGPoint(x: feet.x + 15 * wk, y: feet.y - 31 + breathe * 0.5)
+        let armEnd = CGPoint(x: gripX - 2.5 * limb, y: gripY)
+        let arm = taperedLimb(from: armStart, control: armControl, to: armEnd,
+                              startWidth: 11.5 * limb, endWidth: 8.0 * limb)
+        let pawW = 12.2 * limb, pawH = 10.2 * limb
+        let pawRect = CGRect(x: gripX - pawW * 0.48, y: gripY - pawH * 0.50, width: pawW, height: pawH)
+        let paw = CGPath(ellipseIn: pawRect, transform: nil)
+        return SignArmGeometry(stickBottomY: stickBottomY, sway: sway, armStart: armStart, armEnd: armEnd,
+                               arm: arm, paw: paw, pawRect: pawRect)
+    }
+
+    private static func drawSignStick(
+        in ctx: CGContext, geo: SignArmGeometry, pal: WalkerPalette, limb: CGFloat,
+        fillLimb: (CGPath, CGPoint, CGPoint) -> Void, fillPaw: (CGPath) -> Void
+    ) {
         ctx.saveGState()
         ctx.setStrokeColor(rgb(0x8B5A2B).cgColor)
         ctx.setLineWidth(3.2)
         ctx.setLineCap(.round)
-        ctx.move(to: CGPoint(x: signStickX, y: 150))
-        ctx.addLine(to: CGPoint(x: signStickX + sway, y: signBoardBottom))
+        ctx.move(to: CGPoint(x: signStickX, y: geo.stickBottomY))
+        ctx.addLine(to: CGPoint(x: signStickX + geo.sway, y: signBoardBottom))
         ctx.strokePath()
-        // 前臂：从胸口伸出来，爪子攥在木棍上（胸口高度，不挡脸）
-        let limb = CGFloat(pet?.shape.limbWidth ?? 1).squareRoot()
-        let arm = taperedLimb(from: CGPoint(x: 104, y: 136), control: CGPoint(x: 126, y: 146),
-                              to: CGPoint(x: signStickX - 5, y: 132), startWidth: 13 * limb, endWidth: 9 * limb)
-        let paw = CGPath(ellipseIn: CGRect(x: signStickX - 7, y: 126, width: 14, height: 12), transform: nil)
-        ctx.setFillColor(pal.legs.cgColor)
-        ctx.addPath(arm)
-        ctx.fillPath()
-        ctx.setFillColor(pal.paws.cgColor)
-        ctx.addPath(paw)
-        ctx.fillPath()
-        strokeOuterOutline(in: ctx, [arm, paw], color: pal.outline, width: 1.3)
+
+        fillLimb(geo.arm, geo.armStart, geo.armEnd)
+        fillPaw(geo.paw)
+        let shoulderBlend = CGPath(ellipseIn: CGRect(x: geo.armStart.x - 10 * limb, y: geo.armStart.y - 10 * limb,
+                                                     width: 17 * limb, height: 17 * limb), transform: nil)
+        strokeOuterOutline(in: ctx, [geo.arm, geo.paw], color: pal.outline, width: 1.4, alsoOutside: [shoulderBlend])
+        ctx.setStrokeColor(pal.outline.withAlphaComponent(0.55).cgColor)
+        ctx.setLineWidth(0.85)
+        ctx.setLineCap(.round)
+        for dy: CGFloat in [0.35, 0.65] {
+            let y = geo.pawRect.minY + geo.pawRect.height * dy
+            ctx.move(to: CGPoint(x: geo.pawRect.maxX - 0.5, y: y))
+            ctx.addQuadCurve(to: CGPoint(x: geo.pawRect.maxX - 3.6, y: y + 0.4),
+                             control: CGPoint(x: geo.pawRect.maxX - 2.0, y: y - 0.5))
+        }
+        ctx.strokePath()
         ctx.restoreGState()
     }
 

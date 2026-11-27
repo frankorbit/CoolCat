@@ -181,21 +181,34 @@ final class CatSettings {
     var codexIntegration: Bool {
         didSet { UserDefaults.standard.set(codexIntegration, forKey: "CoolCat.CodexIntegration") }
     }
+    /// 是否展示 Antigravity 状态（与 Claude Code 共用气泡和动作）
+    var agyIntegration: Bool {
+        didSet { UserDefaults.standard.set(agyIntegration, forKey: "CoolCat.AgyIntegration") }
+    }
 
     /// 打开了状态展示的助手
     var enabledAgents: Set<CodingAgent> {
         var agents: Set<CodingAgent> = []
         if claudeIntegration { agents.insert(.claude) }
         if codexIntegration { agents.insert(.codex) }
+        if agyIntegration { agents.insert(.agy) }
         return agents
     }
 
     func isIntegrationEnabled(_ agent: CodingAgent) -> Bool {
-        agent == .codex ? codexIntegration : claudeIntegration
+        switch agent {
+        case .claude: return claudeIntegration
+        case .codex: return codexIntegration
+        case .agy: return agyIntegration
+        }
     }
 
     func setIntegration(_ agent: CodingAgent, enabled: Bool) {
-        if agent == .codex { codexIntegration = enabled } else { claudeIntegration = enabled }
+        switch agent {
+        case .claude: claudeIntegration = enabled
+        case .codex: codexIntegration = enabled
+        case .agy: agyIntegration = enabled
+        }
     }
 
     private init() {
@@ -219,6 +232,7 @@ final class CatSettings {
         showTrackBubble = d.object(forKey: "CoolCat.ShowTrackBubble") as? Bool ?? true
         claudeIntegration = d.object(forKey: "CoolCat.ClaudeIntegration") as? Bool ?? true
         codexIntegration = d.object(forKey: "CoolCat.CodexIntegration") as? Bool ?? true
+        agyIntegration = d.object(forKey: "CoolCat.AgyIntegration") as? Bool ?? true
         meetingMode = d.object(forKey: "CoolCat.MeetingMode") as? Bool ?? true
         keyHabitReactions = d.object(forKey: "CoolCat.KeyHabitReactions") as? Bool ?? true
         lifeNight = d.object(forKey: "CoolCat.LifeNight") as? Bool ?? true

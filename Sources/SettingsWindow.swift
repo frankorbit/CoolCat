@@ -25,7 +25,7 @@ protocol SettingsHost: AnyObject {
 }
 
 enum SettingsDemo {
-    case typing, life, meeting, claude, codex, gift, roam, peek, nap, hop, holiday, sign, knock
+    case typing, life, meeting, claude, codex, agy, gift, roam, peek, nap, hop, holiday, sign, knock
 }
 
 // MARK: - Store
@@ -129,7 +129,7 @@ final class CatPreviewModel: ObservableObject {
 // MARK: - Panes
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, appearance, interaction, bond, music, life, meeting, claude, codex
+    case general, appearance, interaction, bond, music, life, meeting, claude, codex, agy
 
     var id: String { rawValue }
 
@@ -144,6 +144,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .meeting: return "会议模式"
         case .claude: return "Claude Code"
         case .codex: return "Codex"
+        case .agy: return "Antigravity"
         }
     }
 
@@ -158,6 +159,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .meeting: return "video.fill"
         case .claude: return "sparkles"
         case .codex: return "chevron.left.forwardslash.chevron.right"
+        case .agy: return "atom"
         }
     }
 
@@ -172,6 +174,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .meeting: return Color(red: 0.20, green: 0.74, blue: 0.45)
         case .claude: return Color(red: 0.85, green: 0.47, blue: 0.34)
         case .codex: return Color(red: 0.16, green: 0.17, blue: 0.20)
+        case .agy: return Color(red: 0.56, green: 0.40, blue: 0.96)
         }
     }
 }
@@ -198,7 +201,11 @@ struct SettingsRootView: View {
                 List(selection: $selection) {
                     ForEach(SettingsPane.allCases) { pane in
                         HStack(spacing: 9) {
-                            SettingsIcon(symbol: pane.symbol, tint: pane.tint)
+                            if pane == .agy {
+                                AntigravityIcon()
+                            } else {
+                                SettingsIcon(symbol: pane.symbol, tint: pane.tint)
+                            }
                             Text(pane.title).font(.system(size: 13))
                         }
                         .padding(.vertical, 2)
@@ -244,6 +251,7 @@ struct SettingsRootView: View {
         case .meeting: MeetingPane(store: store)
         case .claude: AgentPane(store: store, agent: .claude)
         case .codex: AgentPane(store: store, agent: .codex)
+        case .agy: AgentPane(store: store, agent: .agy)
         }
     }
 }
@@ -277,6 +285,62 @@ struct SettingsIcon: View {
                     .font(.system(size: size * 0.5, weight: .semibold))
                     .foregroundColor(.white)
             )
+    }
+}
+
+private struct AntigravityMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        let sx = rect.width / 24, sy = rect.height / 24
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+        }
+        var path = Path()
+        path.move(to: p(19.94, 20.59))
+        path.addCurve(to: p(21.17, 19.36), control1: p(21.03, 21.41), control2: p(22.67, 20.86))
+        path.addCurve(to: p(12.03, 3.00), control1: p(16.67, 15.00), control2: p(17.62, 3.00))
+        path.addCurve(to: p(2.89, 19.36), control1: p(6.44, 3.00), control2: p(7.39, 15.00))
+        path.addCurve(to: p(4.12, 20.59), control1: p(1.25, 21.00), control2: p(3.03, 21.41))
+        path.addCurve(to: p(12.03, 12.68), control1: p(8.35, 17.73), control2: p(8.07, 12.68))
+        path.addCurve(to: p(19.94, 20.59), control1: p(15.99, 12.68), control2: p(15.71, 17.73))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct AntigravityIcon: View {
+    var size: CGFloat = 22
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+        let markSize = size * 0.72
+        ZStack {
+            shape.fill(Color.white)
+            shape.stroke(Color.black.opacity(0.12), lineWidth: 0.5)
+            ZStack {
+                Color(red: 0.18, green: 0.51, blue: 1.0)
+                RadialGradient(
+                    gradient: Gradient(colors: [Color(red: 0.27, green: 0.78, blue: 0.42), .clear]),
+                    center: UnitPoint(x: 0.22, y: 0.34),
+                    startRadius: 0,
+                    endRadius: markSize * 0.56
+                )
+                RadialGradient(
+                    gradient: Gradient(colors: [Color(red: 0.98, green: 0.75, blue: 0.16), .clear]),
+                    center: UnitPoint(x: 0.45, y: 0.12),
+                    startRadius: 0,
+                    endRadius: markSize * 0.46
+                )
+                RadialGradient(
+                    gradient: Gradient(colors: [Color(red: 0.96, green: 0.33, blue: 0.24), .clear]),
+                    center: UnitPoint(x: 0.68, y: 0.22),
+                    startRadius: 0,
+                    endRadius: markSize * 0.52
+                )
+            }
+            .frame(width: markSize, height: markSize)
+            .mask(AntigravityMark())
+        }
+        .frame(width: size, height: size)
     }
 }
 
@@ -732,7 +796,7 @@ private struct InteractionPane: View {
                 RowDivider()
                 ToggleRow(title: "满屏漫游 🐾",
                           subtitle: "30 秒没打字就自己跳下键盘溜达、跳上窗口顶、躲到屏幕边偷看；"
-                              + "你一打字就跑回来，Claude / Codex 等你批准时也会回来提醒；放歌时守在键盘前跟着节奏摇",
+                              + "你一打字就跑回来，Claude / Codex / Antigravity 等你批准时也会回来提醒；放歌时守在键盘前跟着节奏摇",
                           isOn: store.binding(\.roaming))
                 RowDivider()
                 ToggleRow(title: "把东西推下桌 😼",
@@ -740,7 +804,7 @@ private struct InteractionPane: View {
                           isOn: store.binding(\.knockThings))
                 RowDivider()
                 ToggleRow(title: "举牌提醒 🙋",
-                          subtitle: "Claude Code / Codex 等你批准、你又在看别的窗口时，小猫跑到那扇窗口顶上举牌；你一回应它就回家",
+                          subtitle: "Claude Code / Codex / Antigravity 等你批准、你又在看别的窗口时，小猫跑到那扇窗口顶上举牌；你一回应它就回家",
                           isOn: store.binding(\.agentSign))
                 RowDivider()
                 ActionRow(title: "举牌预览", subtitle: "假装 agent 等你批准 20 秒，看小猫跑去你最前面的窗口", button: "举牌") {
@@ -1295,7 +1359,11 @@ private struct AgentPane: View {
             }
             SettingsCard {
                 ActionRow(title: "演示", subtitle: "思考 → 等批准 → 搞定", button: "播放") {
-                    host.runDemo(agent == .codex ? .codex : .claude)
+                    switch agent {
+                    case .claude: host.runDemo(.claude)
+                    case .codex: host.runDemo(.codex)
+                    case .agy: host.runDemo(.agy)
+                    }
                 }
             }
         }
@@ -1325,7 +1393,11 @@ private struct AgentPane: View {
                 f.locale = Locale(identifier: "zh_CN")
                 return "已收到事件（最近一次 \(f.localizedString(for: lastEvent, relativeTo: Date()))）"
             }
-            return agent == .codex ? "已写入，还没收到事件：先在 Codex 里信任 hook" : "已打开的会话需要重启（或执行 /hooks）后生效"
+            switch agent {
+            case .claude: return "已打开的会话需要重启（或执行 /hooks）后生效"
+            case .codex: return "已写入，还没收到事件：先在 Codex 里信任 hook"
+            case .agy: return "已写入，新开或下一轮 Antigravity 对话即可生效"
+            }
         }
     }
 }

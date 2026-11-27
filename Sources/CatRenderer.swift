@@ -234,7 +234,7 @@ enum CatRenderer {
         }
 
         // 5. Unified C1-Continuous Head + Neck + Pear Torso Silhouette + Siamese 2.5D Face Mask
-        drawUnifiedSilhouette(
+        let neck = drawUnifiedSilhouette(
             in: ctx,
             seatX: seatX,
             seatY: seatY,
@@ -244,8 +244,8 @@ enum CatRenderer {
             coat: coat
         )
 
-        // 5b. 亲密度装扮：项圈 / 围巾（下巴下面，压在前爪下）
-        drawNeckAccessory(in: ctx, center: headCenter, physics: physics)
+        // 5b. 亲密度装扮：项圈 / 围巾（贴合实际脖子轮廓，压在前爪下）
+        drawNeckAccessory(in: ctx, center: headCenter, neck: neck, physics: physics)
 
         // 6. Hind Foot (3rd simultaneous key easter egg!)
         if physics.hindFootActive.value > 0.03 {
@@ -651,6 +651,12 @@ enum CatRenderer {
 
     // MARK: - Unified C1-Continuous Cat Silhouette (Crown -> Cheeks -> Plush Neck -> Pear Hips)
 
+    struct NeckSilhouette {
+        let leftCurve: (CGPoint, CGPoint, CGPoint, CGPoint)
+        let rightCurve: (CGPoint, CGPoint, CGPoint, CGPoint)
+        let isWedge: Bool
+    }
+
     private static func drawUnifiedSilhouette(
         in ctx: CGContext,
         seatX: CGFloat,
@@ -659,7 +665,7 @@ enum CatRenderer {
         breath: CGFloat,
         physics: CatPhysics,
         coat: CatCoatTheme
-    ) {
+    ) -> NeckSilhouette {
         let yaw = physics.headYaw.value
         let pitch = physics.headPitch.value
         let hTilt = physics.headTilt.value
@@ -720,14 +726,18 @@ enum CatRenderer {
         let lCheek = H(leftCheekX, cheekY)
 
         let cheekCtrlTopY: CGFloat = isSiamese ? -13.0 : (wedge ? 0.0 : -14.0)
+        let rightCtrl1 = H(rightCheekX - neckPinchX, neckCtrlY)
+        let rightCtrl2 = B(waistCtrlW, waistCtrlY + breath * 0.5)
+        let leftCtrl1 = B(-waistCtrlW, waistCtrlY + breath * 0.5)
+        let leftCtrl2 = H(leftCheekX + neckPinchX, neckCtrlY)
         let path = CGMutablePath()
         path.move(to: crown)
         path.addCurve(to: rCheek, control1: H(crownCtrlW + cheekShift * 0.3, crownBaseY + crownDrop), control2: H(rightCheekX + 1.5, cheekCtrlTopY))
-        path.addCurve(to: rHip,   control1: H(rightCheekX - neckPinchX, neckCtrlY), control2: B(waistCtrlW, waistCtrlY + breath * 0.5))
+        path.addCurve(to: rHip,   control1: rightCtrl1, control2: rightCtrl2)
         path.addCurve(to: rBot,   control1: B(botOuterW, 5), control2: B(botInnerW, 12))
         path.addLine(to: lBot)
         path.addCurve(to: lHip,   control1: B(-botInnerW, 12), control2: B(-botOuterW, 5))
-        path.addCurve(to: lCheek, control1: B(-waistCtrlW, waistCtrlY + breath * 0.5), control2: H(leftCheekX + neckPinchX, neckCtrlY))
+        path.addCurve(to: lCheek, control1: leftCtrl1, control2: leftCtrl2)
         path.addCurve(to: crown,  control1: H(leftCheekX - 1.5, cheekCtrlTopY), control2: H(-crownCtrlW + cheekShift * 0.3, crownBaseY + crownDrop))
         path.closeSubpath()
 
@@ -923,6 +933,11 @@ enum CatRenderer {
             ctx.strokePath()
         }
         ctx.restoreGState()
+        return NeckSilhouette(
+            leftCurve: (lCheek, leftCtrl2, leftCtrl1, lHip),
+            rightCurve: (rCheek, rightCtrl1, rightCtrl2, rHip),
+            isWedge: wedge
+        )
     }
 
     /// 长毛猫（金渐层）两颊的蓬毛：脸颊外侧几撮尖尖的毛，盖住描边，只描外缘
@@ -2439,6 +2454,9 @@ enum CatRenderer {
     /// Codex 会话的转圈：半圆轮转 + 冷色，和 Claude 的橙色星芒一眼区分
     private static let codexBlue = NSColor(calibratedRed: 0.47, green: 0.66, blue: 1.0, alpha: 1)
     private static let codexFrames = ["◐", "◓", "◑", "◒"]
+    /// Antigravity 会话的转圈：四芒星 + 紫调
+    private static let agyPurple = NSColor(calibratedRed: 0.60, green: 0.45, blue: 1.0, alpha: 1)
+    private static let agyFrames = ["✦", "✧", "⋆", "✧"]
     private static let waitingAmber = NSColor(calibratedRed: 0.98, green: 0.69, blue: 0.20, alpha: 1)
     private static let doneGreen = NSColor(calibratedRed: 0.40, green: 0.80, blue: 0.50, alpha: 1)
 
@@ -2528,6 +2546,9 @@ enum CatRenderer {
             case .working where line.agent == .codex:
                 glyph = codexFrames[(frameIndex / 2 + i) % codexFrames.count]
                 glyphColor = codexBlue
+            case .working where line.agent == .agy:
+                glyph = agyFrames[(frameIndex / 2 + i) % agyFrames.count]
+                glyphColor = agyPurple
             case .working:
                 glyph = frames[(frameIndex + i * 3) % frames.count]
                 glyphColor = claudeOrange

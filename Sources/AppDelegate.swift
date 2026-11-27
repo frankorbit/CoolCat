@@ -1068,14 +1068,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Claude Code 联动
 
-    /// 这台机器装了 Claude Code（有 ~/.claude）但还没连接时，启动后提示一次去哪里开
-    /// 这台机器装了 Claude Code / Codex（有配置目录）但还没连接时，启动后各提示一次去哪里开
+    /// 这台机器装了 Claude Code / Codex / Antigravity（有配置目录）但还没连接时，启动后各提示一次去哪里开
     private func suggestAgentIntegrationIfNeeded() {
         var delay: TimeInterval = 3
         for agent in CodingAgent.allCases {
             let installer = AgentHookInstaller.installer(for: agent)
             // 沿用旧 key，老用户不会被再提示一次 Claude Code
-            let key = agent == .claude ? "CoolCat.SuggestedClaudeIntegration" : "CoolCat.SuggestedCodexIntegration"
+            let key: String
+            switch agent {
+            case .claude: key = "CoolCat.SuggestedClaudeIntegration"
+            case .codex: key = "CoolCat.SuggestedCodexIntegration"
+            case .agy: key = "CoolCat.SuggestedAgyIntegration"
+            }
             guard !UserDefaults.standard.bool(forKey: key), installer.isAgentPresent,
                   installer.state() == .notInstalled else { continue }
             UserDefaults.standard.set(true, forKey: key)
@@ -1086,18 +1090,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    // 可能运行 Claude Code 的宿主 App（bundle ID 小写子串）
+    // 可能运行 Claude Code / Codex / Antigravity 的宿主 App（bundle ID 小写子串）
     private static let claudeHostTokens = [
         "terminal", "iterm", "warp", "ghostty", "kitty", "alacritty", "wezterm", "hyper", "tabby",
         "vscode", "todesktop", "cursor", "windsurf", "zed", "jetbrains", "xcode", "anthropic", "claude",
-        "openai", "codex", "chatgpt"
+        "openai", "codex", "chatgpt", "antigravity", "orca"
     ]
 
     private static let terminalTokens = [
-        "terminal", "iterm", "warp", "ghostty", "kitty", "alacritty", "wezterm", "hyper", "tabby", "anthropic", "claude"
+        "terminal", "iterm", "warp", "ghostty", "kitty", "alacritty", "wezterm", "hyper", "tabby",
+        "anthropic", "claude", "orca"
     ]
     private static let clickablePromptTokens = ["anthropic", "claude", "vscode", "todesktop", "cursor", "windsurf", "zed",
-                                                "openai", "codex", "chatgpt"]
+                                                "openai", "codex", "chatgpt", "antigravity", "orca"]
 
     private static func frontmostBundleID() -> String? {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier?.lowercased()
@@ -1138,6 +1143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             info += "\n• 已打开的 Claude Code 会话需要重启（或执行 /hooks）后生效"
         case .codex:
             info += "\n• Codex 要求先信任新 hook：在 Codex 桌面 App「设置 → Hooks → needs review」（CLI 输入 /hooks）里信任标题为「CoolCat 桌面小猫」的条目后才会生效"
+        case .agy:
+            info += "\n• 新开或下一轮 Antigravity 对话生效，无需手动信任"
         }
         confirm.informativeText = info
         confirm.addButton(withTitle: "连接")
@@ -1153,6 +1160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .codex:
                 showInfoAlert("已写入 Codex hook，还差一步 🔑",
                               "打开 Codex「设置 → Hooks」，点「needs review」，把标题为「CoolCat 桌面小猫」的 8 条 hook 标记为信任（CLI 里输入 /hooks）。\n信任之后，小猫会跟着 Codex 干活、等你批准、完成任务做出反应；设置面板里看到「已收到事件」就说明通了。")
+            case .agy:
+                showInfoAlert("已连接 Antigravity 🎉", "下一轮 Antigravity 对话里，小猫会跟着思考、等你回复、完成任务做出反应。")
             }
         } catch {
             showInfoAlert("连接失败", error.localizedDescription)
@@ -1173,16 +1182,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func runAgentDemo(_ agent: CodingAgent) {
         let tracker = ClaudeActivityTracker.shared
         let session = "coolcat-demo"
-        let project = agent == .codex ? "Codex 演示" : "Claude 演示"
-        let steps: [(TimeInterval, String, String?, String?)] = [
-            (0.0, "UserPromptSubmit", nil, nil),
-            (2.0, "PreToolUse", "Read", nil),
-            (4.0, "PreToolUse", agent == .codex ? "apply_patch" : "Edit", nil),
-            (6.5, agent == .codex ? "PermissionRequest" : "Notification", agent == .codex ? "Bash" : nil, "permission_prompt"),
-            (10.0, "PostToolUse", "Bash", nil),
-            (11.5, "Stop", nil, nil),
-            (16.0, "SessionEnd", nil, nil)
-        ]
+        let project: String
+        let steps: [(TimeInterval, String, String?, String?)]
+        switch agent {
+        case .claude:
+            project = "Claude 演示"
+            steps = [
+                (0.0, "UserPromptSubmit", nil, nil),
+                (2.0, "PreToolUse", "Read", nil),
+                (4.0, "PreToolUse", "Edit", nil),
+                (6.5, "Notification", nil, "permission_prompt"),
+                (10.0, "PostToolUse", "Bash", nil),
+                (11.5, "Stop", nil, nil),
+                (16.0, "SessionEnd", nil, nil)
+            ]
+        case .codex:
+            project = "Codex 演示"
+            steps = [
+                (0.0, "UserPromptSubmit", nil, nil),
+                (2.0, "PreToolUse", "Read", nil),
+                (4.0, "PreToolUse", "apply_patch", nil),
+                (6.5, "PermissionRequest", "Bash", "permission_prompt"),
+                (10.0, "PostToolUse", "Bash", nil),
+                (11.5, "Stop", nil, nil),
+                (16.0, "SessionEnd", nil, nil)
+            ]
+        case .agy:
+            project = "Antigravity 演示"
+            steps = [
+                (0.0, "PreInvocation", nil, nil),
+                (2.0, "PreToolUse", "read_file", nil),
+                (4.0, "PreToolUse", "edit_file", nil),
+                (6.5, "PreToolUse", "ask_question", nil),
+                (10.0, "PostToolUse", "ask_question", nil),
+                (11.5, "Stop", nil, nil),
+                (16.0, "SessionEnd", nil, nil)
+            ]
+        }
         for (delay, event, tool, type) in steps {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 tracker.apply(event: event, session: session, tool: tool, notificationType: type, project: project,
@@ -1594,6 +1630,7 @@ extension AppDelegate: SettingsHost {
         case .meeting: runMeetingDemo()
         case .claude: runAgentDemo(.claude)
         case .codex: runAgentDemo(.codex)
+        case .agy: runAgentDemo(.agy)
         case .gift: physics.offerGift()
         case .holiday: physics.previewHoliday()
         case .sign: signDemoUntil = CACurrentMediaTime() + 20
