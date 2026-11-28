@@ -65,6 +65,18 @@ struct RoamKickTarget: Equatable {
     var ready: Bool
 }
 
+/// 一起玩的另一只猫（串门来的客人，或者主人家的猫）：它现在在哪、跑多快
+struct RoamPlaymate: Equatable {
+    /// 它的脚底中点（屏幕坐标）
+    var pos: CGPoint
+    /// 它站在哪个面上；在半空（跳、扑）时 nil
+    var surfaceID: Int?
+    /// 它的水平速度（屏幕点/秒）：跑得快就去追
+    var speed: CGFloat
+    /// 玩完了回座位（自家猫）；false = 接着自己溜达（客人猫）
+    var homeAfter: Bool
+}
+
 /// 每帧喂给漫游逻辑的外部状态（全部由调用方采集，逻辑本身不碰 AppKit）
 struct RoamWorld {
     /// 屏幕底部（Dock 上方）
@@ -106,6 +118,14 @@ struct RoamWorld {
     var knockAllowed = false
     /// 你让小猫踢飞的文件：有值时小猫放下手头的事跑过去踢，打字、开会都拦不住（是你刚叫它去的）
     var kickTarget: RoamKickTarget?
+    /// 去同事家串门：有值时小猫走到这条屏幕边走出去，在屏幕外待着（这时候它在同事屏幕上）；变回 nil 就从这条边走回来。
+    /// 什么时候叫它回来由调用方决定（开会、agent 等你、要踢文件……），这期间你打字不算叫它回来
+    var visitExit: RoamEdge?
+    /// 客人猫（串门来的）进门先去打个招呼的地方：跑过去坐一会儿，只去一次
+    var greetSpot: RoamSignTarget?
+    /// 一起玩：有值时小猫放下手头的事（坐在键盘前也跳下来）跑去找它，盯着扭屁股扑它、凑过去碰鼻子、故意从它身边跑过去让它追；
+    /// 变回 nil 就不玩了（自家猫回座位）。什么时候玩、玩多久由调用方决定，这期间打字不算叫它回来
+    var playmate: RoamPlaymate?
 
     var surfaces: [RoamSurface] { [floor] + windowTops }
 
@@ -160,6 +180,12 @@ enum RoamEvent: Equatable {
     case kickedFile(angle: CGFloat, dir: CGFloat)
     /// 文件落在了上不去的窗口顶上：让它掉到屏幕底边再踢
     case kickTargetUnreachable
+    /// 串门：走出屏幕边了（现在在同事那边）
+    case wentVisiting
+    /// 串门回来：从屏幕边走回来了
+    case backFromVisit
+    /// 客人猫跑到主人家的猫旁边打了个招呼
+    case greeted
 }
 
 /// 满屏漫游的纯逻辑：什么时候出门、走到哪、跳到哪、什么时候回家。坐标都是屏幕坐标（y 向上），位置是脚底中点。
@@ -342,6 +368,8 @@ struct RoamDirector {
         case knock(Knock)
         /// 把你让它踢的文件一脚踢飞
         case kick(Kick)
+        /// 串门去了：人在屏幕外（同事那边），这边什么都不画
+        case away
         case land(t: CGFloat = 0, duration: CGFloat, skidding: Bool = false)
         case sit(remaining: CGFloat)
         case fall(vy: CGFloat)
@@ -423,6 +451,7 @@ struct RoamDirector {
             case .tap: return .knockTap
             }
         case .kick: return .kick
+        case .away: return .stand
         case nil: return .stand
         }
     }
@@ -573,6 +602,8 @@ struct RoamDirector {
     private var forcedPeek: RoamEdge?
     private var forcedNap = false
     private var forcedKnock = false
+    /// 串门走出去的是哪条屏幕边（回来时从这条边走回来）
+    private var visitEdge: RoamEdge?
     /// 叼着 / 放着的小东西，和要去推它的地方
     private(set) var trinket: CarriedTrinket?
     private var knockGoal: KnockGoal?
@@ -597,6 +628,18 @@ struct RoamDirector {
     static let focusNapHold: CGFloat = 600
     /// 正在去踢文件的路上，或者正在踢
     private(set) var kicking = false
+    /// 去串门的路上，或者已经在同事那边了
+    private(set) var visiting = false
+    /// 在同事那边（屏幕外）：这边不画小猫
+    var isAwayVisiting: Bool { activity == .away }
+    /// 这一趟已经跟主人家的猫打过招呼了（客人猫用）
+    private var greeted = false
+    /// 正在和另一只猫玩
+    private(set) var romping = false
+    /// 玩完了回座位
+    private var rompHomeAfter = true
+    /// 走过去了就坐下碰鼻子
+    private var rompSitNext = false
     /// 走到窗框旁边后要开始的那次攀爬；跳上窗框侧边后接着爬的那次
     private var pendingClimb: Climb?
     private var wallJumpClimb: Climb?
@@ -616,8 +659,15 @@ struct RoamDirector {
 
     private mutating func step(dt: CGFloat, world input: RoamWorld) -> [RoamEvent] {
         var world = input
-        // 陪你专注时你本来就在打字：不当作「快回来」；踢文件是你刚叫它去的，也不因为打字回来
-        if world.focusSpot != nil || world.kickTarget != nil { world.userActive = false }
+        // 陪你专注时你本来就在打字：不当作「快回来」；踢文件是你刚叫它去的、串门由调用方决定什么时候叫回来，也不因为打字回来
+        if world.focusSpot != nil || world.kickTarget != nil || world.visitExit != nil || world.playmate != nil {
+            world.userActive = false
+        }
+        // 一起玩：把「光标」换成玩伴的脑袋，盯着扭屁股、扑、追那一整套照搬
+        if let mate = world.playmate {
+            world.cursor = CGPoint(x: mate.pos.x, y: mate.pos.y + 38 * world.scale)
+            world.cursorSpeed = abs(mate.speed)
+        }
         var events: [RoamEvent] = []
         let k = world.scale
         lastFloor = world.floor
@@ -632,6 +682,21 @@ struct RoamDirector {
                 tripForced = true
                 startTrip(world: world, toFloor: true)
                 kicking = true
+                events.append(.leftSeat)
+                return events
+            }
+            // 去同事家串门：不管冷却，跳下座位往屏幕边走
+            if world.visitExit != nil, !world.mustStayHome {
+                tripForced = true
+                startTrip(world: world, toFloor: true)
+                visiting = true
+                events.append(.leftSeat)
+                return events
+            }
+            // 有玩伴来了：不管冷却、坐在键盘前也跳下来去找它玩
+            if world.playmate != nil, !world.mustStayHome {
+                tripForced = true
+                startTrip(world: world, toFloor: true)
                 events.append(.leftSeat)
                 return events
             }
@@ -674,15 +739,17 @@ struct RoamDirector {
         let attentionRaised = world.needsAttention && !lastNeedsAttention
         lastNeedsAttention = world.needsAttention
         updateKick(world: world)
+        updateVisit(world: world, events: &events)
+        updateRomp(world: world)
         updateFocus(world: world)
         updateDelivery(world: world)
         // 你一打字、或者有事要它待在座位上：跑回家（送牌的路上 agent 本来就在等你，不算叫它回来；
         // 陪你专注、去踢文件时 agent 等你，就地去举牌 / 踢完再说，不先跑回家）
         let urgent = world.userActive || world.mustStayHome
-            || (attentionRaised && !delivering && !keepingCompany && !kicking)
+            || (attentionRaised && !delivering && !keepingCompany && !kicking && !visiting && !romping)
         // 睡着时不因为到点就叫醒，睡完这一觉再回家；陪你专注时一直陪到番茄钟到点；踢文件时踢完再说
         let tripOver = tripTime > Self.maxTrip && !isNapping && !playSession && !delivering && !keepingCompany
-            && !kicking
+            && !kicking && !visiting && !romping
         if !returning && (urgent || tripOver || (!tripForced && !world.wanderAllowed && !delivering)) {
             beginReturn(world: world, run: urgent)
         } else if returning && urgent && !returningUrgently {
@@ -706,7 +773,8 @@ struct RoamDirector {
         playCooldown = max(0, playCooldown - dt)
         followPlacedTrinket(world: world)
         // 送牌、推东西、踢文件的路上、陪你专注时不被光标勾走
-        if !returning && !delivering && knockGoal == nil && !keepingCompany && !kicking {
+        if !returning && !delivering && knockGoal == nil && !keepingCompany && !kicking && !visiting
+            && (!romping || playSession) {
             considerCursorPlay(world: world)
         }
 
@@ -755,6 +823,7 @@ struct RoamDirector {
                 // 滑过头会让起跳点对不上（跳的时候瞬移回去），举牌 / 推东西的目的地也永远到不了
                 let mustStopHere = pendingJump != nil || pendingPeek != nil || pendingClimb != nil
                     || delivering || knockGoal != nil || keepingCompany || kicking
+                    || (world.greetSpot != nil && !greeted)
                 activity = run && !returning ? .land(duration: mustStopHere ? 0.3 : 0.38, skidding: !mustStopHere) : nil
             }
         case .crouch(let t, let duration, let jump):
@@ -831,13 +900,13 @@ struct RoamDirector {
                 let paw = CGPoint(x: pos.x + facing * 24 * k, y: pos.y + 62 * k)
                 if hypot(cursor.x - paw.x, cursor.y - paw.y) < 42 * k {
                     pounce.caught = true
-                    events.append(.caughtCursor)
+                    if !romping { events.append(.caughtCursor) }
                 }
             }
             if pounce.jump.t >= 1 {
                 pos = pounce.jump.to
                 surfaceID = pounce.jump.surface
-                if !pounce.caught { events.append(.missedCursor) }
+                if !pounce.caught && !romping { events.append(.missedCursor) }
                 playPounces += 1
                 resumeStalk = playSession
                 activity = .land(duration: 0.30)
@@ -854,6 +923,8 @@ struct RoamDirector {
         case .kick(var kick):
             currentSpeed *= exp(-18 * dt)
             stepKick(&kick, dt: dt, world: world, events: &events)
+        case .away:
+            currentSpeed = 0
         case .land(let t, let duration, let skidding):
             if skidding {
                 currentSpeed *= exp(-9.5 * dt)
@@ -935,6 +1006,8 @@ struct RoamDirector {
         } else if activity == nil {
             if kicking && !returning {
                 planKickStep(world: world, events: &events)
+            } else if visiting && !returning {
+                planVisitStep(world: world, events: &events)
             } else if delivering && !returning {
                 planDeliveryStep(world: world)
             } else if keepingCompany && !returning {
@@ -943,6 +1016,10 @@ struct RoamDirector {
                 planKnockStep(world: world)
             } else if returning {
                 planReturnStep(world: world, run: returningUrgently)
+            } else if let spot = world.greetSpot, !greeted {
+                planGreetStep(to: spot, world: world, events: &events)
+            } else if romping, let mate = world.playmate {
+                planRompStep(with: mate, world: world)
             } else if budget <= 0 {
                 beginReturn(world: world, run: false)
             } else {
@@ -986,7 +1063,7 @@ struct RoamDirector {
 
     private func isGrounded(_ a: Activity) -> Bool {
         switch a {
-        case .walk, .sit, .land, .crouch, .nap, .stalk, .sign, .shake, .knock, .kick: return true
+        case .walk, .sit, .land, .crouch, .nap, .stalk, .sign, .shake, .knock, .kick, .away: return true
         case .jump, .fall, .peek, .pounce, .climb: return false
         }
     }
@@ -1409,6 +1486,177 @@ struct RoamDirector {
         activity = .kick(kick)
     }
 
+    // MARK: Visits
+
+    /// 要去串门 / 叫它回来。开始时放下手头的事（叼着的东西掉下来、不玩了、睡着的醒过来）往屏幕边走；
+    /// 叫回来时：已经在同事那边的从那条边走回来，还在路上的直接掉头回家
+    private mutating func updateVisit(world: RoamWorld, events: inout [RoamEvent]) {
+        if world.visitExit != nil, !visiting, !kicking {
+            visiting = true
+            tripForced = true
+            releaseTrinket()
+            knockGoal = nil
+            endPlay()
+            pendingPeek = nil
+            pendingJump = nil
+            pendingClimb = nil
+            resumeStalk = false
+            returning = false
+            returningUrgently = false
+            switch activity {
+            case .jump, .fall, .pounce, .crouch, .climb:
+                break                                   // 让这一下做完，落地后再走
+            case .nap(var nap):
+                nap.wakeNow(startled: false)
+                activity = .nap(nap)
+            case .peek(var peek):
+                let hideAt = peek.start + Peek.revealTime
+                peek.hold = min(peek.hold, max(0, peek.t - hideAt))
+                activity = .peek(peek)
+            default:
+                activity = nil
+            }
+        } else if world.visitExit == nil, visiting {
+            visiting = false
+            if activity == .away, let edge = visitEdge {
+                // 从走出去的那条边走回来，进屏幕一段再回家
+                let floor = world.floor
+                let k = world.scale
+                let left = edge == .left
+                pos = CGPoint(x: left ? floor.minX - 60 * k : floor.maxX + 60 * k, y: floor.y)
+                surfaceID = floor.id
+                facing = left ? 1 : -1
+                turnScale = facing
+                budget = 0
+                activity = .walk(toX: left ? floor.minX + 140 * k : floor.maxX - 140 * k, run: false)
+                events.append(.backFromVisit)
+            } else if !returning && !kicking && !delivering && !keepingCompany {
+                beginReturn(world: world, run: false)
+            }
+            visitEdge = nil
+        }
+    }
+
+    /// 去串门的下一步：在窗口顶上先下到地上；在地上就朝那条屏幕边走，走出屏幕就算到了
+    private mutating func planVisitStep(world: RoamWorld, events: inout [RoamEvent]) {
+        guard let edge = world.visitExit else { return }
+        visitEdge = edge
+        let floor = world.floor
+        let k = world.scale
+        let outX = edge == .left ? floor.minX - 90 * k : floor.maxX + 90 * k
+        guard surfaceID == floor.id else {
+            _ = travelStep(to: RoamSignTarget(surfaceID: floor.id, x: outX), world: world, belowIsFine: true)
+            return
+        }
+        if abs(pos.x - outX) < 2 * k {
+            activity = .away
+            events.append(.wentVisiting)
+        } else {
+            // 离屏幕边远就小跑过去，近了慢慢走出去
+            activity = .walk(toX: outX, run: abs(pos.x - outX) > 500 * k)
+        }
+    }
+
+    // MARK: Playdate
+
+    /// 有玩伴了 / 不玩了。开始时放下手头的事（叼着的东西掉下来、睡着的醒过来、举着的牌放下）；
+    /// 不玩了：自家猫回座位，客人猫接着自己溜达
+    private mutating func updateRomp(world: RoamWorld) {
+        if let mate = world.playmate, !romping, !kicking, !visiting {
+            romping = true
+            rompHomeAfter = mate.homeAfter
+            rompSitNext = false
+            tripForced = true
+            releaseTrinket()
+            knockGoal = nil
+            pendingPeek = nil
+            pendingJump = nil
+            pendingClimb = nil
+            if returning {
+                returning = false
+                returningUrgently = false
+            }
+            switch activity {
+            case .jump, .fall, .pounce, .crouch, .climb, .stalk:
+                break                                   // 让这一下做完
+            case .nap(var nap):
+                nap.wakeNow(startled: false)
+                activity = .nap(nap)
+            case .peek(var peek):
+                let hideAt = peek.start + Peek.revealTime
+                peek.hold = min(peek.hold, max(0, peek.t - hideAt))
+                activity = .peek(peek)
+            default:
+                activity = nil
+            }
+        } else if world.playmate == nil, romping {
+            romping = false
+            rompSitNext = false
+            endPlay()
+            if case .stalk = activity { activity = nil }
+            guard rompHomeAfter, !returning, !kicking, !visiting, !delivering, !keepingCompany else { return }
+            beginReturn(world: world, run: false)
+        }
+    }
+
+    /// 和玩伴玩的下一步：离得远就跑过去；到了身边随机挑一样——盯着扭屁股扑它、凑过去碰鼻子、从它身边疯跑过去让它追
+    private mutating func planRompStep(with mate: RoamPlaymate, world: RoamWorld) {
+        let k = world.scale
+        let side: CGFloat = mate.pos.x >= pos.x ? 1 : -1
+        guard let mateSurface = mate.surfaceID else {
+            // 它在半空（正扑过来、正跳）：原地看着
+            facing = side
+            activity = .sit(remaining: 0.3)
+            return
+        }
+        let dx = abs(mate.pos.x - pos.x)
+        guard surfaceID == mateSurface, dx < 190 * k else {
+            rompSitNext = false
+            _ = travelStep(to: RoamSignTarget(surfaceID: mateSurface, x: mate.pos.x - side * 90 * k), world: world,
+                           belowIsFine: true)
+            return
+        }
+        if rompSitNext {
+            // 碰鼻子：脸对脸坐一会儿
+            rompSitNext = false
+            facing = side
+            activity = .sit(remaining: 1.3 + CGFloat(random()) * 1.4)
+            return
+        }
+        let here = world.surface(id: mateSurface) ?? world.floor
+        let roll = random()
+        if roll < 0.45 {
+            // 盯上它：notice → 潜伏 → 扭屁股 → 扑（照搬光标逗猫）
+            facing = side
+            playSession = true
+            playPounces = 0
+            playTime = 0
+            activity = .stalk(Stalk(phase: .notice, wiggleNeeded: 0.5 + CGFloat(random()) * 0.6))
+        } else if roll < 0.75 {
+            // 凑过去碰碰鼻子
+            let noseX = mate.pos.x - side * 58 * k
+            if abs(noseX - pos.x) > 6 * k {
+                rompSitNext = true
+                activity = .walk(toX: min(max(noseX, here.minX + 20 * k), here.maxX - 20 * k), run: false)
+            } else {
+                facing = side
+                activity = .sit(remaining: 1.3 + CGFloat(random()) * 1.4)
+            }
+        } else {
+            // 从它身边疯跑过去：它一看跑得快就追上来
+            let past = mate.pos.x + side * (200 + CGFloat(random()) * 200) * k
+            activity = .walk(toX: min(max(past, here.minX + 30 * k), here.maxX - 30 * k), run: true)
+        }
+    }
+
+    /// 客人猫进门先去打个招呼：跑到主人家的猫旁边，坐下待一会儿
+    private mutating func planGreetStep(to spot: RoamSignTarget, world: RoamWorld, events: inout [RoamEvent]) {
+        guard travelStep(to: spot, world: world, belowIsFine: true) == .arrived else { return }
+        greeted = true
+        activity = .sit(remaining: 3.2)
+        events.append(.greeted)
+    }
+
     /// 送牌的下一步：到了就坐下举牌；在别处就按跳台 / 爬窗 / 下地的顺序赶过去
     private mutating func planDeliveryStep(world: RoamWorld) {
         guard let target = world.signTarget else { return }
@@ -1648,6 +1896,7 @@ struct RoamDirector {
         tripTime = 0
         budget = 3 + Int(random() * 3)
         nappedThisTrip = false
+        greeted = false
         stepsThisTrip = 0
         currentSpeed = 0
         runBlend = 0
@@ -2061,6 +2310,9 @@ struct RoamDirector {
         // 开会被叫回来的：会开完了，在家里重新看一眼番茄钟还在不在
         keepingCompany = false
         kicking = false
+        visiting = false
+        romping = false
+        rompSitNext = false
         cooldown = 60 + CGFloat(random() * 60)
         checkTimer = 5
     }

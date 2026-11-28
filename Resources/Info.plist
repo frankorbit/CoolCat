@@ -61,6 +61,12 @@
     </array>
     <key>NSAppleEventsUsageDescription</key>
     <string>小猫踢飞文件时，CoolCat 请 Finder 把这个文件移到废纸篓（和你按 ⌘⌫ 一样，可以「放回原处」），桌面上原来的图标才会马上消失。CoolCat 不会让 Finder 做别的事。</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>打开「串门」后，CoolCat 在局域网里找同样开着串门的同事，让你们的小猫互相串门。只交换小猫的名字和样子，不经过任何服务器。</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_coolcat._tcp</string>
+    </array>
     <key>NSInputMonitoringUsageDescription</key>
     <string>CoolCat 需要「输入监控」权限以在打字和玩游戏时实时接收全状态键盘与鼠标按键，所有输入仅用于本地驱动桌宠动画，绝不记录或上传任何内容。</string>
 </dict>

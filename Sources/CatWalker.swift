@@ -121,10 +121,10 @@ extension CatRenderer {
     }
 
     static func drawWalker(in ctx: CGContext, pose: WalkerPose) {
-        let settings = CatSettings.shared
-        let coat = settings.coatTheme
-        refreshActivePet(coat: coat)
-        let pal = walkerPalette(coat: coat, eyeTheme: settings.eyeTheme)
+        let look = walkerLook
+        let coat = look.coat
+        refreshWalkerPet(coat: coat)
+        let pal = walkerPalette(coat: coat, eyeTheme: look.eye)
         if pose.pose == .climb {
             // 爬窗框：把走路的侧身小猫转 90 度，头朝上、爪子贴着窗框（facing > 0 = 窗框在右边）
             let wallRight = pose.facing > 0
@@ -752,7 +752,7 @@ extension CatRenderer {
                                                 bellT: CGFloat, tailEnd: CGPoint, tailControl: CGPoint,
                                                 pose: WalkerPose, rBlend: CGFloat, mBlend: CGFloat,
                                                 bellAngleBias: CGFloat = 0) {
-        let accessory = CatSettings.shared.accessory
+        let accessory = walkerLook.accessory
         guard accessory == .bell || accessory == .scarf else { return }
         let scale = max(0.84, min(1.06, CGFloat(pet?.shape.headSize ?? 1)))
 
@@ -1064,7 +1064,7 @@ extension CatRenderer {
         ctx.strokePath()
 
         // 装扮：蝴蝶结在近侧耳根、墨镜盖住 3/4 双眼（项圈/围巾画在脖子上）
-        switch CatSettings.shared.accessory {
+        switch walkerLook.accessory {
         case .bow:
             ctx.setFillColor(rgb(0xF27BA5).cgColor)
             let b = CGPoint(x: -r * 0.42, y: -r * 0.68)
@@ -1334,7 +1334,7 @@ extension CatRenderer {
         }
         ctx.strokePath()
         // 装扮：蝴蝶结在耳根，墨镜盖住眼睛
-        switch CatSettings.shared.accessory {
+        switch walkerLook.accessory {
         case .bow:
             let b = CGPoint(x: -r * 0.5, y: -r * 0.72)
             ctx.setFillColor(rgb(0xF27BA5).cgColor)

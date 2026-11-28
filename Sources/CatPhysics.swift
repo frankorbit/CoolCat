@@ -140,6 +140,14 @@ final class CatSettings {
     var customPetID: String? {
         didSet { UserDefaults.standard.set(customPetID, forKey: "CoolCat.CustomPetID") }
     }
+    /// 你给小猫取的名字（空 = 没取，用品种名）。串门时顶在头上，同事看得到
+    var catName: String {
+        didSet { UserDefaults.standard.set(catName, forKey: "CoolCat.CatName") }
+    }
+    /// 串门：和局域网里同事的小猫互相串门（默认开；小猫自己决定去谁家，不用谁点同意；第一次会弹「本地网络」授权）
+    var visits: Bool {
+        didSet { UserDefaults.standard.set(visits, forKey: "CoolCat.Visits") }
+    }
     /// 亲密度解锁的装扮
     var accessory: CatAccessory {
         didSet { UserDefaults.standard.set(accessory.rawValue, forKey: "CoolCat.Accessory") }
@@ -242,6 +250,8 @@ final class CatSettings {
         knockThings = d.object(forKey: "CoolCat.KnockThings") as? Bool ?? true
         accessory = CatAccessory(rawValue: d.string(forKey: "CoolCat.Accessory") ?? "") ?? .none
         customPetID = d.string(forKey: "CoolCat.CustomPetID")
+        catName = d.string(forKey: "CoolCat.CatName") ?? ""
+        visits = d.object(forKey: "CoolCat.Visits") as? Bool ?? true
         roaming = d.object(forKey: "CoolCat.Roaming") as? Bool ?? true
         lifeMorning = d.object(forKey: "CoolCat.LifeMorning") as? Bool ?? true
         lifeBattery = d.object(forKey: "CoolCat.LifeBattery") as? Bool ?? true

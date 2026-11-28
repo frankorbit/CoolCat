@@ -1245,6 +1245,10 @@ private final class PreviewSettingsHost: SettingsHost {
     func uninstall(_ agent: CodingAgent) {}
     func runDemo(_ demo: SettingsDemo) {}
     var roamPlatformStatus: String { "现在有 2 处能跳" }
+    func visitSettingsChanged() {}
+    var visitPeers: [(id: String, name: String)] { [("demo", "小黑")] }
+    var visitProblem: String? { nil }
+    func visit(peerID: String) {}
 }
 
 /// README 用的设置截图：在屏幕上开真实窗口（侧栏毛玻璃、选中态都正确），用 screencapture 按窗口截取

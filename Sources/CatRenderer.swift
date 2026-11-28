@@ -24,6 +24,34 @@ enum CatRenderer {
     static func refreshActivePet(coat: CatCoatTheme) {
         pet = PetLibrary.shared.active.flatMap { $0.style.baseCoat == coat ? $0 : nil }
     }
+
+    /// 正在画的是串门来的客人猫：毛色、瞳色、品种、装扮都换成它的（只在画它的那一下有效，不碰你自己的设置）
+    private(set) static var visitorLook: CatProfile?
+
+    /// 用客人的样子画一只侧身小猫；画完换回来
+    static func drawing(as profile: CatProfile?, _ body: () -> Void) {
+        let saved = visitorLook
+        visitorLook = profile
+        defer { visitorLook = saved }
+        body()
+    }
+
+    /// 侧身小猫这一下用谁的样子：客人的，或者你自己设置里的
+    static var walkerLook: (coat: CatCoatTheme, eye: EyeColorTheme, accessory: CatAccessory) {
+        let settings = CatSettings.shared
+        guard let look = visitorLook else { return (settings.coatTheme, settings.eyeTheme, settings.accessory) }
+        return (CatCoatTheme(rawValue: look.coat) ?? .classicBlack, EyeColorTheme.saved(look.eye),
+                CatAccessory(rawValue: look.accessory) ?? .none)
+    }
+
+    /// 侧身小猫每帧开头：取这一下要画的品种（客人的，或者你自己选的）
+    static func refreshWalkerPet(coat: CatCoatTheme) {
+        guard let look = visitorLook else {
+            refreshActivePet(coat: coat)
+            return
+        }
+        pet = look.petID.flatMap { PetLibrary.shared.pet(id: $0) }.flatMap { $0.style.baseCoat == coat ? $0 : nil }
+    }
     /// 身体宽度系数（自定义体型）
     private static var bodyScale: CGFloat { CGFloat(pet?.shape.bodyWidth ?? 1) }
 

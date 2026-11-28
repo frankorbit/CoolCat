@@ -46,6 +46,10 @@ final class RoamView: NSView {
     var pose = CatRenderer.WalkerPose(pose: .stand, phase: 0, facing: 1, air: 0, time: 0, blink: false)
     /// 沿屏幕边裁剪（画布坐标）：屏幕外的部分不画，多屏时不会画到隔壁屏上
     var clip: (edge: RoamEdge, at: CGFloat)?
+    /// 串门来的客人猫：照它的名片画（nil = 画你自己的猫）
+    var visitor: CatProfile?
+    /// 顶在头上的名字牌（客人猫）
+    var nameTag: String?
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
@@ -63,8 +67,36 @@ final class RoamView: NSView {
             case .bottom: ctx.clip(to: CGRect(x: 0, y: 0, width: w, height: max(0, clip.at)))
             }
         }
-        CatRenderer.drawWalker(in: ctx, pose: pose)
+        CatRenderer.drawing(as: visitor) {
+            CatRenderer.drawWalker(in: ctx, pose: pose)
+        }
+        if let nameTag, !nameTag.isEmpty {
+            drawNameTag(nameTag, in: ctx)
+        }
         ctx.restoreGState()
+    }
+
+    /// 头顶上方一块半透明深色圆角牌，白字写名字；蜷着睡时头低，牌子跟着往下挪。不跟着朝向翻转
+    private func drawNameTag(_ name: String, in ctx: CGContext) {
+        let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let text = NSAttributedString(string: name, attributes: [.font: font, .foregroundColor: NSColor.white])
+        let size = text.size()
+        let width = size.width + 14
+        let height = size.height + 5
+        let headX = CatRenderer.walkerFeet.x + pose.facing * 12
+        let centerY: CGFloat = pose.pose == .curl ? 104 : 46
+        let rect = CGRect(x: headX - width / 2, y: centerY - height / 2, width: width, height: height)
+        ctx.saveGState()
+        let pill = CGPath(roundedRect: rect, cornerWidth: height / 2, cornerHeight: height / 2, transform: nil)
+        ctx.addPath(pill)
+        ctx.setFillColor(NSColor(calibratedWhite: 0.1, alpha: 0.72).cgColor)
+        ctx.fillPath()
+        ctx.addPath(pill)
+        ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.35).cgColor)
+        ctx.setLineWidth(0.8)
+        ctx.strokePath()
+        ctx.restoreGState()
+        text.draw(at: CGPoint(x: rect.minX + 7, y: rect.minY + 2.5))
     }
 }
 

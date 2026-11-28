@@ -25,6 +25,7 @@ A little cat that lives in the corner of your Mac desktop. It types along with y
 - 🐾 **Roams your whole screen** — when you're idle it hops off the keyboard, sprints around as a bouncy chibi, treats window tops like tables to jump between (climbing the frame when they're too high), chases your cursor, knocks your pen off a window, peeks from screen edges, curls up for naps, and runs back as soon as you type ([more](#-roaming)).
 - 🍅 **Pomodoro timer** — start a 25 / 45 / 15-minute pomodoro from the menu: the cat curls up atop your front window with a tomato timer by its nose and a countdown in the menu bar, then wakes and holds up a sign telling you to take a break ([more](#-pomodoro)).
 - 👟 **Kick files away** — right-click a file in Finder and pick “CoolCat 小猫踢飞（移到废纸篓）”: the file drops from its spot, the cat runs over (leaping to another display if needed) and kicks it spinning off the screen; select several and it kicks them one by one, nearest first. It only goes to the Trash, so you can always put it back ([more](#-kick-files-away)).
+- 🏠 **Visiting** — name your cat: with colleagues on the same network who run CoolCat, your cat decides on its own to walk off your screen and wander around theirs, and their cat hops in on yours with its name above its head, greeting your cat first. Nobody has to approve anything ([more](#-visiting)).
 - 🤖 **Claude Code integration** — one-click hooks; a bubble shows *project · action · elapsed* per session, the cat waves when a session needs your approval — and if you're looking at another window, [holds up a sign](#-agent-sign) on it — and throws confetti when it is done.
 - ⌨️ **Codex integration** — one-click hooks in `~/.codex/hooks.json` (trust them once via `/hooks` in Codex); Codex sessions share the bubble with Claude Code, marked by a blue spinner.
 - 🎙 **Meeting mode** — headset when the mic is on, a "shh" when you type too loudly, a quick face wash before the camera turns on.
@@ -121,6 +122,21 @@ Have the cat kick away files you don't want:
 - Up to 20 files at a time. Desktop files drop from their own spots; for files in a Finder window (whose on-screen positions Finder doesn't expose) the icons line up around where you right-clicked.
 - Don't see the item in the right-click menu yet? Relaunch Finder or log out and back in once.
 
+## 🏠 Visiting
+
+Cats can visit each other between colleagues. It's on by default — no setup and nobody has to approve anything: CoolCats on the same network find each other.
+
+- **A name** — give your cat a name under *Settings → Appearance* (up to 12 characters). It shows above its head when it visits; without one, its breed is shown (Siamese, orange tabby…).
+- **The cat decides** — when it heads out on an idle stroll, it now and then picks a colleague to visit on its own; to send it right away, use the menu “🏠 串门” → visit a colleague. Your cat hops off its seat and walks off the screen edge; at that moment an identical cat (same coat, breed and accessories) hops in at the edge of your colleague's screen, with its name above its head.
+- **At a colleague's** — it first runs over to their cat and sits down to say hi (their cat shows “👋 「name」来串门啦”), then wanders around their screen, hopping windows and chasing the cursor. After a minute or so it hops off the edge, and your cat walks back in on your side and returns to its seat.
+- **Playing together** — when a colleague's cat arrives, your cat drops what it's doing (even while sitting at the keyboard as you type) and runs over to play: it stalks and pounces on the guest, walks up to touch noses, or dashes past so the guest chases it, and the guest pounces right back. If you're typing it plays for at least 8 seconds, then heads back to work at its seat; 20–40 seconds later, if the guest is still around, it hops down to play again until the guest leaves. No play during meetings, while an agent needs approval, or during a pomodoro.
+- **Comes back when needed** — a meeting, Claude Code / Codex waiting for approval, a file to kick, a pomodoro starting, or turning visiting off brings your cat home at once, and the guest on the other side leaves right away. If either Mac goes to sleep or drops off the network, both cats head home.
+- **No guest limit** — several colleagues' cats can come over at once and line up to say hi, and your home still takes guests while your own cat is out. A knock is only turned away while you're in a meeting (you may be sharing your screen) or when four guest cats are already on screen.
+
+Discovery happens over Bonjour on the local network only, with no server involved. The only thing exchanged is the cat's card: name, breed, coat, eye color and accessories — never your computer name, screen contents or anything else. On first launch macOS asks for *Local Network* access; if it's denied, settings tell you where to allow it. To opt out, turn it off under *Settings → Interaction → 串门 🏠*.
+
+*Settings → Interaction → 串门* lists the colleagues found on your network with a button to visit right away; *客人预览* (guest preview) fakes a visit from a cat called 阿橘 without any network, so you can see it immediately.
+
 ## 🎄 Winter & Christmas
 
 <p align="center">
@@ -168,7 +184,7 @@ macOS 11+ (real-time beat tracking needs macOS 14.2+).
 
 Requires *Input Monitoring*; *Screen & System Audio Recording* is optional and only used to analyze the music player's audio in memory. Package with `scripts/package-macos.sh`. The UI is in Simplified Chinese.
 
-Debug flags: `--focus-now --focus-seconds 40` runs a whole pomodoro cycle in a couple of minutes (without counting it or adding bond points); `--kick-file <path> [--kick-at x,y]` (repeat `--kick-file` for several) has the cat kick those files two seconds after launch (it really goes to the Trash), popping out at the given screen point.
+Debug flags: `--visit-demo` fakes a colleague's cat visiting (no network); `--visit-peer` visits the first colleague found. `--focus-now --focus-seconds 40` runs a whole pomodoro cycle in a couple of minutes (without counting it or adding bond points); `--kick-file <path> [--kick-at x,y]` (repeat `--kick-file` for several) has the cat kick those files two seconds after launch (it really goes to the Trash), popping out at the given screen point.
 
 For beat diagnostics, launch with `open -a CoolCat --args --beat-log <file>` to log lock stats, tempo candidates and track titles every 5 seconds.
 
@@ -178,6 +194,7 @@ For beat diagnostics, launch with `open -a CoolCat --args --beat-log <file>` to 
 - System audio is limited to the music player and analyzed in memory only.
 - Agent hooks send only event names, tool names and the project folder name to the local cat — never prompts or code.
 - Roaming reads window positions and sizes to find places to stand, never window contents, and needs no screen-recording permission.
+- Visiting is on by default (you can turn it off): it only uses Bonjour on the local network to find colleagues running CoolCat, exchanges just the cat's name and looks, and involves no server.
 - Kicking files only happens after you pick files and a menu item, and only moves those files to the Trash (they can be put back). The Finder automation permission is used for nothing else.
 - No network access, no update checks.
 

@@ -26,6 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let focus = FocusCompanion()
     /// 踢飞文件：Finder 右键「CoolCat 小猫踢飞（移到废纸篓）」，小猫跑过去一脚把它踢出屏幕
     private let fileKick = FileKickCompanion()
+    /// 串门：和局域网里同事的小猫互相串门
+    private let visits = VisitCompanion()
+    /// 自家座位那块屏幕上最近一帧的漫游世界：客人猫一直踩这块屏幕（自家猫跨屏去踢文件时也不跟着换）
+    private var visitorHostWorld: RoamWorld?
+    /// 改名字时停手一会儿再重新登记（不是每敲一个字登记一次）
+    private var pendingVisitApply: DispatchWorkItem?
+    /// 上一帧自家漫游小猫在哪（算它跑多快，客人猫看它跑得快就去追）
+    private var lastRoamPos: CGPoint = .zero
     /// 小猫跑去别的屏幕踢文件时在哪块屏幕上（回到座位就清掉）；上一帧在哪块屏幕上活动
     private var awayScreen: NSScreen?
     private var lastRoamScreen: NSScreen?
@@ -199,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startLifeCompanion()
         setupFocus()
         setupFileKick()
+        setupVisits()
 
         if Self.updateChecksEnabled {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
@@ -424,6 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             + "也可以在 Finder 里右键文件 → 快速操作 / 服务 →「CoolCat 小猫踢飞（移到废纸篓）」"
         kickItem.isEnabled = !fileKick.isBusy
         menu.addItem(kickItem)
+        menu.addItem(visitMenuItem())
 
         let bond = physics.bond
         let bondText = bond.nextLevel.map { "💞 Lv\(bond.level.level) \(bond.level.title) · \(bond.points)/\($0.threshold)" }
@@ -688,10 +698,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if roamClockStart == 0 { roamClockStart = now }
         // `--roam-ignore-keys`（调试用）：漫游逻辑当作一直没人打字，方便在打字时实机观察整段行为
         let keyIdle = ignoreKeysForRoaming ? 1000 : now - max(engine.lastKeyActivityTime, roamClockStart)
+        visits.tick(now: now)
+        // 在同事家串门时家里有事：开会、agent 等你、要踢文件、开了番茄钟、关了串门 —— 叫它回来
+        if visits.isOut && (physics.isInMeeting || physics.agentNeedsYou || fileKick.isBusy
+                            || focus.timer.phase == .focusing || !settings.visits) {
+            visits.recall()
+        }
         let signTarget = updateSignTarget(screen: screen, keyIdle: keyIdle, now: now)
         let focusSpot = focus.focusSpot(surfaces: roamSurfaces, screen: screen, now: now)
         let floor = RoamSurface(id: 0, minX: visible.minX, maxX: visible.maxX, y: visible.minY + 2)
         // 文件在另一块屏幕上、小猫正在这块屏幕上溜达：先叫它回座位，再从座位跳过去
+        // 同事的猫来串门：自家猫放下手头的事去陪它玩一会儿，你在打字就玩够一会儿回座位，过一阵又惦记着去玩
+        let canPlay = settings.visits && !physics.isInMeeting && !physics.agentNeedsYou && !fileKick.isBusy
+            && focus.timer.phase != .focusing && !visits.isOut
+        let playing = visits.updatePlaydate(now: now, canPlay: canPlay, userBusy: keyIdle < 2)
+        let playmate = playing && screen == homeScreen
+            ? visits.playmateForHost(near: roam.isHome ? CGPoint(x: home.midX, y: home.minY) : roam.pos) : nil
         // 好几个文件时从近到远：离小猫（在座位上就是座位）最近的先踢
         let catSpot = roam.isHome ? CGPoint(x: home.midX, y: home.minY) : roam.pos
         let kickTarget = holdKick ? nil : fileKick.kickTarget(surfaces: roamSurfaces, floor: floor,
@@ -708,7 +730,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 送牌时只有开会才拦得住（听歌时也去：agent 等你比跟着歌摇更要紧）
             // 陪你专注时也一样：只有开会叫得回去（听歌时照样陪你，不回座位摇摆）
             // 踢文件是你刚叫它去的：开会、跳舞都拦不住
-            mustStayHome: holdKick || (kickTarget != nil ? false
+            // 串门时什么时候回来由串门那边决定（上面已经按开会、agent 等你叫回来了）
+            mustStayHome: holdKick || (kickTarget != nil || visits.exitEdge != nil || playmate != nil ? false
                 : (signTarget != nil || focusSpot != nil ? physics.isInMeeting : physics.prefersStayingHome)),
             wanderAllowed: settings.roaming && !physics.agentNeedsYou && focus.timer.phase != .focusing,
             needsAttention: physics.agentNeedsYou,
@@ -723,7 +746,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             focusSpot: focusSpot,
             snowySurfaces: snowpack.snowySurfaces,
             knockAllowed: settings.knockThings,
-            kickTarget: kickTarget
+            kickTarget: kickTarget,
+            visitExit: visits.exitEdge,
+            playmate: playmate
         )
         if let path = roamLogPath, now - lastRoamLog > 0.5 {
             lastRoamLog = now
@@ -746,7 +771,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         for event in roam.update(dt: dt, world: world) {
             switch event {
-            case .leftSeat: physics.catAway = true
+            case .leftSeat:
+                physics.catAway = true
+                // 自己出门溜达（不是送牌、陪专注、踢文件、串门叫出去的）：偶尔顺路去同事家串个门
+                let plainWander = signTarget == nil && focusSpot == nil && kickTarget == nil && visits.exitEdge == nil
+                    && playmate == nil
+                if settings.visits && plainWander && Double.random(in: 0..<1) < 0.2 { visits.visitSomeone() }
+            case .wentVisiting: visits.catWentAway()
+            case .backFromVisit, .greeted: break
             case .arrivedHome: physics.landBackInSeat()
             case .landed: snowpack.puff(at: roam.pos, surfaceID: roam.surfaceID)
             case .caughtCursor: physics.roamPlayResult(caught: true)
@@ -764,8 +796,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         awayScreen = roam.isHome || screen == homeScreen ? nil : screen
+        // 来串门的客人猫：和自家猫踩同一套地面、窗口顶；进门先跑去自家猫旁边打招呼。
+        // 一直用自家座位那块屏幕：自家猫跨屏去踢文件时，客人不跟着跑到另一块屏幕上
+        if screen == homeScreen { visitorHostWorld = world }
+        let catHere = !roam.isHome && screen == homeScreen
+        // 自家猫正陪客人玩：客人们也把它当玩伴（跑多快看这一帧挪了多少）
+        let catSpeed = dt > 0 ? (roam.pos.x - lastRoamPos.x) / dt : 0
+        lastRoamPos = roam.pos
+        let hostMate = playing && catHere && !roam.isAwayVisiting
+            ? RoamPlaymate(pos: roam.pos, surfaceID: roam.pose == .air ? nil : roam.surfaceID, speed: catSpeed,
+                           homeAfter: false) : nil
+        let homeCat = VisitHostCat(cat: catHere ? roam.surfaceID.map { (roam.pos, $0) } : nil, playmate: hostMate)
+        visits.stepVisitors(dt: dt, host: visitorHostWorld ?? world, home: homeCat, time: physics.time) { profile in
+            physics.showNotice("👋 「\(profile.displayName)」来串门啦")
+        }
         updateDesk(dt: dt, screen: screen)
-        guard !roam.isHome else {
+        // 在同事那边串门时，这边不画
+        guard !roam.isHome, !roam.isAwayVisiting else {
             if roamWindow?.isVisible == true { roamWindow?.orderOut(nil) }
             return
         }
@@ -846,6 +893,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.fileKick.request(urls, at: spot ?? NSEvent.mouseLocation)
             }
         }
+    }
+
+    // MARK: - 串门
+
+    private func setupVisits() {
+        visits.onNotice = { [weak self] text in self?.overlayWindow.catView.physics.showNotice(text) }
+        // 开会时（可能在共享屏幕）不接待客人
+        visits.isInconvenient = { [weak self] in self?.overlayWindow.catView.physics.isInMeeting ?? false }
+        applyVisitSettings()
+        // `--visit-demo`（调试用）：启动 2 秒后假装来了一只同事的猫（不走网络）
+        if CommandLine.arguments.contains("--visit-demo") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.visits.demoVisitor() }
+        }
+        // `--visit-peer`（调试用）：一找到同事就去串门
+        if CommandLine.arguments.contains("--visit-peer") {
+            Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+                guard let self, let peer = self.visits.peers.first else { return }
+                timer.invalidate()
+                self.visits.visit(peer)
+            }
+        }
+    }
+
+    /// 串门开关、名字变了：开 / 关局域网发现，换个名字重新登记
+    private func applyVisitSettings() {
+        visits.setEnabled(CatSettings.shared.visits, name: CatProfile.mine.displayName)
+    }
+
+    /// 菜单「🏠 串门」：去哪位同事家、叫小猫回来，或者提示去设置里打开
+    private func visitMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "🏠 串门", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        func add(_ title: String, _ action: Selector?, peer: String? = nil) {
+            let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = peer
+            entry.isEnabled = action != nil
+            submenu.addItem(entry)
+        }
+        if !CatSettings.shared.visits {
+            add("打开串门（和局域网里同事的猫互相串门）", #selector(enableVisitsFromMenu))
+        } else if visits.isOut {
+            add("叫小猫回来", #selector(recallFromMenu))
+        } else if visits.peers.isEmpty {
+            add("局域网里还没找到同事的猫", nil)
+        } else {
+            for peer in visits.peers {
+                add("去「\(peer.name)」家串门", #selector(visitFromMenu(_:)), peer: peer.id)
+            }
+        }
+        submenu.addItem(.separator())
+        add("我的猫叫「\(CatProfile.mine.displayName)」（在设置 → 外观里改名字）", nil)
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func enableVisitsFromMenu() {
+        CatSettings.shared.visits = true
+        applyVisitSettings()
+    }
+
+    @objc private func recallFromMenu() { visits.recall() }
+
+    @objc private func visitFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let peer = visits.peers.first(where: { $0.id == id }) else {
+            return
+        }
+        visits.visit(peer)
     }
 
     /// 菜单「踢飞文件…」：选文件，从屏幕顶上掉下来让小猫踢
@@ -1623,6 +1738,25 @@ extension AppDelegate: SettingsHost {
 
     var roamPlatformStatus: String { roamScan.summary }
 
+    /// 串门开关、名字变了：停手 0.6 秒再生效（改名字时不是每敲一个字就重新登记一次）
+    func visitSettingsChanged() {
+        pendingVisitApply?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.applyVisitSettings() }
+        pendingVisitApply = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
+    /// 局域网出了什么问题（没权限……）；nil = 正常
+    var visitProblem: String? { visits.network.problem }
+
+    /// 设置里显示：找到了哪几位同事
+    var visitPeers: [(id: String, name: String)] { visits.peers.map { ($0.id, $0.name) } }
+
+    func visit(peerID: String) {
+        guard let peer = visits.peers.first(where: { $0.id == peerID }) else { return }
+        visits.visit(peer)
+    }
+
     func runDemo(_ demo: SettingsDemo) {
         switch demo {
         case .typing: runDemoBurst()
@@ -1634,6 +1768,7 @@ extension AppDelegate: SettingsHost {
         case .gift: physics.offerGift()
         case .holiday: physics.previewHoliday()
         case .sign: signDemoUntil = CACurrentMediaTime() + 20
+        case .visit: visits.demoVisitor()
         case .roam, .peek, .nap, .hop, .knock:
             // 正在做只能在座位上做的事：提示一下，不然点了像没反应
             if let reason = physics.stayHomeReason {

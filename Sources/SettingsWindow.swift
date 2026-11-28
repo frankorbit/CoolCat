@@ -22,10 +22,17 @@ protocol SettingsHost: AnyObject {
     func runDemo(_ demo: SettingsDemo)
     /// 窗口跳台现在的情况：几处能跳，或者为什么一处都没有
     var roamPlatformStatus: String { get }
+    /// 串门开关、小猫名字变了
+    func visitSettingsChanged()
+    /// 局域网里找到的同事的猫
+    var visitPeers: [(id: String, name: String)] { get }
+    /// 局域网出了什么问题（没有本地网络权限……）；nil = 正常
+    var visitProblem: String? { get }
+    func visit(peerID: String)
 }
 
 enum SettingsDemo {
-    case typing, life, meeting, claude, codex, agy, gift, roam, peek, nap, hop, holiday, sign, knock
+    case typing, life, meeting, claude, codex, agy, gift, roam, peek, nap, hop, holiday, sign, knock, visit
 }
 
 // MARK: - Store
@@ -582,6 +589,12 @@ private struct AppearancePane: View {
         VStack(alignment: .leading, spacing: 18) {
             CatPreviewCard(preview: preview)
             SettingsCard(title: "小猫") {
+                SettingsRow(title: "名字", subtitle: "去同事家串门时顶在头上；不取就用品种名") {
+                    TextField(CatProfile.mine.breed, text: store.binding(\.catName) { _ in store.host.visitSettingsChanged() })
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .frame(width: 160)
+                }
+                RowDivider()
                 VStack(alignment: .leading, spacing: 8) {
                     Text("猫咪").font(.system(size: 13))
                     CoatGallery(store: store)
@@ -831,6 +844,32 @@ private struct InteractionPane: View {
                 RowDivider()
                 ActionRow(title: "推东西 😼", subtitle: "预览用：叼着一样小东西出门，跑到窗口边上把它推下去", button: "推吧") {
                     store.host.runDemo(.knock)
+                }
+            }
+            SettingsCard(title: "串门 🏠",
+                         footer: "默认打开。只在局域网里互相发现，不经过任何服务器；同事看到的是你的猫的名字和样子，"
+                            + "不会看到你的电脑名、屏幕内容或任何别的东西。第一次会弹「本地网络」授权") {
+                ToggleRow(title: "和同事的猫互相串门",
+                          subtitle: "同一个局域网里装了 CoolCat 的同事：小猫闲着时自己决定去谁家，走出屏幕边去他那儿溜达一圈；"
+                              + "他的猫也会从你屏幕边跳进来，头上顶着名字，先跑来跟你的猫打招呼。你开会时不接待客人",
+                          isOn: store.binding(\.visits) { _ in store.host.visitSettingsChanged() })
+                if CatSettings.shared.visits {
+                    RowDivider()
+                    let peers = store.host.visitPeers
+                    if let problem = store.host.visitProblem {
+                        InfoRow(title: "局域网", value: problem, valueColor: .orange)
+                    } else if peers.isEmpty {
+                        InfoRow(title: "局域网里的同事", value: "还没找到装了 CoolCat 的同事")
+                    }
+                    ForEach(peers, id: \.id) { peer in
+                        ActionRow(title: "「\(peer.name)」", subtitle: "同事的猫", button: "去串门") {
+                            store.host.visit(peerID: peer.id)
+                        }
+                    }
+                }
+                RowDivider()
+                ActionRow(title: "客人预览", subtitle: "预览用：假装同事的猫「阿橘」来串门（不走网络）", button: "请进") {
+                    store.host.runDemo(.visit)
                 }
             }
             SettingsCard(title: "键盘和鼠标") {
